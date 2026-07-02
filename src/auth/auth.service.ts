@@ -39,6 +39,10 @@ export class AuthService {
     return this.issueTokens(stored.user.id, stored.user.email, stored.user.role);
   }
 
+  async logout(token: string): Promise<void> {
+    await this.prisma.refreshToken.deleteMany({ where: { token } });
+  }
+
   private async issueTokens(userId: string, email: string, role: string) {
     const payload = { sub: userId, email, role };
     const accessToken = this.jwt.sign(payload);

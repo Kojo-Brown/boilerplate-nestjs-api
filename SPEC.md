@@ -10,7 +10,7 @@
 - [x] Global exception filter with structured JSON error responses
 
 ## Phase 2 — Auth
-- [ ] JWT auth: login, register, access + refresh token rotation
+- [x] JWT auth: login, register, access + refresh token rotation
 - [ ] OAuth 2.0 Google strategy (Passport.js)
 - [ ] Guards: JwtAuthGuard, RolesGuard with @Roles() decorator
 - [ ] Password hashing with argon2, rate limiting on auth routes

@@ -12,7 +12,7 @@
 ## Phase 2 — Auth
 - [x] JWT auth: login, register, access + refresh token rotation
 - [x] OAuth 2.0 Google strategy (Passport.js)
-- [ ] Guards: JwtAuthGuard, RolesGuard with @Roles() decorator
+- [x] Guards: JwtAuthGuard, RolesGuard with @Roles() decorator
 - [ ] Password hashing with argon2, rate limiting on auth routes
 
 ## Phase 3 — API Design

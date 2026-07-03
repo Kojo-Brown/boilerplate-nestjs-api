@@ -16,7 +16,24 @@ export class UsersService {
     return this.prisma.user.findUnique({ where: { email } });
   }
 
-  async create(data: { email: string; password?: string; name?: string; provider?: string }) {
+  async create(data: {
+    email: string;
+    password?: string;
+    name?: string;
+    provider?: string;
+    providerAccountId?: string;
+  }): Promise<User> {
     return this.prisma.user.create({ data });
+  }
+
+  async update(
+    id: string,
+    data: { name?: string; provider?: string; providerAccountId?: string },
+  ): Promise<User> {
+    return this.prisma.user.update({ where: { id }, data });
+  }
+
+  async findByProviderAccount(provider: string, providerAccountId: string): Promise<User | null> {
+    return this.prisma.user.findFirst({ where: { provider, providerAccountId } });
   }
 }

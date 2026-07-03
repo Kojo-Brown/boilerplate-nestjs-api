@@ -6,6 +6,7 @@ import { UsersService } from "@/users/users.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import type { RegisterDto } from "./dto/register.dto";
 import type { LoginDto } from "./dto/login.dto";
+import type { GoogleProfile } from "./strategies/google.strategy";
 
 @Injectable()
 export class AuthService {
@@ -41,6 +42,27 @@ export class AuthService {
 
   async logout(token: string): Promise<void> {
     await this.prisma.refreshToken.deleteMany({ where: { token } });
+  }
+
+  async loginWithGoogle(profile: GoogleProfile) {
+    let user = await this.users.findByProviderAccount("google", profile.googleId);
+    if (!user) {
+      const byEmail = await this.users.findByEmail(profile.email);
+      if (byEmail) {
+        user = await this.users.update(byEmail.id, {
+          provider: "google",
+          providerAccountId: profile.googleId,
+        });
+      } else {
+        user = await this.users.create({
+          email: profile.email,
+          name: profile.name,
+          provider: "google",
+          providerAccountId: profile.googleId,
+        });
+      }
+    }
+    return this.issueTokens(user.id, user.email, user.role);
   }
 
   private async issueTokens(userId: string, email: string, role: string) {

@@ -23,6 +23,7 @@ const mockUser: User = {
   name: "Test User",
   role: Role.USER,
   provider: null,
+  providerAccountId: null,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-01"),
 };
@@ -30,6 +31,8 @@ const mockUser: User = {
 const mockUsersService = {
   findByEmail: jest.fn(),
   create: jest.fn(),
+  update: jest.fn(),
+  findByProviderAccount: jest.fn(),
 };
 
 const mockJwtService = {
@@ -197,6 +200,51 @@ describe("AuthService", () => {
       expect(mockRefreshToken.deleteMany).toHaveBeenCalledWith({
         where: { token: "my-token" },
       });
+    });
+  });
+
+  describe("loginWithGoogle", () => {
+    const googleProfile = { googleId: "g-123", email: "google@example.com", name: "Google User" };
+
+    it("creates a new user when no account exists for the Google ID or email", async () => {
+      mockUsersService.findByProviderAccount.mockResolvedValue(null);
+      mockUsersService.findByEmail.mockResolvedValue(null);
+      mockUsersService.create.mockResolvedValue({ ...mockUser, email: googleProfile.email, provider: "google" });
+      mockRefreshToken.create.mockResolvedValue({ id: "rt-1", token: "rt", userId: "user-1", expiresAt: new Date(), createdAt: new Date() });
+
+      const result = await service.loginWithGoogle(googleProfile);
+
+      expect(mockUsersService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ email: googleProfile.email, provider: "google", providerAccountId: "g-123" }),
+      );
+      expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
+    });
+
+    it("links Google account to an existing user found by email", async () => {
+      mockUsersService.findByProviderAccount.mockResolvedValue(null);
+      mockUsersService.findByEmail.mockResolvedValue(mockUser);
+      mockUsersService.update.mockResolvedValue({ ...mockUser, provider: "google", providerAccountId: "g-123" });
+      mockRefreshToken.create.mockResolvedValue({ id: "rt-1", token: "rt", userId: "user-1", expiresAt: new Date(), createdAt: new Date() });
+
+      const result = await service.loginWithGoogle(googleProfile);
+
+      expect(mockUsersService.update).toHaveBeenCalledWith(
+        mockUser.id,
+        expect.objectContaining({ provider: "google", providerAccountId: "g-123" }),
+      );
+      expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
+    });
+
+    it("returns tokens for an existing user matched by Google provider account ID", async () => {
+      const googleUser = { ...mockUser, provider: "google", providerAccountId: "g-123" };
+      mockUsersService.findByProviderAccount.mockResolvedValue(googleUser);
+      mockRefreshToken.create.mockResolvedValue({ id: "rt-1", token: "rt", userId: "user-1", expiresAt: new Date(), createdAt: new Date() });
+
+      const result = await service.loginWithGoogle(googleProfile);
+
+      expect(mockUsersService.findByEmail).not.toHaveBeenCalled();
+      expect(mockUsersService.create).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
     });
   });
 });

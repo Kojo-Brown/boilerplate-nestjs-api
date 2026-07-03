@@ -1,11 +1,13 @@
-import { Controller, Post, Body, Get, UseGuards, HttpCode, HttpStatus } from "@nestjs/common";
+import { Controller, Post, Body, Get, Req, UseGuards, HttpCode, HttpStatus } from "@nestjs/common";
 import { AuthService } from "./auth.service";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
+import { GoogleAuthGuard } from "./guards/google-auth.guard";
 import { CurrentUser } from "@/common/decorators/current-user.decorator";
 import type { AuthenticatedUser } from "./strategies/jwt.strategy";
+import type { GoogleProfile } from "./strategies/google.strategy";
 
 @Controller("auth")
 export class AuthController {
@@ -39,5 +41,17 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   me(@CurrentUser() user: AuthenticatedUser) {
     return user;
+  }
+
+  @Get("google")
+  @UseGuards(GoogleAuthGuard)
+  googleLogin(): void {
+    // Passport redirects to Google — this handler body is never reached
+  }
+
+  @Get("google/callback")
+  @UseGuards(GoogleAuthGuard)
+  googleCallback(@Req() req: { user: GoogleProfile }) {
+    return this.auth.loginWithGoogle(req.user);
   }
 }

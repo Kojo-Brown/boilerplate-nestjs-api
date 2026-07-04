@@ -13,7 +13,7 @@
 - [x] JWT auth: login, register, access + refresh token rotation
 - [x] OAuth 2.0 Google strategy (Passport.js)
 - [x] Guards: JwtAuthGuard, RolesGuard with @Roles() decorator
-- [ ] Password hashing with argon2, rate limiting on auth routes
+- [x] Password hashing with argon2, rate limiting on auth routes
 
 ## Phase 3 — API Design
 - [ ] Swagger/OpenAPI 3.1 with bearer auth, decorators, examples

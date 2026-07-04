@@ -1,4 +1,5 @@
 import { Controller, Post, Body, Get, Req, UseGuards, HttpCode, HttpStatus } from "@nestjs/common";
+import { Throttle, SkipThrottle } from "@nestjs/throttler";
 import { AuthService } from "./auth.service";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
@@ -13,23 +14,27 @@ import type { GoogleProfile } from "./strategies/google.strategy";
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("register")
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
   }
 
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("login")
   @HttpCode(HttpStatus.OK)
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
   }
 
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("refresh")
   @HttpCode(HttpStatus.OK)
   refresh(@Body() dto: RefreshTokenDto) {
     return this.auth.refresh(dto.refreshToken);
   }
 
+  @SkipThrottle()
   @Post("logout")
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -37,18 +42,21 @@ export class AuthController {
     return this.auth.logout(dto.refreshToken);
   }
 
+  @SkipThrottle()
   @Get("me")
   @UseGuards(JwtAuthGuard)
   me(@CurrentUser() user: AuthenticatedUser) {
     return user;
   }
 
+  @SkipThrottle()
   @Get("google")
   @UseGuards(GoogleAuthGuard)
   googleLogin(): void {
     // Passport redirects to Google — this handler body is never reached
   }
 
+  @SkipThrottle()
   @Get("google/callback")
   @UseGuards(GoogleAuthGuard)
   googleCallback(@Req() req: { user: GoogleProfile }) {

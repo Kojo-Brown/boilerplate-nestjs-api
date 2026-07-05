@@ -3,6 +3,7 @@ import { NestFactory } from "@nestjs/core";
 import { ValidationPipe, VersioningType } from "@nestjs/common";
 import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
+import { setupSwagger } from "./common/swagger/setup-swagger";
 import { ConfigService } from "@nestjs/config";
 
 async function bootstrap() {
@@ -29,10 +30,13 @@ async function bootstrap() {
     credentials: true,
   });
 
+  setupSwagger(app);
+
   app.enableShutdownHooks();
 
   await app.listen(port);
   console.log(`API running on http://localhost:${port}/v1`);
+  console.log(`Swagger UI  http://localhost:${port}/docs`);
 }
 
 void bootstrap();

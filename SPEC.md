@@ -17,7 +17,7 @@
 
 ## Phase 3 — API Design
 - [x] Swagger/OpenAPI 3.1 with bearer auth, decorators, examples
-- [ ] Versioned REST API (v1) with consistent response envelope
+- [x] Versioned REST API (v1) with consistent response envelope
 - [ ] Pagination helper (cursor-based) + `@Paginate()` decorator
 - [ ] Request logging interceptor (correlation ID, latency, user)
 

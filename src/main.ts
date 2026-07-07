@@ -3,6 +3,7 @@ import { NestFactory } from "@nestjs/core";
 import { ValidationPipe, VersioningType } from "@nestjs/common";
 import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
+import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-envelope.interceptor";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { ConfigService } from "@nestjs/config";
 
@@ -24,6 +25,7 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new AllExceptionsFilter());
+  app.useGlobalInterceptors(new ResponseEnvelopeInterceptor());
 
   app.enableCors({
     origin: config.get("ALLOWED_ORIGINS", "*"),

@@ -19,7 +19,7 @@
 - [x] Swagger/OpenAPI 3.1 with bearer auth, decorators, examples
 - [x] Versioned REST API (v1) with consistent response envelope
 - [x] Pagination helper (cursor-based) + `@Paginate()` decorator
-- [ ] Request logging interceptor (correlation ID, latency, user)
+- [x] Request logging interceptor (correlation ID, latency, user)
 
 ## Phase 4 — Users Module
 - [ ] UsersModule: CRUD endpoints, DTOs, Prisma repo pattern

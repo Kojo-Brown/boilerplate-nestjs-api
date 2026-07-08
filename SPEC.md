@@ -22,7 +22,7 @@
 - [x] Request logging interceptor (correlation ID, latency, user)
 
 ## Phase 4 — Users Module
-- [ ] UsersModule: CRUD endpoints, DTOs, Prisma repo pattern
+- [x] UsersModule: CRUD endpoints, DTOs, Prisma repo pattern
 - [ ] File upload (S3-compatible) with Multer + presigned URLs
 - [ ] User preferences JSON column with typed Prisma extension
 

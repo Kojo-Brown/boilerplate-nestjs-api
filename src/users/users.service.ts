@@ -1,39 +1,68 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
-import { PrismaService } from "@/common/prisma/prisma.service";
+import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { UsersRepository } from "./users.repository";
+import { buildCursorPage, decodeCursor } from "@/common/pagination";
+import type { CursorPage } from "@/common/pagination";
 import type { User } from "@prisma/client";
+import type { UpdateUserDto } from "./dto/update-user.dto";
+import type { ListUsersQueryDto } from "./dto/list-users-query.dto";
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly repo: UsersRepository) {}
 
   async findById(id: string): Promise<User> {
-    const user = await this.prisma.user.findUnique({ where: { id } });
+    const user = await this.repo.findById(id);
     if (!user) throw new NotFoundException(`User ${id} not found`);
     return user;
   }
 
-  async findByEmail(email: string): Promise<User | null> {
-    return this.prisma.user.findUnique({ where: { email } });
+  findByEmail(email: string): Promise<User | null> {
+    return this.repo.findByEmail(email);
   }
 
-  async create(data: {
+  findByProviderAccount(provider: string, providerAccountId: string): Promise<User | null> {
+    return this.repo.findByProviderAccount(provider, providerAccountId);
+  }
+
+  async listUsers(query: ListUsersQueryDto): Promise<CursorPage<User>> {
+    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+    const rows = await this.repo.findMany({ cursor, limit: query.limit, search: query.search });
+    return buildCursorPage(rows, query.limit);
+  }
+
+  create(data: {
     email: string;
     password?: string;
     name?: string;
     provider?: string;
     providerAccountId?: string;
   }): Promise<User> {
-    return this.prisma.user.create({ data });
+    return this.repo.create(data);
   }
 
   async update(
     id: string,
     data: { name?: string; provider?: string; providerAccountId?: string },
   ): Promise<User> {
-    return this.prisma.user.update({ where: { id }, data });
+    await this.findById(id);
+    return this.repo.update(id, data);
   }
 
-  async findByProviderAccount(provider: string, providerAccountId: string): Promise<User | null> {
-    return this.prisma.user.findFirst({ where: { provider, providerAccountId } });
+  async updateSelf(
+    requesterId: string,
+    targetId: string,
+    dto: UpdateUserDto,
+    requesterRole: string,
+  ): Promise<User> {
+    if (requesterId !== targetId && requesterRole !== "ADMIN") {
+      throw new ForbiddenException("Cannot modify another user's profile");
+    }
+    await this.findById(targetId);
+    return this.repo.update(targetId, dto);
+  }
+
+  async remove(id: string): Promise<void> {
+    await this.findById(id);
+    await this.repo.delete(id);
   }
 }

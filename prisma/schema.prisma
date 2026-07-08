@@ -15,6 +15,7 @@ model User {
   role      Role     @default(USER)
   provider          String?
   providerAccountId String?
+  avatarUrl         String?
   createdAt         DateTime @default(now())
   updatedAt DateTime @updatedAt
 

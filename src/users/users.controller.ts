@@ -1,23 +1,32 @@
 import {
-  Controller,
-  Get,
-  Patch,
-  Delete,
-  Param,
+  BadRequestException,
   Body,
-  Query,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
   HttpCode,
   HttpStatus,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
 import {
-  ApiTags,
-  ApiOperation,
-  ApiOkResponse,
+  ApiBody,
+  ApiConsumes,
   ApiNoContentResponse,
+  ApiOkResponse,
+  ApiOperation,
   ApiParam,
+  ApiTags,
 } from "@nestjs/swagger";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { UsersService } from "./users.service";
+import { StorageService } from "@/storage/storage.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserResponseDto } from "./dto/user-response.dto";
 import { ListUsersQueryDto } from "./dto/list-users-query.dto";
@@ -28,19 +37,25 @@ import { CurrentUser } from "@/common/decorators/current-user.decorator";
 import { ApiJwtAuth } from "@/common/swagger/api-jwt-auth.decorator";
 import {
   ApiCommonErrors,
-  ApiNotFound,
   ApiForbiddenRole,
+  ApiNotFound,
 } from "@/common/swagger/api-error-responses.decorator";
 import { ApiEnvelopeOf } from "@/common/dto/response-envelope.dto";
 import { CursorPageOf } from "@/common/pagination";
 import type { AuthenticatedUser } from "@/auth/strategies/jwt.strategy";
+
+const AVATAR_ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const AVATAR_MAX_SIZE_BYTES = 5 * 1024 * 1024;
 
 @ApiTags("users")
 @ApiJwtAuth()
 @UseGuards(JwtAuthGuard)
 @Controller("users")
 export class UsersController {
-  constructor(private readonly users: UsersService) {}
+  constructor(
+    private readonly users: UsersService,
+    private readonly storage: StorageService,
+  ) {}
 
   @Get()
   @UseGuards(RolesGuard)
@@ -79,6 +94,55 @@ export class UsersController {
     @CurrentUser() requester: AuthenticatedUser,
   ) {
     return this.users.updateSelf(requester.id, id, dto, requester.role);
+  }
+
+  @Post(":id/avatar")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: { fileSize: AVATAR_MAX_SIZE_BYTES },
+      fileFilter: (_req, file, cb) => {
+        if (AVATAR_ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(
+            new BadRequestException(
+              `Invalid file type. Allowed types: ${AVATAR_ALLOWED_MIME_TYPES.join(", ")}`,
+            ),
+            false,
+          );
+        }
+      },
+    }),
+  )
+  @ApiOperation({ summary: "Upload user avatar to S3", description: "Replaces the user's avatar with the uploaded image. Max 5 MB. Accepted types: JPEG, PNG, WebP, GIF." })
+  @ApiConsumes("multipart/form-data")
+  @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
+  @ApiBody({
+    schema: {
+      type: "object",
+      required: ["file"],
+      properties: {
+        file: { type: "string", format: "binary", description: "Image file (max 5 MB)" },
+      },
+    },
+  })
+  @ApiOkResponse({ type: ApiEnvelopeOf(UserResponseDto) })
+  @ApiNotFound("User")
+  @ApiForbiddenRole()
+  @ApiCommonErrors()
+  async uploadAvatar(
+    @Param("id") id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() requester: AuthenticatedUser,
+  ) {
+    if (!file) throw new BadRequestException("No file uploaded");
+    if (requester.id !== id && requester.role !== "ADMIN") {
+      throw new ForbiddenException("Cannot modify another user's avatar");
+    }
+    const ext = (file.originalname.split(".").pop() ?? "bin").toLowerCase();
+    const key = `avatars/${id}/${Date.now()}.${ext}`;
+    await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
+    return this.users.updateAvatar(id, key);
   }
 
   @Delete(":id")

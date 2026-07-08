@@ -12,6 +12,11 @@ export const envSchema = z.object({
   GOOGLE_CALLBACK_URL: z.string().optional(),
   ALLOWED_ORIGINS: z.string().default("*"),
   REDIS_URL: z.string().optional(),
+  S3_ENDPOINT: z.string().url().optional(),
+  S3_REGION: z.string().default("us-east-1"),
+  S3_BUCKET: z.string().optional(),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

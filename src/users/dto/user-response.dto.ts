@@ -17,6 +17,9 @@ export class UserResponseDto {
   @ApiPropertyOptional({ example: "google", nullable: true })
   provider!: string | null;
 
+  @ApiPropertyOptional({ example: "avatars/user-1/1234567890.jpg", nullable: true })
+  avatarUrl!: string | null;
+
   @ApiProperty({ example: "2024-01-01T00:00:00.000Z" })
   createdAt!: Date;
 

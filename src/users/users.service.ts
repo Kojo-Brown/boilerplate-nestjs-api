@@ -61,6 +61,11 @@ export class UsersService {
     return this.repo.update(targetId, dto);
   }
 
+  async updateAvatar(id: string, avatarUrl: string): Promise<User> {
+    await this.findById(id);
+    return this.repo.update(id, { avatarUrl });
+  }
+
   async remove(id: string): Promise<void> {
     await this.findById(id);
     await this.repo.delete(id);

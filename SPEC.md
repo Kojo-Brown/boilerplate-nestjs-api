@@ -27,7 +27,7 @@
 - [x] User preferences JSON column with typed Prisma extension
 
 ## Phase 5 — Resilience
-- [ ] Health check endpoint (Terminus: DB, memory, disk)
+- [x] Health check endpoint (Terminus: DB, memory, disk)
 - [ ] Redis caching layer with `@CacheKey` + TTL decorators
 - [ ] Background jobs with BullMQ (email queue example)
 - [ ] Graceful shutdown with `enableShutdownHooks()`

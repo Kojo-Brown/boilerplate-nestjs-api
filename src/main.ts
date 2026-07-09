@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { NestFactory } from "@nestjs/core";
+import { NestFactory, Reflector } from "@nestjs/core";
 import { ValidationPipe, VersioningType } from "@nestjs/common";
 import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
@@ -25,8 +25,9 @@ async function bootstrap() {
     }),
   );
 
+  const reflector = app.get(Reflector);
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.useGlobalInterceptors(new LoggingInterceptor(), new ResponseEnvelopeInterceptor());
+  app.useGlobalInterceptors(new LoggingInterceptor(), new ResponseEnvelopeInterceptor(reflector));
 
   app.enableCors({
     origin: config.get("ALLOWED_ORIGINS", "*"),

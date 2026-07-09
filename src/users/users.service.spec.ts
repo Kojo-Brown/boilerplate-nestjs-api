@@ -4,6 +4,8 @@ import { Role } from "@prisma/client";
 import { UsersService } from "./users.service";
 import { UsersRepository } from "./users.repository";
 import type { User } from "@prisma/client";
+import type { UserPreferences } from "./types/user-preferences";
+import { DEFAULT_USER_PREFERENCES } from "./types/user-preferences";
 
 const mockUser: User = {
   id: "user-1",
@@ -13,6 +15,8 @@ const mockUser: User = {
   role: Role.USER,
   provider: null,
   providerAccountId: null,
+  avatarUrl: null,
+  preferences: null,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-01"),
 };
@@ -25,6 +29,8 @@ const mockRepo = {
   create: jest.fn(),
   update: jest.fn(),
   delete: jest.fn(),
+  getPreferences: jest.fn(),
+  setPreferences: jest.fn(),
 };
 
 describe("UsersService", () => {
@@ -134,6 +140,74 @@ describe("UsersService", () => {
     it("throws NotFoundException for missing user", async () => {
       mockRepo.findById.mockResolvedValue(null);
       await expect(service.remove("missing")).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("getPreferences", () => {
+    const prefs: UserPreferences = { ...DEFAULT_USER_PREFERENCES, theme: "dark" };
+
+    it("returns preferences for own user", async () => {
+      mockRepo.findById.mockResolvedValue(mockUser);
+      mockRepo.getPreferences.mockResolvedValue(prefs);
+      const result = await service.getPreferences("user-1", "user-1", "USER");
+      expect(result).toEqual(prefs);
+      expect(mockRepo.getPreferences).toHaveBeenCalledWith("user-1");
+    });
+
+    it("allows ADMIN to read any user's preferences", async () => {
+      mockRepo.findById.mockResolvedValue(mockUser);
+      mockRepo.getPreferences.mockResolvedValue(prefs);
+      const result = await service.getPreferences("user-1", "admin-99", "ADMIN");
+      expect(result).toEqual(prefs);
+    });
+
+    it("throws ForbiddenException when non-admin reads another user's preferences", async () => {
+      await expect(service.getPreferences("user-1", "user-2", "USER")).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("throws NotFoundException for missing user", async () => {
+      mockRepo.findById.mockResolvedValue(null);
+      await expect(service.getPreferences("missing", "missing", "USER")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe("updatePreferences", () => {
+    const updatedPrefs: UserPreferences = { ...DEFAULT_USER_PREFERENCES, theme: "light" };
+
+    it("updates preferences for own user", async () => {
+      mockRepo.findById.mockResolvedValue(mockUser);
+      mockRepo.setPreferences.mockResolvedValue(updatedPrefs);
+      const result = await service.updatePreferences("user-1", "user-1", "USER", {
+        theme: "light",
+      });
+      expect(result).toEqual(updatedPrefs);
+      expect(mockRepo.setPreferences).toHaveBeenCalledWith("user-1", { theme: "light" });
+    });
+
+    it("allows ADMIN to update any user's preferences", async () => {
+      mockRepo.findById.mockResolvedValue(mockUser);
+      mockRepo.setPreferences.mockResolvedValue(updatedPrefs);
+      const result = await service.updatePreferences("user-1", "admin-99", "ADMIN", {
+        theme: "light",
+      });
+      expect(result).toEqual(updatedPrefs);
+    });
+
+    it("throws ForbiddenException when non-admin updates another user's preferences", async () => {
+      await expect(
+        service.updatePreferences("user-1", "user-2", "USER", { theme: "dark" }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it("throws NotFoundException for missing user", async () => {
+      mockRepo.findById.mockResolvedValue(null);
+      await expect(
+        service.updatePreferences("missing", "missing", "USER", {}),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

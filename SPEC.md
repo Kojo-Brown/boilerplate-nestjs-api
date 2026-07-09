@@ -24,7 +24,7 @@
 ## Phase 4 — Users Module
 - [x] UsersModule: CRUD endpoints, DTOs, Prisma repo pattern
 - [x] File upload (S3-compatible) with Multer + presigned URLs
-- [ ] User preferences JSON column with typed Prisma extension
+- [x] User preferences JSON column with typed Prisma extension
 
 ## Phase 5 — Resilience
 - [ ] Health check endpoint (Terminus: DB, memory, disk)

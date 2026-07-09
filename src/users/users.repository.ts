@@ -1,10 +1,15 @@
 import { Injectable } from "@nestjs/common";
-import { PrismaService } from "@/common/prisma/prisma.service";
+import { PrismaService, ExtendedPrismaClient } from "@/common/prisma/prisma.service";
 import type { Prisma, User } from "@prisma/client";
+import type { UserPreferences } from "@/users/types/user-preferences";
 
 @Injectable()
 export class UsersRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly extended: ExtendedPrismaClient;
+
+  constructor(private readonly prisma: PrismaService) {
+    this.extended = prisma.withExtensions();
+  }
 
   findById(id: string): Promise<User | null> {
     return this.prisma.user.findUnique({ where: { id } });
@@ -45,5 +50,13 @@ export class UsersRepository {
 
   delete(id: string): Promise<User> {
     return this.prisma.user.delete({ where: { id } });
+  }
+
+  getPreferences(id: string): Promise<UserPreferences> {
+    return this.extended.user.getPreferences(id);
+  }
+
+  setPreferences(id: string, patch: Partial<UserPreferences>): Promise<UserPreferences> {
+    return this.extended.user.setPreferences(id, patch);
   }
 }

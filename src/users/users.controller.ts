@@ -29,6 +29,8 @@ import { UsersService } from "./users.service";
 import { StorageService } from "@/storage/storage.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserResponseDto } from "./dto/user-response.dto";
+import { UserPreferencesDto } from "./dto/user-preferences.dto";
+import { UpdateUserPreferencesDto } from "./dto/update-user-preferences.dto";
 import { ListUsersQueryDto } from "./dto/list-users-query.dto";
 import { JwtAuthGuard } from "@/auth/guards/jwt-auth.guard";
 import { RolesGuard } from "@/auth/guards/roles.guard";
@@ -157,5 +159,37 @@ export class UsersController {
   @ApiCommonErrors()
   remove(@Param("id") id: string) {
     return this.users.remove(id);
+  }
+
+  @Get(":id/preferences")
+  @ApiOperation({
+    summary: "Get user preferences",
+    description: "Returns the typed preferences for a user. Defaults are applied to unset fields. Users may only read their own preferences; admins may read any.",
+  })
+  @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
+  @ApiOkResponse({ type: ApiEnvelopeOf(UserPreferencesDto) })
+  @ApiNotFound("User")
+  @ApiForbiddenRole()
+  @ApiCommonErrors()
+  getPreferences(@Param("id") id: string, @CurrentUser() requester: AuthenticatedUser) {
+    return this.users.getPreferences(id, requester.id, requester.role);
+  }
+
+  @Patch(":id/preferences")
+  @ApiOperation({
+    summary: "Update user preferences",
+    description: "Merges the provided fields into the user's stored preferences. Users may only update their own preferences; admins may update any.",
+  })
+  @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
+  @ApiOkResponse({ type: ApiEnvelopeOf(UserPreferencesDto) })
+  @ApiNotFound("User")
+  @ApiForbiddenRole()
+  @ApiCommonErrors()
+  updatePreferences(
+    @Param("id") id: string,
+    @Body() dto: UpdateUserPreferencesDto,
+    @CurrentUser() requester: AuthenticatedUser,
+  ) {
+    return this.users.updatePreferences(id, requester.id, requester.role, dto);
   }
 }

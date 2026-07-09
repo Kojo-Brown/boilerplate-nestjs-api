@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Role } from "@prisma/client";
+import { UserPreferencesDto } from "./user-preferences.dto";
 
 export class UserResponseDto {
   @ApiProperty({ example: "clxxxxxxxxxxxxxxxx" })
@@ -19,6 +20,9 @@ export class UserResponseDto {
 
   @ApiPropertyOptional({ example: "avatars/user-1/1234567890.jpg", nullable: true })
   avatarUrl!: string | null;
+
+  @ApiPropertyOptional({ type: UserPreferencesDto, nullable: true })
+  preferences!: UserPreferencesDto | null;
 
   @ApiProperty({ example: "2024-01-01T00:00:00.000Z" })
   createdAt!: Date;

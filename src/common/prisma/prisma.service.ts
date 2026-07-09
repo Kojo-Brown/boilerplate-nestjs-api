@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
+import { preferencesExtension } from "./prisma.extensions";
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -10,4 +11,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   async onModuleDestroy() {
     await this.$disconnect();
   }
+
+  withExtensions() {
+    return this.$extends(preferencesExtension);
+  }
 }
+
+export type ExtendedPrismaClient = ReturnType<PrismaService["withExtensions"]>;

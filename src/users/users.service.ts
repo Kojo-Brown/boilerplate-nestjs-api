@@ -5,6 +5,8 @@ import type { CursorPage } from "@/common/pagination";
 import type { User } from "@prisma/client";
 import type { UpdateUserDto } from "./dto/update-user.dto";
 import type { ListUsersQueryDto } from "./dto/list-users-query.dto";
+import type { UserPreferences } from "./types/user-preferences";
+import type { UpdateUserPreferencesDto } from "./dto/update-user-preferences.dto";
 
 @Injectable()
 export class UsersService {
@@ -69,5 +71,30 @@ export class UsersService {
   async remove(id: string): Promise<void> {
     await this.findById(id);
     await this.repo.delete(id);
+  }
+
+  async getPreferences(
+    userId: string,
+    requesterId: string,
+    requesterRole: string,
+  ): Promise<UserPreferences> {
+    if (requesterId !== userId && requesterRole !== "ADMIN") {
+      throw new ForbiddenException("Cannot read another user's preferences");
+    }
+    await this.findById(userId);
+    return this.repo.getPreferences(userId);
+  }
+
+  async updatePreferences(
+    userId: string,
+    requesterId: string,
+    requesterRole: string,
+    dto: UpdateUserPreferencesDto,
+  ): Promise<UserPreferences> {
+    if (requesterId !== userId && requesterRole !== "ADMIN") {
+      throw new ForbiddenException("Cannot modify another user's preferences");
+    }
+    await this.findById(userId);
+    return this.repo.setPreferences(userId, dto);
   }
 }

@@ -1,10 +1,13 @@
 import { ResponseEnvelopeInterceptor } from "./response-envelope.interceptor";
 import type { ExecutionContext, CallHandler } from "@nestjs/common";
 import { HttpStatus } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
 import { of, firstValueFrom } from "rxjs";
 
 function makeContext(statusCode: number): ExecutionContext {
   return {
+    getHandler: () => ({}),
+    getClass: () => ({}),
     switchToHttp: () => ({
       getResponse: () => ({ statusCode }),
     }),
@@ -19,9 +22,11 @@ type Envelope = { success: true; data: unknown; meta: { timestamp: string; versi
 
 describe("ResponseEnvelopeInterceptor", () => {
   let interceptor: ResponseEnvelopeInterceptor<unknown>;
+  let reflector: Reflector;
 
   beforeEach(() => {
-    interceptor = new ResponseEnvelopeInterceptor();
+    reflector = { getAllAndOverride: jest.fn().mockReturnValue(false) } as unknown as Reflector;
+    interceptor = new ResponseEnvelopeInterceptor(reflector);
   });
 
   it("wraps a 200 response in success envelope", async () => {

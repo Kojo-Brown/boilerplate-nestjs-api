@@ -6,6 +6,7 @@ import { PrismaModule } from "./common/prisma/prisma.module";
 import { UsersModule } from "./users/users.module";
 import { AuthModule } from "./auth/auth.module";
 import { StorageModule } from "./storage/storage.module";
+import { HealthModule } from "./health/health.module";
 import { ProxyAwareThrottlerGuard } from "./common/guards/throttler.guard";
 import { envSchema } from "./config/env.schema";
 
@@ -20,6 +21,7 @@ import { envSchema } from "./config/env.schema";
     AuthModule,
     UsersModule,
     StorageModule,
+    HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ProxyAwareThrottlerGuard }],
 })

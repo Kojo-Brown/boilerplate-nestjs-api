@@ -1,7 +1,9 @@
 import { Injectable, NestInterceptor, ExecutionContext, CallHandler, HttpStatus } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
 import { Observable } from "rxjs";
 import { map } from "rxjs/operators";
 import type { Response } from "express";
+import { SKIP_RESPONSE_ENVELOPE_KEY } from "@/common/decorators/skip-response-envelope.decorator";
 
 export interface ResponseMeta {
   timestamp: string;
@@ -15,8 +17,19 @@ export interface ResponseEnvelope<T> {
 }
 
 @Injectable()
-export class ResponseEnvelopeInterceptor<T> implements NestInterceptor<T, ResponseEnvelope<T> | undefined> {
-  intercept(context: ExecutionContext, next: CallHandler<T>): Observable<ResponseEnvelope<T> | undefined> {
+export class ResponseEnvelopeInterceptor<T> implements NestInterceptor<T, ResponseEnvelope<T> | T | undefined> {
+  constructor(private readonly reflector: Reflector) {}
+
+  intercept(context: ExecutionContext, next: CallHandler<T>): Observable<ResponseEnvelope<T> | T | undefined> {
+    const skip = this.reflector.getAllAndOverride<boolean>(SKIP_RESPONSE_ENVELOPE_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    if (skip) {
+      return next.handle();
+    }
+
     const res = context.switchToHttp().getResponse<Response>();
 
     return next.handle().pipe(

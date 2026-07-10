@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { UsersRepository } from "./users.repository";
+import { CacheService } from "@/common/cache";
 import { buildCursorPage, decodeCursor } from "@/common/pagination";
 import type { CursorPage } from "@/common/pagination";
 import type { User } from "@prisma/client";
@@ -8,9 +9,15 @@ import type { ListUsersQueryDto } from "./dto/list-users-query.dto";
 import type { UserPreferences } from "./types/user-preferences";
 import type { UpdateUserPreferencesDto } from "./dto/update-user-preferences.dto";
 
+export const USERS_LIST_CACHE_KEY = "v1:users:list";
+export const userCacheKey = (id: string) => `v1:users:${id}`;
+
 @Injectable()
 export class UsersService {
-  constructor(private readonly repo: UsersRepository) {}
+  constructor(
+    private readonly repo: UsersRepository,
+    private readonly cache: CacheService,
+  ) {}
 
   async findById(id: string): Promise<User> {
     const user = await this.repo.findById(id);
@@ -47,7 +54,9 @@ export class UsersService {
     data: { name?: string; provider?: string; providerAccountId?: string },
   ): Promise<User> {
     await this.findById(id);
-    return this.repo.update(id, data);
+    const updated = await this.repo.update(id, data);
+    await this.invalidateUserCache(id);
+    return updated;
   }
 
   async updateSelf(
@@ -60,17 +69,22 @@ export class UsersService {
       throw new ForbiddenException("Cannot modify another user's profile");
     }
     await this.findById(targetId);
-    return this.repo.update(targetId, dto);
+    const updated = await this.repo.update(targetId, dto);
+    await this.invalidateUserCache(targetId);
+    return updated;
   }
 
   async updateAvatar(id: string, avatarUrl: string): Promise<User> {
     await this.findById(id);
-    return this.repo.update(id, { avatarUrl });
+    const updated = await this.repo.update(id, { avatarUrl });
+    await this.invalidateUserCache(id);
+    return updated;
   }
 
   async remove(id: string): Promise<void> {
     await this.findById(id);
     await this.repo.delete(id);
+    await this.invalidateUserCache(id);
   }
 
   async getPreferences(
@@ -95,6 +109,12 @@ export class UsersService {
       throw new ForbiddenException("Cannot modify another user's preferences");
     }
     await this.findById(userId);
-    return this.repo.setPreferences(userId, dto);
+    const prefs = await this.repo.setPreferences(userId, dto);
+    await this.cache.del(`${userCacheKey(userId)}:prefs`);
+    return prefs;
+  }
+
+  private invalidateUserCache(id: string): Promise<void> {
+    return this.cache.delMany([userCacheKey(id), USERS_LIST_CACHE_KEY]);
   }
 }

@@ -28,7 +28,7 @@
 
 ## Phase 5 — Resilience
 - [x] Health check endpoint (Terminus: DB, memory, disk)
-- [ ] Redis caching layer with `@CacheKey` + TTL decorators
+- [x] Redis caching layer with `@CacheKey` + TTL decorators
 - [ ] Background jobs with BullMQ (email queue example)
 - [ ] Graceful shutdown with `enableShutdownHooks()`
 

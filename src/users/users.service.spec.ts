@@ -3,6 +3,7 @@ import { ForbiddenException, NotFoundException } from "@nestjs/common";
 import { Role } from "@prisma/client";
 import { UsersService } from "./users.service";
 import { UsersRepository } from "./users.repository";
+import { CacheService } from "@/common/cache";
 import type { User } from "@prisma/client";
 import type { UserPreferences } from "./types/user-preferences";
 import { DEFAULT_USER_PREFERENCES } from "./types/user-preferences";
@@ -33,6 +34,14 @@ const mockRepo = {
   setPreferences: jest.fn(),
 };
 
+const mockCache = {
+  get: jest.fn(),
+  set: jest.fn(),
+  del: jest.fn().mockResolvedValue(undefined),
+  delMany: jest.fn().mockResolvedValue(undefined),
+  reset: jest.fn(),
+};
+
 describe("UsersService", () => {
   let service: UsersService;
 
@@ -43,6 +52,7 @@ describe("UsersService", () => {
       providers: [
         UsersService,
         { provide: UsersRepository, useValue: mockRepo },
+        { provide: CacheService, useValue: mockCache },
       ],
     }).compile();
 
@@ -93,12 +103,15 @@ describe("UsersService", () => {
   });
 
   describe("update", () => {
-    it("calls findById then repo.update", async () => {
+    it("calls findById then repo.update and invalidates cache", async () => {
       mockRepo.findById.mockResolvedValue(mockUser);
       mockRepo.update.mockResolvedValue({ ...mockUser, name: "Updated" });
       const result = await service.update("user-1", { name: "Updated" });
       expect(result.name).toBe("Updated");
       expect(mockRepo.update).toHaveBeenCalledWith("user-1", { name: "Updated" });
+      expect(mockCache.delMany).toHaveBeenCalledWith(
+        expect.arrayContaining(["v1:users:user-1", "v1:users:list"]),
+      );
     });
 
     it("throws NotFoundException for missing user", async () => {
@@ -130,11 +143,14 @@ describe("UsersService", () => {
   });
 
   describe("remove", () => {
-    it("deletes the user when found", async () => {
+    it("deletes the user and invalidates cache", async () => {
       mockRepo.findById.mockResolvedValue(mockUser);
       mockRepo.delete.mockResolvedValue(mockUser);
       await service.remove("user-1");
       expect(mockRepo.delete).toHaveBeenCalledWith("user-1");
+      expect(mockCache.delMany).toHaveBeenCalledWith(
+        expect.arrayContaining(["v1:users:user-1", "v1:users:list"]),
+      );
     });
 
     it("throws NotFoundException for missing user", async () => {

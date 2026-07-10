@@ -25,6 +25,8 @@ import {
   ApiTags,
 } from "@nestjs/swagger";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { CacheKey, CacheTTL, HttpCacheInterceptor } from "@/common/cache";
+import { USERS_LIST_CACHE_KEY } from "./users.service";
 import { UsersService } from "./users.service";
 import { StorageService } from "@/storage/storage.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
@@ -62,6 +64,9 @@ export class UsersController {
   @Get()
   @UseGuards(RolesGuard)
   @Roles("ADMIN")
+  @UseInterceptors(HttpCacheInterceptor)
+  @CacheKey(USERS_LIST_CACHE_KEY)
+  @CacheTTL(60_000)
   @ApiOperation({ summary: "List users (admin)", description: "Cursor-paginated list of all users. Admin only." })
   @ApiOkResponse({ type: CursorPageOf(UserResponseDto) })
   @ApiForbiddenRole()
@@ -71,6 +76,8 @@ export class UsersController {
   }
 
   @Get(":id")
+  @UseInterceptors(HttpCacheInterceptor)
+  @CacheTTL(30_000)
   @ApiOperation({ summary: "Get user by ID" })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserResponseDto) })

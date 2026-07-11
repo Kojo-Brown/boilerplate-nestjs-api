@@ -24,6 +24,8 @@ const mockUser: User = {
   role: Role.USER,
   provider: null,
   providerAccountId: null,
+  avatarUrl: null,
+  preferences: null,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-01"),
 };

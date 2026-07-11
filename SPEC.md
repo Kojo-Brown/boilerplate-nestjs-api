@@ -30,7 +30,7 @@
 - [x] Health check endpoint (Terminus: DB, memory, disk)
 - [x] Redis caching layer with `@CacheKey` + TTL decorators
 - [x] Background jobs with BullMQ (email queue example)
-- [ ] Graceful shutdown with `enableShutdownHooks()`
+- [x] Graceful shutdown with `enableShutdownHooks()`
 
 ## Phase 6 — Testing
 - [ ] Jest unit tests for AuthService, UsersService with Prisma mock

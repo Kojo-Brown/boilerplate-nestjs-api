@@ -33,7 +33,7 @@
 - [x] Graceful shutdown with `enableShutdownHooks()`
 
 ## Phase 6 — Testing
-- [ ] Jest unit tests for AuthService, UsersService with Prisma mock
+- [x] Jest unit tests for AuthService, UsersService with Prisma mock
 - [ ] E2E tests with Supertest: auth flows, CRUD, error cases
 - [ ] Factory helpers for test data (Prisma + Faker)
 - [ ] Coverage thresholds: 80% lines/functions

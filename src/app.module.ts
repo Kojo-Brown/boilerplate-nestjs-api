@@ -9,6 +9,7 @@ import { AuthModule } from "./auth/auth.module";
 import { StorageModule } from "./storage/storage.module";
 import { HealthModule } from "./health/health.module";
 import { QueueModule } from "./queue/queue.module";
+import { ShutdownModule } from "./common/shutdown/shutdown.module";
 import { ProxyAwareThrottlerGuard } from "./common/guards/throttler.guard";
 import { envSchema } from "./config/env.schema";
 
@@ -26,6 +27,7 @@ import { envSchema } from "./config/env.schema";
     StorageModule,
     HealthModule,
     QueueModule,
+    ShutdownModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ProxyAwareThrottlerGuard }],
 })

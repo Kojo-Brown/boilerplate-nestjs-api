@@ -29,14 +29,14 @@ describe("Users (e2e)", () => {
     // Register a regular user
     const userRes = await request(app.getHttpServer())
       .post("/v1/auth/register")
-      .send({ email: "user@example.com", password: "P@ssw0rd123!", name: "Regular User" });
+      .send({ email: "user@example.com", password: process.env["E2E_TEST_PASSWORD"]!, name: "Regular User" });
     userToken = userRes.body.data.accessToken as string;
     userId = [...prisma._users.values()].find((u) => u.email === "user@example.com")?.id ?? "";
 
     // Register admin (role starts as USER after register)
     await request(app.getHttpServer())
       .post("/v1/auth/register")
-      .send({ email: "admin@example.com", password: "P@ssw0rd123!", name: "Admin User" });
+      .send({ email: "admin@example.com", password: process.env["E2E_TEST_PASSWORD"]!, name: "Admin User" });
     adminId = [...prisma._users.values()].find((u) => u.email === "admin@example.com")?.id ?? "";
 
     // Promote to ADMIN in the in-memory store
@@ -45,7 +45,7 @@ describe("Users (e2e)", () => {
     // Re-login so the issued JWT carries the ADMIN role
     const adminLogin = await request(app.getHttpServer())
       .post("/v1/auth/login")
-      .send({ email: "admin@example.com", password: "P@ssw0rd123!" });
+      .send({ email: "admin@example.com", password: process.env["E2E_TEST_PASSWORD"]! });
     adminToken = adminLogin.body.data.accessToken as string;
   });
 

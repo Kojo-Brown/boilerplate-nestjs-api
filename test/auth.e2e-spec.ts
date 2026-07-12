@@ -22,7 +22,8 @@ describe("Auth (e2e)", () => {
   });
 
   const TEST_EMAIL = "e2e@example.com";
-  const TEST_PASSWORD = "P@ssw0rd123!";
+  // Credential value is set in test/helpers/setup-env.ts — not a real secret.
+  const TEST_PASSWORD = process.env["E2E_TEST_PASSWORD"]!;
   const TEST_NAME = "E2E User";
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ describe("Auth (e2e)", () => {
     it("returns 401 for a wrong password", async () => {
       const res = await request(app.getHttpServer())
         .post("/v1/auth/login")
-        .send({ email: TEST_EMAIL, password: "WrongP@ssw0rd!" })
+        .send({ email: TEST_EMAIL, password: process.env["E2E_WRONG_PASSWORD"]! })
         .expect(401);
 
       expect(res.body.statusCode).toBe(401);

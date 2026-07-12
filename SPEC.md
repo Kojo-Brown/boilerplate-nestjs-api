@@ -34,7 +34,7 @@
 
 ## Phase 6 — Testing
 - [x] Jest unit tests for AuthService, UsersService with Prisma mock
-- [ ] E2E tests with Supertest: auth flows, CRUD, error cases
+- [x] E2E tests with Supertest: auth flows, CRUD, error cases
 - [ ] Factory helpers for test data (Prisma + Faker)
 - [ ] Coverage thresholds: 80% lines/functions
 

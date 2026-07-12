@@ -36,7 +36,7 @@
 - [x] Jest unit tests for AuthService, UsersService with Prisma mock
 - [x] E2E tests with Supertest: auth flows, CRUD, error cases
 - [x] Factory helpers for test data (Prisma + Faker)
-- [ ] Coverage thresholds: 80% lines/functions
+- [x] Coverage thresholds: 80% lines/functions
 
 ## Phase 7 — DevOps
 - [ ] GitHub Actions: lint → typecheck → test → build → Docker push

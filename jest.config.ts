@@ -11,8 +11,26 @@ const config: Config = {
     "^@/(.*)$": "<rootDir>/$1",
   },
   testEnvironment: "node",
-  collectCoverageFrom: ["**/*.ts", "!**/*.spec.ts", "!main.ts"],
+  collectCoverageFrom: [
+    "**/*.ts",
+    "!**/*.spec.ts",
+    "!main.ts",
+    "!**/*.module.ts",
+    "!**/dto/**",
+    "!**/index.ts",
+    "!**/*.constants.ts",
+    "!**/*.types.ts",
+    "!**/*.decorator.ts",
+    "!**/config/**",
+    "!**/prisma.service.ts",
+  ],
   coverageDirectory: "../coverage",
+  coverageThreshold: {
+    global: {
+      lines: 80,
+      functions: 80,
+    },
+  },
 };
 
 export default config;

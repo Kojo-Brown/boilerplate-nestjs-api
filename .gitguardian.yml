@@ -1,6 +1,7 @@
 version: 2
-# Exclude e2e test helpers that intentionally contain placeholder credentials.
+# Exclude e2e test helpers and CI workflow templates that intentionally contain placeholder credentials.
 ignore-paths:
   - test/helpers/setup-env.ts
   - test/auth.e2e-spec.ts
   - test/users.e2e-spec.ts
+  - workflow-templates/

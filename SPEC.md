@@ -40,6 +40,6 @@
 
 ## Phase 7 — DevOps
 - [x] GitHub Actions: lint → typecheck → test → build → Docker push
-- [ ] Multi-stage Dockerfile (builder + runner, non-root user)
+- [x] Multi-stage Dockerfile (builder + runner, non-root user)
 - [ ] docker-compose.yml with postgres + redis + api
 - [ ] Helm chart skeleton for Kubernetes deploy

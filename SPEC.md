@@ -39,7 +39,7 @@
 - [x] Coverage thresholds: 80% lines/functions
 
 ## Phase 7 — DevOps
-- [ ] GitHub Actions: lint → typecheck → test → build → Docker push
+- [x] GitHub Actions: lint → typecheck → test → build → Docker push
 - [ ] Multi-stage Dockerfile (builder + runner, non-root user)
 - [ ] docker-compose.yml with postgres + redis + api
 - [ ] Helm chart skeleton for Kubernetes deploy

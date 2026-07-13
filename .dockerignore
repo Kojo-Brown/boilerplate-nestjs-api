@@ -1,0 +1,35 @@
+# Version control
+.git
+.gitignore
+
+# Dependencies (installed fresh in Docker)
+node_modules
+.pnpm-store
+
+# Build output (rebuilt inside Docker)
+dist
+
+# Test artifacts
+coverage
+test-results
+
+# Local env files (never bake secrets into the image)
+.env
+.env.*
+!.env.example
+
+# Editor & OS
+.DS_Store
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation
+*.md
+!README.md
+
+# Docker files themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore

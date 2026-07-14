@@ -42,4 +42,4 @@
 - [x] GitHub Actions: lint → typecheck → test → build → Docker push
 - [x] Multi-stage Dockerfile (builder + runner, non-root user)
 - [x] docker-compose.yml with postgres + redis + api
-- [ ] Helm chart skeleton for Kubernetes deploy
+- [x] Helm chart skeleton for Kubernetes deploy

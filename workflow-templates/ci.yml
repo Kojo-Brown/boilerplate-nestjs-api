@@ -71,7 +71,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY || 'test' }}
       S3_BUCKET: ${{ secrets.CI_S3_BUCKET || 'test-bucket' }}
       GOOGLE_CLIENT_ID: ${{ secrets.CI_GOOGLE_CLIENT_ID || 'test-client-id' }}
-      GOOGLE_CLIENT_SECRET: ${{ secrets.CI_GOOGLE_CLIENT_SECRET || 'test-client-secret' }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.CI_GOOGLE_CLIENT_SECRET || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Generate ephemeral CI secrets

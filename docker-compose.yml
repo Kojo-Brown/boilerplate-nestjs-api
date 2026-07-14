@@ -1,19 +1,29 @@
 version: "3.9"
 
+# ─── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  app-network:
+    driver: bridge
+
+# ─── Services ──────────────────────────────────────────────────────────────────
 services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    networks:
+      - app-network
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: app_db
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-app_db}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d app_db"]
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-app_db}"
       interval: 5s
       timeout: 5s
       retries: 10
@@ -22,8 +32,18 @@ services:
   redis:
     image: redis:8-alpine
     restart: unless-stopped
+    networks:
+      - app-network
+    # AOF persistence + sane memory cap so the container never OOMs
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,32 +57,47 @@ services:
       dockerfile: Dockerfile
       target: runner
     restart: unless-stopped
+    networks:
+      - app-network
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    env_file:
-      - .env.example
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/app_db
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-4000}
+      # Resolved to the internal service hostname — not localhost
+      DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-app_db}
       REDIS_URL: redis://redis:6379
-      PORT: "4000"
-      NODE_ENV: production
+      # JWT — override JWT_SECRET in production; default is only for local dev
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-min-32-chars!!}
+      JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
+      # OAuth (optional — leave empty to disable Google login)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL:-http://localhost:4000/v1/auth/google/callback}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
     ports:
-      - "4000:4000"
+      - "${PORT:-4000}:4000"
     healthcheck:
       test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "require('http').get('http://localhost:4000/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
-        ]
+        - "CMD"
+        - "node"
+        - "-e"
+        - >-
+          require('http').get(
+            'http://localhost:4000/v1/health',
+            r => process.exit(r.statusCode === 200 ? 0 : 1)
+          ).on('error', () => process.exit(1))
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
 
+# ─── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   pgdata:
+  redisdata:

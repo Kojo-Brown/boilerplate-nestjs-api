@@ -1,4 +1,4 @@
-# boilerplate-nestjs-api
+# boilerplate-nestjs-api.
 
 > NestJS 11 · TypeScript 6 · Prisma 7 · PostgreSQL · JWT · OAuth 2.0 · Argon2 · Swagger
 

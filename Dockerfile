@@ -10,13 +10,7 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-# ─── Stage 3: Production deps only ────────────────────────────────────────────
-FROM base AS prod-deps
-WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --prod
-
-# ─── Stage 4: Build ───────────────────────────────────────────────────────────
+# ─── Stage 3: Build ───────────────────────────────────────────────────────────
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
@@ -24,8 +18,13 @@ COPY . .
 # Generate Prisma client before compiling TypeScript
 RUN pnpm exec prisma generate
 RUN pnpm build
+# Drop devDependencies in place. Prisma 7 writes the generated client into the
+# package's own directory inside pnpm's store, so it cannot be cherry-picked from
+# a separately-installed production tree — pruning here keeps the generated
+# client and the pnpm symlink layout consistent with each other.
+RUN pnpm prune --prod
 
-# ─── Stage 5: Runner (minimal, non-root) ──────────────────────────────────────
+# ─── Stage 4: Runner (minimal, non-root) ──────────────────────────────────────
 FROM node:22-alpine AS runner
 ENV NODE_ENV=production
 
@@ -34,17 +33,15 @@ RUN addgroup --system --gid 1001 nodejs && \
 
 WORKDIR /app
 
-# Production node_modules (no devDependencies)
-COPY --from=prod-deps --chown=nestjs:nodejs /app/node_modules ./node_modules
-# Overwrite with generated Prisma client from builder
-COPY --from=builder --chown=nestjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=nestjs:nodejs /app/node_modules/@prisma/client ./node_modules/@prisma/client
+# Production node_modules, including the generated Prisma client
+COPY --from=builder --chown=nestjs:nodejs /app/node_modules ./node_modules
 
 # Compiled application
 COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist
 
 # Prisma schema + migrations (needed for prisma migrate deploy at startup)
 COPY --from=builder --chown=nestjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nestjs:nodejs /app/prisma.config.ts ./prisma.config.ts
 
 # package.json for runtime metadata
 COPY --chown=nestjs:nodejs package.json ./

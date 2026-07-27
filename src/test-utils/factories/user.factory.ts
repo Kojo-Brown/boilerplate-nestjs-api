@@ -36,10 +36,7 @@ export function buildAdminUser(overrides: Partial<User> = {}): User {
   return buildUser({ role: Role.ADMIN, ...overrides });
 }
 
-export function buildOAuthUser(
-  provider: string,
-  overrides: Partial<User> = {},
-): User {
+export function buildOAuthUser(provider: string, overrides: Partial<User> = {}): User {
   return buildUser({
     password: null,
     provider,

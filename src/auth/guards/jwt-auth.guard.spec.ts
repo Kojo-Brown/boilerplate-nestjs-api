@@ -34,10 +34,10 @@ describe("JwtAuthGuard", () => {
       reflector.getAllAndOverride.mockReturnValue(true);
       const ctx = buildContext();
       guard.canActivate(ctx);
-      expect(reflector.getAllAndOverride).toHaveBeenCalledWith(
-        "isPublic",
-        [expect.anything(), expect.anything()],
-      );
+      expect(reflector.getAllAndOverride).toHaveBeenCalledWith("isPublic", [
+        expect.anything(),
+        expect.anything(),
+      ]);
     });
   });
 

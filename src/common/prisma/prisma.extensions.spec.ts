@@ -21,9 +21,22 @@ jest.mock("@prisma/client", () => {
 
 import { preferencesExtension } from "./prisma.extensions";
 
-const userExtension = (
-  preferencesExtension as { model: { user: Record<string, Function> } }
-).model.user;
+/**
+ * `defineExtension` is mocked above to return its argument verbatim, so the
+ * import is the plain literal — described here with the precise shape of the
+ * two model methods rather than an untyped `Record<string, Function>`.
+ */
+type PreferencesModel = {
+  getPreferences(this: unknown, id: string): Promise<UserPreferences>;
+  setPreferences(
+    this: unknown,
+    id: string,
+    patch: Partial<UserPreferences>,
+  ): Promise<UserPreferences>;
+};
+
+const userExtension = (preferencesExtension as unknown as { model: { user: PreferencesModel } })
+  .model.user;
 
 describe("preferencesExtension", () => {
   beforeEach(() => {
@@ -33,20 +46,20 @@ describe("preferencesExtension", () => {
   describe("getPreferences", () => {
     it("returns defaults when user has no stored preferences", async () => {
       mockFindUnique.mockResolvedValue({ preferences: null });
-      const result = await userExtension["getPreferences"].call({}, "user-1");
+      const result = await userExtension.getPreferences.call({}, "user-1");
       expect(result).toEqual(DEFAULT_USER_PREFERENCES);
     });
 
     it("merges stored preferences over defaults", async () => {
       const stored: Partial<UserPreferences> = { theme: "dark", timezone: "Europe/London" };
       mockFindUnique.mockResolvedValue({ preferences: stored });
-      const result = await userExtension["getPreferences"].call({}, "user-1");
+      const result = await userExtension.getPreferences.call({}, "user-1");
       expect(result).toEqual({ ...DEFAULT_USER_PREFERENCES, ...stored });
     });
 
     it("returns defaults when user record is missing", async () => {
       mockFindUnique.mockResolvedValue(null);
-      const result = await userExtension["getPreferences"].call({}, "user-1");
+      const result = await userExtension.getPreferences.call({}, "user-1");
       expect(result).toEqual(DEFAULT_USER_PREFERENCES);
     });
   });
@@ -58,7 +71,7 @@ describe("preferencesExtension", () => {
       mockUpdate.mockResolvedValue({});
 
       const patch: Partial<UserPreferences> = { language: "fr" };
-      const result = await userExtension["setPreferences"].call({}, "user-1", patch);
+      const result = await userExtension.setPreferences.call({}, "user-1", patch);
 
       expect(result).toEqual({ ...DEFAULT_USER_PREFERENCES, theme: "dark", language: "fr" });
       expect(mockUpdate).toHaveBeenCalledWith({
@@ -72,7 +85,7 @@ describe("preferencesExtension", () => {
     it("throws when user is not found", async () => {
       mockFindUnique.mockResolvedValue(null);
       await expect(
-        userExtension["setPreferences"].call({}, "missing", { theme: "light" }),
+        userExtension.setPreferences.call({}, "missing", { theme: "light" }),
       ).rejects.toThrow("User missing not found");
     });
   });

@@ -3,7 +3,12 @@ import type { INestApplication } from "@nestjs/common";
 import { SwaggerModule } from "@nestjs/swagger";
 import { setupSwagger, BEARER_KEY } from "./setup-swagger";
 import { ApiJwtAuth } from "./api-jwt-auth.decorator";
-import { ApiCommonErrors, ApiNotFound, ApiConflict, ApiForbiddenRole } from "./api-error-responses.decorator";
+import {
+  ApiCommonErrors,
+  ApiNotFound,
+  ApiConflict,
+  ApiForbiddenRole,
+} from "./api-error-responses.decorator";
 
 describe("setupSwagger", () => {
   let createSpy: jest.SpyInstance;

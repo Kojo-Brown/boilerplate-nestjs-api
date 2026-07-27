@@ -69,7 +69,11 @@ describe("StorageService", () => {
 
     it("uploads a buffer and returns the S3 key", async () => {
       mockSend.mockResolvedValue({});
-      const key = await service.uploadBuffer("uploads/photo.jpg", Buffer.from("data"), "image/jpeg");
+      const key = await service.uploadBuffer(
+        "uploads/photo.jpg",
+        Buffer.from("data"),
+        "image/jpeg",
+      );
       expect(key).toBe("uploads/photo.jpg");
       expect(mockSend).toHaveBeenCalledTimes(1);
     });

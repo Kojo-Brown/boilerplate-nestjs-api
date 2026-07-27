@@ -1,5 +1,6 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { BadRequestException, ForbiddenException } from "@nestjs/common";
+import { CACHE_MANAGER } from "@nestjs/cache-manager";
 import { UsersController } from "./users.controller";
 import { UsersService } from "./users.service";
 import { StorageService } from "@/storage/storage.service";
@@ -37,6 +38,16 @@ const mockStorageService = {
   uploadBuffer: jest.fn(),
 };
 
+// The controller is decorated with HttpCacheInterceptor, which Nest instantiates
+// while building the testing module — so CACHE_MANAGER has to be resolvable here.
+const mockCacheManager = {
+  get: jest.fn(),
+  set: jest.fn(),
+  del: jest.fn(),
+  mdel: jest.fn(),
+  clear: jest.fn(),
+};
+
 describe("UsersController", () => {
   let controller: UsersController;
 
@@ -47,6 +58,7 @@ describe("UsersController", () => {
       providers: [
         { provide: UsersService, useValue: mockUsersService },
         { provide: StorageService, useValue: mockStorageService },
+        { provide: CACHE_MANAGER, useValue: mockCacheManager },
       ],
     }).compile();
 
@@ -110,7 +122,10 @@ describe("UsersController", () => {
 
     it("uploads to storage and calls updateAvatar", async () => {
       mockStorageService.uploadBuffer.mockResolvedValue(undefined);
-      mockUsersService.updateAvatar.mockResolvedValue({ ...mockUser, avatarUrl: "avatars/user-1/photo.jpg" });
+      mockUsersService.updateAvatar.mockResolvedValue({
+        ...mockUser,
+        avatarUrl: "avatars/user-1/photo.jpg",
+      });
 
       const result = await controller.uploadAvatar("user-1", file, requester);
 
@@ -130,7 +145,11 @@ describe("UsersController", () => {
     });
 
     it("throws ForbiddenException when a non-admin user uploads for another user", async () => {
-      const otherRequester: AuthenticatedUser = { id: "other-user", email: "other@example.com", role: "USER" };
+      const otherRequester: AuthenticatedUser = {
+        id: "other-user",
+        email: "other@example.com",
+        role: "USER",
+      };
 
       await expect(controller.uploadAvatar("user-1", file, otherRequester)).rejects.toThrow(
         ForbiddenException,
@@ -138,13 +157,18 @@ describe("UsersController", () => {
     });
 
     it("allows an ADMIN to upload avatar for another user", async () => {
-      const adminRequester: AuthenticatedUser = { id: "admin-1", email: "admin@example.com", role: "ADMIN" };
+      const adminRequester: AuthenticatedUser = {
+        id: "admin-1",
+        email: "admin@example.com",
+        role: "ADMIN",
+      };
       mockStorageService.uploadBuffer.mockResolvedValue(undefined);
-      mockUsersService.updateAvatar.mockResolvedValue({ ...mockUser, avatarUrl: "avatars/user-1/x.jpg" });
+      mockUsersService.updateAvatar.mockResolvedValue({
+        ...mockUser,
+        avatarUrl: "avatars/user-1/x.jpg",
+      });
 
-      await expect(
-        controller.uploadAvatar("user-1", file, adminRequester),
-      ).resolves.toBeDefined();
+      await expect(controller.uploadAvatar("user-1", file, adminRequester)).resolves.toBeDefined();
     });
   });
 
@@ -160,7 +184,13 @@ describe("UsersController", () => {
 
   describe("getPreferences()", () => {
     it("delegates to UsersService.getPreferences with requester info", async () => {
-      const prefs = { theme: "dark", language: "en", emailNotifications: true, pushNotifications: false, timezone: "UTC" };
+      const prefs = {
+        theme: "dark",
+        language: "en",
+        emailNotifications: true,
+        pushNotifications: false,
+        timezone: "UTC",
+      };
       mockUsersService.getPreferences.mockResolvedValue(prefs);
 
       const result = await controller.getPreferences("user-1", requester);
@@ -172,13 +202,24 @@ describe("UsersController", () => {
 
   describe("updatePreferences()", () => {
     it("delegates to UsersService.updatePreferences with requester info", async () => {
-      const prefs = { theme: "light", language: "fr", emailNotifications: false, pushNotifications: true, timezone: "UTC" };
+      const prefs = {
+        theme: "light",
+        language: "fr",
+        emailNotifications: false,
+        pushNotifications: true,
+        timezone: "UTC",
+      };
       mockUsersService.updatePreferences.mockResolvedValue(prefs);
       const dto = { theme: "light" as const };
 
       const result = await controller.updatePreferences("user-1", dto as never, requester);
 
-      expect(mockUsersService.updatePreferences).toHaveBeenCalledWith("user-1", "user-1", "USER", dto);
+      expect(mockUsersService.updatePreferences).toHaveBeenCalledWith(
+        "user-1",
+        "user-1",
+        "USER",
+        dto,
+      );
       expect(result).toBe(prefs);
     });
   });

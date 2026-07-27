@@ -6,7 +6,11 @@ import { of, throwError, firstValueFrom } from "rxjs";
 function makeContext(overrides?: {
   correlationId?: string;
   user?: { id: string; email: string; role: string };
-}): { context: ExecutionContext; resHeaders: Record<string, string>; reqHeaders: Record<string, string> } {
+}): {
+  context: ExecutionContext;
+  resHeaders: Record<string, string>;
+  reqHeaders: Record<string, string>;
+} {
   const resHeaders: Record<string, string> = {};
   const reqHeaders: Record<string, string> = overrides?.correlationId
     ? { [CORRELATION_ID_HEADER]: overrides.correlationId }
@@ -88,9 +92,9 @@ describe("LoggingInterceptor", () => {
 
   it("still logs on error path", async () => {
     const { context } = makeContext();
-    await firstValueFrom(
-      interceptor.intercept(context, makeErrorHandler(new Error("boom"))),
-    ).catch(() => undefined);
+    await firstValueFrom(interceptor.intercept(context, makeErrorHandler(new Error("boom")))).catch(
+      () => undefined,
+    );
     expect(logSpy).toHaveBeenCalledTimes(1);
   });
 

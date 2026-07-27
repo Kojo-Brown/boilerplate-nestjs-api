@@ -29,8 +29,7 @@ export function buildCursorPage<T>(
   const hasNextPage = rows.length > limit;
   const items = hasNextPage ? rows.slice(0, limit) : rows;
   const lastItem = items[items.length - 1];
-  const nextCursor =
-    hasNextPage && lastItem !== undefined ? encodeCursor(getId(lastItem)) : null;
+  const nextCursor = hasNextPage && lastItem !== undefined ? encodeCursor(getId(lastItem)) : null;
   return { items, nextCursor, hasNextPage };
 }
 

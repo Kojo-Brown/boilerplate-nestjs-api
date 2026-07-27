@@ -49,10 +49,7 @@ describe("UsersRepository", () => {
     });
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        UsersRepository,
-        { provide: PrismaService, useValue: mockPrisma },
-      ],
+      providers: [UsersRepository, { provide: PrismaService, useValue: mockPrisma }],
     }).compile();
 
     repo = module.get(UsersRepository);
@@ -79,7 +76,9 @@ describe("UsersRepository", () => {
 
       const result = await repo.findByEmail("test@example.com");
 
-      expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({ where: { email: "test@example.com" } });
+      expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
+        where: { email: "test@example.com" },
+      });
       expect(result).toBe(baseUser);
     });
   });

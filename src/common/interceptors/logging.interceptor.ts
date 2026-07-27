@@ -34,7 +34,12 @@ export class LoggingInterceptor implements NestInterceptor {
     );
   }
 
-  private writeLog(req: RequestWithUser, statusCode: number, startedAt: number, correlationId: string): void {
+  private writeLog(
+    req: RequestWithUser,
+    statusCode: number,
+    startedAt: number,
+    correlationId: string,
+  ): void {
     this.logger.log(
       JSON.stringify({
         correlationId,

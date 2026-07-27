@@ -47,7 +47,11 @@ export class StorageService {
     return key;
   }
 
-  async getPresignedPutUrl(key: string, contentType: string, expiresIn = 3600): Promise<PresignedUrlResult> {
+  async getPresignedPutUrl(
+    key: string,
+    contentType: string,
+    expiresIn = 3600,
+  ): Promise<PresignedUrlResult> {
     const { client, bucket } = this.requireClient();
     const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType });
     const url = await getSignedUrl(client, command, { expiresIn });

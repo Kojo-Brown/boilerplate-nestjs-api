@@ -67,7 +67,10 @@ export class UsersController {
   @UseInterceptors(HttpCacheInterceptor)
   @CacheKey(USERS_LIST_CACHE_KEY)
   @CacheTTL(60_000)
-  @ApiOperation({ summary: "List users (admin)", description: "Cursor-paginated list of all users. Admin only." })
+  @ApiOperation({
+    summary: "List users (admin)",
+    description: "Cursor-paginated list of all users. Admin only.",
+  })
   @ApiOkResponse({ type: CursorPageOf(UserResponseDto) })
   @ApiForbiddenRole()
   @ApiCommonErrors()
@@ -123,7 +126,11 @@ export class UsersController {
       },
     }),
   )
-  @ApiOperation({ summary: "Upload user avatar to S3", description: "Replaces the user's avatar with the uploaded image. Max 5 MB. Accepted types: JPEG, PNG, WebP, GIF." })
+  @ApiOperation({
+    summary: "Upload user avatar to S3",
+    description:
+      "Replaces the user's avatar with the uploaded image. Max 5 MB. Accepted types: JPEG, PNG, WebP, GIF.",
+  })
   @ApiConsumes("multipart/form-data")
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiBody({
@@ -171,7 +178,8 @@ export class UsersController {
   @Get(":id/preferences")
   @ApiOperation({
     summary: "Get user preferences",
-    description: "Returns the typed preferences for a user. Defaults are applied to unset fields. Users may only read their own preferences; admins may read any.",
+    description:
+      "Returns the typed preferences for a user. Defaults are applied to unset fields. Users may only read their own preferences; admins may read any.",
   })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserPreferencesDto) })
@@ -185,7 +193,8 @@ export class UsersController {
   @Patch(":id/preferences")
   @ApiOperation({
     summary: "Update user preferences",
-    description: "Merges the provided fields into the user's stored preferences. Users may only update their own preferences; admins may update any.",
+    description:
+      "Merges the provided fields into the user's stored preferences. Users may only update their own preferences; admins may update any.",
   })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserPreferencesDto) })

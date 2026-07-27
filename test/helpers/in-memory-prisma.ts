@@ -62,8 +62,7 @@ export class InMemoryPrismaService {
         const search = args.where.OR[0]?.name?.contains ?? args.where.OR[0]?.email?.contains ?? "";
         const lower = search.toLowerCase();
         all = all.filter(
-          (u) =>
-            u.name?.toLowerCase().includes(lower) || u.email.toLowerCase().includes(lower),
+          (u) => u.name?.toLowerCase().includes(lower) || u.email.toLowerCase().includes(lower),
         );
       }
 
@@ -74,7 +73,8 @@ export class InMemoryPrismaService {
       }
       if (args.skip) start += args.skip;
 
-      const result = args.take !== undefined ? all.slice(start, start + args.take) : all.slice(start);
+      const result =
+        args.take !== undefined ? all.slice(start, start + args.take) : all.slice(start);
       return Promise.resolve(result);
     },
 
@@ -183,7 +183,11 @@ export class InMemoryPrismaService {
           if (!user) return Promise.reject(new Error("User not found"));
           const current = { theme: "system", language: "en", emailNotifications: true };
           const updated = { ...current, ...patch };
-          this._users.set(id, { ...user, preferences: updated as unknown as User["preferences"], updatedAt: new Date() });
+          this._users.set(id, {
+            ...user,
+            preferences: updated as unknown as User["preferences"],
+            updatedAt: new Date(),
+          });
           return Promise.resolve(updated);
         },
       },

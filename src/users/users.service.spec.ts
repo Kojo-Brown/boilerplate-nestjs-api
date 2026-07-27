@@ -221,9 +221,9 @@ describe("UsersService", () => {
 
     it("throws NotFoundException for missing user", async () => {
       mockRepo.findById.mockResolvedValue(null);
-      await expect(
-        service.updatePreferences("missing", "missing", "USER", {}),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.updatePreferences("missing", "missing", "USER", {})).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

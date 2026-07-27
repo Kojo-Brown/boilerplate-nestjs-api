@@ -2,7 +2,11 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { StorageController } from "./storage.controller";
 import { StorageService } from "./storage.service";
 
-const mockPresignedResult = { url: "https://s3.example.com/presigned", key: "test.jpg", expiresAt: new Date() };
+const mockPresignedResult = {
+  url: "https://s3.example.com/presigned",
+  key: "test.jpg",
+  expiresAt: new Date(),
+};
 
 const mockStorageService = {
   getPresignedPutUrl: jest.fn(),

@@ -34,8 +34,12 @@ export class AuthService {
   }
 
   async refresh(token: string) {
-    const stored = await this.prisma.refreshToken.findUnique({ where: { token }, include: { user: true } });
-    if (!stored || stored.expiresAt < new Date()) throw new UnauthorizedException("Refresh token expired");
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { token },
+      include: { user: true },
+    });
+    if (!stored || stored.expiresAt < new Date())
+      throw new UnauthorizedException("Refresh token expired");
     await this.prisma.refreshToken.delete({ where: { id: stored.id } });
     return this.issueTokens(stored.user.id, stored.user.email, stored.user.role);
   }

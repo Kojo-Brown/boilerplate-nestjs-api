@@ -3,13 +3,32 @@
 ## What this repo is
 Production-grade NestJS 11 REST API boilerplate. Spec-driven: features added one at a time per SPEC.md.
 
-## Your job (scheduled agent)
-1. Read `SPEC.md` — find the first `- [ ]` item
-2. Implement it completely (module, service, controller, DTOs, tests)
-3. `pnpm typecheck && pnpm lint && pnpm test` before committing
-4. `git add -A && git commit -m "feat: <feature>" && git push origin main`
-5. Mark the item `- [x]` in SPEC.md and push: `git commit -m "chore: mark spec done" && git push`
-6. Update `/Users/nicholasbrown/Desktop/Boilerplates/PROGRESS.md`
+## Your job (scheduled agent, every 4h)
+1. `git checkout main && git pull --ff-only origin main`
+2. Read `SPEC.md`, take the **first** `- [ ]` item. Phase 0 items always win.
+3. `git checkout -b <type>/<kebab-slug>` (`feat`/`fix`/`chore`/`ci`/`docs`)
+4. Implement it completely — module, service, controller, DTOs, tests, docs.
+5. Run every gate locally; **all must pass** before pushing:
+   ```
+   pnpm install
+   pnpm typecheck
+   pnpm lint
+   pnpm test
+   pnpm build
+   ```
+6. Commit, `git push -u origin <branch>`, then `gh pr create`.
+7. `gh pr checks --watch` → **merge only if every check is green**:
+   `gh pr merge --squash --delete-branch`
+8. Pull main, mark the item `- [x]` in `SPEC.md`, update `../PROGRESS.md`,
+   push as a `chore:` commit.
+
+If a check fails, fix forward on the same branch. Never merge red. Never weaken
+a test or lower the coverage threshold to force green.
+
+## Secrets
+Never commit real credentials, tokens, keys, or `.env` files. JWT secrets, DB
+URLs, and OAuth client secrets come from the environment and are validated by
+the Zod config module at boot. Scan `git diff --cached` before every push.
 
 ## Versions (do not change)
 - NestJS 11.1.27 | TypeScript 6.0.3 | Prisma 7.8.0

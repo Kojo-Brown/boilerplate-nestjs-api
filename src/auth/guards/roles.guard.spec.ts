@@ -74,9 +74,9 @@ describe("RolesGuard", () => {
   it("checks ROLES_KEY metadata on handler and class", () => {
     reflector.getAllAndOverride.mockReturnValue(undefined);
     guard.canActivate(buildContext());
-    expect(reflector.getAllAndOverride).toHaveBeenCalledWith(
-      "roles",
-      [expect.anything(), expect.anything()],
-    );
+    expect(reflector.getAllAndOverride).toHaveBeenCalledWith("roles", [
+      expect.anything(),
+      expect.anything(),
+    ]);
   });
 });

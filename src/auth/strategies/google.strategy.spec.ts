@@ -3,8 +3,18 @@ import { ConfigService } from "@nestjs/config";
 import { GoogleStrategy, type GoogleProfile } from "./google.strategy";
 import type { Profile, VerifyCallback } from "passport-google-oauth20";
 
+/**
+ * passport-google-oauth20 throws unless clientID/clientSecret/callbackURL are
+ * non-empty, so the mock returns obviously-fake values rather than blanks.
+ */
+const FAKE_GOOGLE_CONFIG: Record<string, string> = {
+  GOOGLE_CLIENT_ID: "mock-google-client-id",
+  GOOGLE_CLIENT_SECRET: "mock-google-client-secret",
+  GOOGLE_CALLBACK_URL: "http://localhost:3000/v1/auth/google/callback",
+};
+
 const mockConfig = {
-  get: jest.fn().mockReturnValue(""),
+  get: jest.fn((key: string) => FAKE_GOOGLE_CONFIG[key] ?? ""),
 };
 
 const makeProfile = (overrides: Partial<Profile> = {}): Profile =>
@@ -24,7 +34,7 @@ describe("GoogleStrategy", () => {
 
   beforeEach(async () => {
     jest.resetAllMocks();
-    mockConfig.get.mockReturnValue("");
+    mockConfig.get.mockImplementation((key: string) => FAKE_GOOGLE_CONFIG[key] ?? "");
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [GoogleStrategy, { provide: ConfigService, useValue: mockConfig }],
@@ -81,7 +91,10 @@ describe("GoogleStrategy", () => {
 
       strategy.validate("access-token", "refresh-token", profile, done);
 
-      expect(done).toHaveBeenCalledWith(null, expect.objectContaining({ googleId: "unique-google-id-999" }));
+      expect(done).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ googleId: "unique-google-id-999" }),
+      );
     });
   });
 });

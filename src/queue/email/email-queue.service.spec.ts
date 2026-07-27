@@ -2,7 +2,11 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { EmailQueueService } from "./email-queue.service";
 import { EMAIL_QUEUE, EmailJobName } from "./email-queue.constants";
-import type { WelcomeEmailData, PasswordResetEmailData, VerificationEmailData } from "./dto/email-job.types";
+import type {
+  WelcomeEmailData,
+  PasswordResetEmailData,
+  VerificationEmailData,
+} from "./dto/email-job.types";
 
 const mockQueue = {
   add: jest.fn().mockResolvedValue({ id: "job-1" }),
@@ -18,10 +22,7 @@ describe("EmailQueueService", () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        EmailQueueService,
-        { provide: getQueueToken(EMAIL_QUEUE), useValue: mockQueue },
-      ],
+      providers: [EmailQueueService, { provide: getQueueToken(EMAIL_QUEUE), useValue: mockQueue }],
     }).compile();
 
     service = module.get(EmailQueueService);

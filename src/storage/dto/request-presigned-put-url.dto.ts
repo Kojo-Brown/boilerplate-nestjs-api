@@ -2,7 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from "class-validator";
 
 export class RequestPresignedPutUrlDto {
-  @ApiProperty({ example: "avatars/user-1/photo.jpg", description: "S3 object key for the upload destination" })
+  @ApiProperty({
+    example: "avatars/user-1/photo.jpg",
+    description: "S3 object key for the upload destination",
+  })
   @IsString()
   @IsNotEmpty()
   key!: string;

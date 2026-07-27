@@ -13,10 +13,7 @@ describe("PrismaHealthIndicator", () => {
   beforeEach(async () => {
     jest.resetAllMocks();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        PrismaHealthIndicator,
-        { provide: PrismaService, useValue: mockPrismaService },
-      ],
+      providers: [PrismaHealthIndicator, { provide: PrismaService, useValue: mockPrismaService }],
     }).compile();
 
     indicator = module.get(PrismaHealthIndicator);

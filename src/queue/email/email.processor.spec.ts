@@ -3,7 +3,11 @@ import { getQueueToken } from "@nestjs/bullmq";
 import type { Job } from "bullmq";
 import { EmailProcessor } from "./email.processor";
 import { EMAIL_QUEUE, EmailJobName } from "./email-queue.constants";
-import type { WelcomeEmailData, PasswordResetEmailData, VerificationEmailData } from "./dto/email-job.types";
+import type {
+  WelcomeEmailData,
+  PasswordResetEmailData,
+  VerificationEmailData,
+} from "./dto/email-job.types";
 
 const mockQueue = {};
 
@@ -16,10 +20,7 @@ describe("EmailProcessor", () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        EmailProcessor,
-        { provide: getQueueToken(EMAIL_QUEUE), useValue: mockQueue },
-      ],
+      providers: [EmailProcessor, { provide: getQueueToken(EMAIL_QUEUE), useValue: mockQueue }],
     }).compile();
 
     processor = module.get(EmailProcessor);

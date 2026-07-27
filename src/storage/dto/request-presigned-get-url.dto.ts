@@ -2,7 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from "class-validator";
 
 export class RequestPresignedGetUrlDto {
-  @ApiProperty({ example: "avatars/user-1/photo.jpg", description: "S3 object key to generate a download URL for" })
+  @ApiProperty({
+    example: "avatars/user-1/photo.jpg",
+    description: "S3 object key to generate a download URL for",
+  })
   @IsString()
   @IsNotEmpty()
   key!: string;

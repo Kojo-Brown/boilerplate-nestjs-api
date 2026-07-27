@@ -1,0 +1,7 @@
+dist
+coverage
+node_modules
+pnpm-lock.yaml
+prisma/migrations
+# Helm charts are Go templates, not parseable YAML
+helm

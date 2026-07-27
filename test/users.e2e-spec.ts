@@ -1,6 +1,6 @@
 import type { INestApplication } from "@nestjs/common";
 import { Role } from "@prisma/client";
-import * as request from "supertest";
+import request from "supertest";
 import { createTestApp, type TestApp } from "./helpers/create-test-app";
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
 
@@ -27,16 +27,20 @@ describe("Users (e2e)", () => {
     prisma.reset();
 
     // Register a regular user
-    const userRes = await request(app.getHttpServer())
-      .post("/v1/auth/register")
-      .send({ email: "user@example.com", password: process.env["E2E_TEST_PASSWORD"]!, name: "Regular User" });
+    const userRes = await request(app.getHttpServer()).post("/v1/auth/register").send({
+      email: "user@example.com",
+      password: process.env["E2E_TEST_PASSWORD"]!,
+      name: "Regular User",
+    });
     userToken = userRes.body.data.accessToken as string;
     userId = [...prisma._users.values()].find((u) => u.email === "user@example.com")?.id ?? "";
 
     // Register admin (role starts as USER after register)
-    await request(app.getHttpServer())
-      .post("/v1/auth/register")
-      .send({ email: "admin@example.com", password: process.env["E2E_TEST_PASSWORD"]!, name: "Admin User" });
+    await request(app.getHttpServer()).post("/v1/auth/register").send({
+      email: "admin@example.com",
+      password: process.env["E2E_TEST_PASSWORD"]!,
+      name: "Admin User",
+    });
     adminId = [...prisma._users.values()].find((u) => u.email === "admin@example.com")?.id ?? "";
 
     // Promote to ADMIN in the in-memory store
@@ -94,7 +98,9 @@ describe("Users (e2e)", () => {
         .set("Authorization", `Bearer ${adminToken}`)
         .expect(200);
 
-      expect(res.body.data.items.every((u: { name: string }) => u.name?.includes("Regular"))).toBe(true);
+      expect(res.body.data.items.every((u: { name: string }) => u.name?.includes("Regular"))).toBe(
+        true,
+      );
     });
   });
 

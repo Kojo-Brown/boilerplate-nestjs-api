@@ -10,19 +10,21 @@ export class CacheService {
     return this.cache.get<T>(key);
   }
 
-  set<T>(key: string, value: T, ttl?: number): Promise<void> {
-    return this.cache.set(key, value, ttl);
+  async set<T>(key: string, value: T, ttl?: number): Promise<void> {
+    await this.cache.set(key, value, ttl);
   }
 
-  del(key: string): Promise<void> {
-    return this.cache.del(key);
+  async del(key: string): Promise<void> {
+    await this.cache.del(key);
   }
 
   async delMany(keys: string[]): Promise<void> {
-    await Promise.all(keys.map((k) => this.cache.del(k)));
+    if (keys.length === 0) return;
+    await this.cache.mdel(keys);
   }
 
-  reset(): Promise<void> {
-    return this.cache.reset();
+  /** Drops every entry in every configured store. */
+  async reset(): Promise<void> {
+    await this.cache.clear();
   }
 }

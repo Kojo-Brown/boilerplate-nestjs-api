@@ -30,8 +30,14 @@ export class AuthController {
 
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("register")
-  @ApiOperation({ summary: "Register a new user", description: "Creates an account and returns a JWT token pair." })
-  @ApiCreatedResponse({ type: ApiEnvelopeOf(AuthTokensDto), description: "Account created — tokens issued" })
+  @ApiOperation({
+    summary: "Register a new user",
+    description: "Creates an account and returns a JWT token pair.",
+  })
+  @ApiCreatedResponse({
+    type: ApiEnvelopeOf(AuthTokensDto),
+    description: "Account created — tokens issued",
+  })
   @ApiConflict("Email is already registered")
   @ApiCommonErrors()
   register(@Body() dto: RegisterDto) {
@@ -41,8 +47,14 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("login")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Log in", description: "Validates credentials and returns a JWT token pair." })
-  @ApiOkResponse({ type: ApiEnvelopeOf(AuthTokensDto), description: "Login successful — tokens issued" })
+  @ApiOperation({
+    summary: "Log in",
+    description: "Validates credentials and returns a JWT token pair.",
+  })
+  @ApiOkResponse({
+    type: ApiEnvelopeOf(AuthTokensDto),
+    description: "Login successful — tokens issued",
+  })
   @ApiCommonErrors()
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);

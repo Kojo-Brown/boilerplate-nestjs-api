@@ -124,9 +124,9 @@ describe("AuthService", () => {
       mockUsersService.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(false);
 
-      await expect(
-        service.login({ email: "test@example.com", password: "wrong" }),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.login({ email: "test@example.com", password: "wrong" })).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it("returns tokens on valid credentials", async () => {
@@ -211,13 +211,27 @@ describe("AuthService", () => {
     it("creates a new user when no account exists for the Google ID or email", async () => {
       mockUsersService.findByProviderAccount.mockResolvedValue(null);
       mockUsersService.findByEmail.mockResolvedValue(null);
-      mockUsersService.create.mockResolvedValue({ ...mockUser, email: googleProfile.email, provider: "google" });
-      mockRefreshToken.create.mockResolvedValue({ id: "rt-1", token: "rt", userId: "user-1", expiresAt: new Date(), createdAt: new Date() });
+      mockUsersService.create.mockResolvedValue({
+        ...mockUser,
+        email: googleProfile.email,
+        provider: "google",
+      });
+      mockRefreshToken.create.mockResolvedValue({
+        id: "rt-1",
+        token: "rt",
+        userId: "user-1",
+        expiresAt: new Date(),
+        createdAt: new Date(),
+      });
 
       const result = await service.loginWithGoogle(googleProfile);
 
       expect(mockUsersService.create).toHaveBeenCalledWith(
-        expect.objectContaining({ email: googleProfile.email, provider: "google", providerAccountId: "g-123" }),
+        expect.objectContaining({
+          email: googleProfile.email,
+          provider: "google",
+          providerAccountId: "g-123",
+        }),
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
     });
@@ -225,8 +239,18 @@ describe("AuthService", () => {
     it("links Google account to an existing user found by email", async () => {
       mockUsersService.findByProviderAccount.mockResolvedValue(null);
       mockUsersService.findByEmail.mockResolvedValue(mockUser);
-      mockUsersService.update.mockResolvedValue({ ...mockUser, provider: "google", providerAccountId: "g-123" });
-      mockRefreshToken.create.mockResolvedValue({ id: "rt-1", token: "rt", userId: "user-1", expiresAt: new Date(), createdAt: new Date() });
+      mockUsersService.update.mockResolvedValue({
+        ...mockUser,
+        provider: "google",
+        providerAccountId: "g-123",
+      });
+      mockRefreshToken.create.mockResolvedValue({
+        id: "rt-1",
+        token: "rt",
+        userId: "user-1",
+        expiresAt: new Date(),
+        createdAt: new Date(),
+      });
 
       const result = await service.loginWithGoogle(googleProfile);
 
@@ -240,7 +264,13 @@ describe("AuthService", () => {
     it("returns tokens for an existing user matched by Google provider account ID", async () => {
       const googleUser = { ...mockUser, provider: "google", providerAccountId: "g-123" };
       mockUsersService.findByProviderAccount.mockResolvedValue(googleUser);
-      mockRefreshToken.create.mockResolvedValue({ id: "rt-1", token: "rt", userId: "user-1", expiresAt: new Date(), createdAt: new Date() });
+      mockRefreshToken.create.mockResolvedValue({
+        id: "rt-1",
+        token: "rt",
+        userId: "user-1",
+        expiresAt: new Date(),
+        createdAt: new Date(),
+      });
 
       const result = await service.loginWithGoogle(googleProfile);
 

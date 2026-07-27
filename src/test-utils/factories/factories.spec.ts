@@ -11,30 +11,46 @@ import {
   createRefreshToken,
 } from "./index";
 
+/**
+ * Returns the first argument the mock was called with, failing loudly if it was
+ * never called. Keeps `noUncheckedIndexedAccess` honest without sprinkling `!`.
+ */
+function firstCallArg<T>(mock: jest.Mock): T {
+  const [call] = mock.mock.calls;
+  if (!call) throw new Error("expected the mock to have been called at least once");
+  return call[0] as T;
+}
+
 function makeMockUserCreate(result?: Partial<User>) {
-  return jest.fn().mockImplementation(async ({ data }: { data: Partial<User> & { email: string } }) => ({
-    id: "mock-id",
-    name: null,
-    password: null,
-    role: Role.USER,
-    provider: null,
-    providerAccountId: null,
-    avatarUrl: null,
-    preferences: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...data,
-    ...result,
-  }));
+  return jest
+    .fn()
+    .mockImplementation(async ({ data }: { data: Partial<User> & { email: string } }) => ({
+      id: "mock-id",
+      name: null,
+      password: null,
+      role: Role.USER,
+      provider: null,
+      providerAccountId: null,
+      avatarUrl: null,
+      preferences: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...data,
+      ...result,
+    }));
 }
 
 function makeMockRefreshTokenCreate(result?: Partial<RefreshToken>) {
-  return jest.fn().mockImplementation(async ({ data }: { data: { token: string; userId: string; expiresAt: Date } }) => ({
-    id: "mock-rt-id",
-    createdAt: new Date(),
-    ...data,
-    ...result,
-  }));
+  return jest
+    .fn()
+    .mockImplementation(
+      async ({ data }: { data: { token: string; userId: string; expiresAt: Date } }) => ({
+        id: "mock-rt-id",
+        createdAt: new Date(),
+        ...data,
+        ...result,
+      }),
+    );
 }
 
 describe("UserFactory", () => {
@@ -118,8 +134,8 @@ describe("UserFactory", () => {
       const user = await createUser(prisma);
 
       expect(mockCreate).toHaveBeenCalledTimes(1);
-      const [call] = mockCreate.mock.calls as [{ data: Partial<User> & { email: string } }][];
-      expect(call[0].data.email).toBeTruthy();
+      const call = firstCallArg<{ data: Partial<User> & { email: string } }>(mockCreate);
+      expect(call.data.email).toBeTruthy();
       expect(user.id).toBe("mock-id");
     });
 
@@ -129,9 +145,9 @@ describe("UserFactory", () => {
 
       await createUser(prisma, { email: "seeded@example.com", role: Role.ADMIN });
 
-      const [call] = mockCreate.mock.calls as [{ data: Partial<User> & { email: string } }][];
-      expect(call[0].data.email).toBe("seeded@example.com");
-      expect(call[0].data.role).toBe(Role.ADMIN);
+      const call = firstCallArg<{ data: Partial<User> & { email: string } }>(mockCreate);
+      expect(call.data.email).toBe("seeded@example.com");
+      expect(call.data.role).toBe(Role.ADMIN);
     });
 
     it("does not pass id, createdAt, or updatedAt to prisma", async () => {
@@ -140,10 +156,10 @@ describe("UserFactory", () => {
 
       await createUser(prisma);
 
-      const [call] = mockCreate.mock.calls as [{ data: Record<string, unknown> }][];
-      expect(call[0].data["id"]).toBeUndefined();
-      expect(call[0].data["createdAt"]).toBeUndefined();
-      expect(call[0].data["updatedAt"]).toBeUndefined();
+      const call = firstCallArg<{ data: Record<string, unknown> }>(mockCreate);
+      expect(call.data["id"]).toBeUndefined();
+      expect(call.data["createdAt"]).toBeUndefined();
+      expect(call.data["updatedAt"]).toBeUndefined();
     });
   });
 
@@ -154,8 +170,8 @@ describe("UserFactory", () => {
 
       await createAdminUser(prisma);
 
-      const [call] = mockCreate.mock.calls as [{ data: Partial<User> }][];
-      expect(call[0].data.role).toBe(Role.ADMIN);
+      const call = firstCallArg<{ data: Partial<User> }>(mockCreate);
+      expect(call.data.role).toBe(Role.ADMIN);
     });
   });
 });
@@ -190,7 +206,9 @@ describe("RefreshTokenFactory", () => {
     });
 
     it("generates unique tokens on each call", () => {
-      const tokens = new Set(Array.from({ length: 10 }, () => buildRefreshToken(TEST_USER_ID).token));
+      const tokens = new Set(
+        Array.from({ length: 10 }, () => buildRefreshToken(TEST_USER_ID).token),
+      );
       expect(tokens.size).toBe(10);
     });
   });
@@ -215,9 +233,11 @@ describe("RefreshTokenFactory", () => {
       const rt = await createRefreshToken(prisma, TEST_USER_ID);
 
       expect(mockCreate).toHaveBeenCalledTimes(1);
-      const [call] = mockCreate.mock.calls as [{ data: { token: string; userId: string; expiresAt: Date } }][];
-      expect(call[0].data.userId).toBe(TEST_USER_ID);
-      expect(typeof call[0].data.token).toBe("string");
+      const call = firstCallArg<{ data: { token: string; userId: string; expiresAt: Date } }>(
+        mockCreate,
+      );
+      expect(call.data.userId).toBe(TEST_USER_ID);
+      expect(typeof call.data.token).toBe("string");
       expect(rt.id).toBe("mock-rt-id");
     });
 
@@ -227,9 +247,9 @@ describe("RefreshTokenFactory", () => {
 
       await createRefreshToken(prisma, TEST_USER_ID);
 
-      const [call] = mockCreate.mock.calls as [{ data: Record<string, unknown> }][];
-      expect(call[0].data["id"]).toBeUndefined();
-      expect(call[0].data["createdAt"]).toBeUndefined();
+      const call = firstCallArg<{ data: Record<string, unknown> }>(mockCreate);
+      expect(call.data["id"]).toBeUndefined();
+      expect(call.data["createdAt"]).toBeUndefined();
     });
 
     it("passes token override through to prisma", async () => {
@@ -239,8 +259,8 @@ describe("RefreshTokenFactory", () => {
 
       await createRefreshToken(prisma, TEST_USER_ID, { token: customToken });
 
-      const [call] = mockCreate.mock.calls as [{ data: { token: string } }][];
-      expect(call[0].data.token).toBe(customToken);
+      const call = firstCallArg<{ data: { token: string } }>(mockCreate);
+      expect(call.data.token).toBe(customToken);
     });
   });
 });

@@ -1,5 +1,5 @@
 import type { INestApplication } from "@nestjs/common";
-import * as request from "supertest";
+import request from "supertest";
 import { createTestApp, type TestApp } from "./helpers/create-test-app";
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
 
@@ -214,10 +214,7 @@ describe("Auth (e2e)", () => {
     });
 
     it("returns 401 without a bearer token", async () => {
-      await request(app.getHttpServer())
-        .post("/v1/auth/logout")
-        .send({ refreshToken })
-        .expect(401);
+      await request(app.getHttpServer()).post("/v1/auth/logout").send({ refreshToken }).expect(401);
     });
   });
 

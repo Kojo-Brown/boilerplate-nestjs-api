@@ -6,17 +6,17 @@ Production-grade REST API starter with auth, validation, and DevOps wired up.
 
 ## Stack
 
-| Layer | Tech | Version |
-|-------|------|---------|
-| Framework | NestJS | 11.1 |
-| Language | TypeScript | 6.0 |
-| ORM | Prisma | 7.8 |
-| Database | PostgreSQL | 17 |
-| Auth | JWT + OAuth 2.0 (Passport) | |
-| Hashing | Argon2 | 0.43 |
-| Validation | class-validator + class-transformer | |
-| Rate limiting | @nestjs/throttler | |
-| Testing | Jest + Supertest | |
+| Layer         | Tech                                | Version |
+| ------------- | ----------------------------------- | ------- |
+| Framework     | NestJS                              | 11.1    |
+| Language      | TypeScript                          | 6.0     |
+| ORM           | Prisma                              | 7.8     |
+| Database      | PostgreSQL                          | 17      |
+| Auth          | JWT + OAuth 2.0 (Passport)          |         |
+| Hashing       | Argon2                              | 0.43    |
+| Validation    | class-validator + class-transformer |         |
+| Rate limiting | @nestjs/throttler                   |         |
+| Testing       | Jest + Supertest                    |         |
 
 ## Quick Start
 

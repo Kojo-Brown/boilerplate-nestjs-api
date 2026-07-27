@@ -17,14 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: pnpm format:check
 
   typecheck:
     name: Type Check
@@ -32,13 +31,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # `tsc` needs the generated client for `@prisma/client` types.
+      - run: pnpm db:generate
       - run: pnpm typecheck
 
   test:
@@ -79,8 +78,6 @@ jobs:
           printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           printf 'JWT_REFRESH_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -88,6 +85,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
       - run: pnpm test:cov
+      - run: pnpm test:e2e
+      - run: pnpm build
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         if: always()

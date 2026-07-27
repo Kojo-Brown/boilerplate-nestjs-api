@@ -16,10 +16,7 @@ export const preferencesExtension = Prisma.defineExtension({
         return { ...DEFAULT_USER_PREFERENCES, ...(stored ?? {}) };
       },
 
-      async setPreferences(
-        id: string,
-        patch: Partial<UserPreferences>,
-      ): Promise<UserPreferences> {
+      async setPreferences(id: string, patch: Partial<UserPreferences>): Promise<UserPreferences> {
         const ctx = Prisma.getExtensionContext(this);
         const user = await ctx.findUnique({
           where: { id },
@@ -33,7 +30,7 @@ export const preferencesExtension = Prisma.defineExtension({
         const updated: UserPreferences = { ...current, ...patch };
         await ctx.update({
           where: { id },
-          data: { preferences: updated as Prisma.InputJsonValue },
+          data: { preferences: updated },
         });
         return updated;
       },

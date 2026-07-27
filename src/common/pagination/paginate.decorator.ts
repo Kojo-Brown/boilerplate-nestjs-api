@@ -12,11 +12,7 @@ import { ApiQuery } from "@nestjs/swagger";
  *   findAll(@Paginate() query: CursorPaginationDto): Promise<CursorPage<UserDto>> { ... }
  */
 export function Paginate(): ParameterDecorator {
-  return (
-    target: object,
-    propertyKey: string | symbol | undefined,
-    parameterIndex: number,
-  ) => {
+  return (target: object, propertyKey: string | symbol | undefined, parameterIndex: number) => {
     // Extract entire query object — ValidationPipe maps it to CursorPaginationDto
     Query()(target, propertyKey, parameterIndex);
 

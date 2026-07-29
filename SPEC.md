@@ -7,7 +7,11 @@
 - [x] Verify every dependency version actually exists on the registry and fix the ones that do not, then commit a lockfile
 - [x] Get `install`, `typecheck`, `lint`, `test`, and `build` all passing locally from a clean clone
 - [x] Promote `workflow-templates/ci.yml` to `.github/workflows/ci.yml` and confirm it runs green on a PR
-- [ ] Add a CI job matrix covering the supported Node version and fail the build on any warning
+- [x] Add a CI job matrix covering the supported Node version and fail the build on any warning — `engines.node` is `^22.12.0 || ^24.0.0`; lint, type check, and test run on both (PR #23)
+
+Phase 0 complete as of PR #23 (2026-07-29): install, typecheck, lint, format,
+216 unit tests, 36 e2e tests, and the Docker image all green in CI on Node 22
+and Node 24.
 
 ## Phase 1 — Foundation
 

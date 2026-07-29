@@ -18,6 +18,18 @@ Production-grade REST API starter with auth, validation, and DevOps wired up.
 | Rate limiting | @nestjs/throttler                   |         |
 | Testing       | Jest + Supertest                    |         |
 
+## Supported Node versions
+
+`^22.12.0 || ^24.0.0` — the maintained LTS lines, intersected with what Prisma 7
+supports. `.npmrc` sets `engine-strict`, so `pnpm install` fails outright on any
+other runtime, and CI runs lint, type check, and the full test suite on **both**
+versions. Node 22 is the deploy target (the Dockerfile ships `node:22-alpine`);
+Node 24 is covered so the next LTS upgrade is a non-event.
+
+CI treats warnings as failures: ESLint runs with `--max-warnings 0`, peer
+mismatches fail the install (`strict-peer-dependencies`), and Node runtime
+deprecation warnings are thrown via `NODE_OPTIONS=--throw-deprecation`.
+
 ## Quick Start
 
 ```bash

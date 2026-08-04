@@ -64,7 +64,7 @@ and Node 24.
 
 ## Phase 8 — SOLID & Design Patterns
 
-- [ ] SOLID audit: split fat repository interfaces (ISP), invert concrete deps to injection tokens (DIP), document each principle with a before/after in `docs/solid.md`
+- [x] SOLID audit: split fat repository interfaces (ISP), invert concrete deps to injection tokens (DIP), document each principle with a before/after in `docs/solid.md` — `UsersRepository` split into `UserReader`/`UserWriter`/`UserPreferencesStore` behind `Symbol` tokens, ownership rules extracted to `UserAccessPolicy`, and a shared store contract run against both the Prisma adapter and a new in-memory implementation (PR #24)
 - [ ] Factory pattern: `PaymentProviderFactory` resolving Stripe/PayPal/mock at runtime from config
 - [ ] Strategy pattern: pluggable `NotificationStrategy` (email, SMS, push) selected per user preference
 - [ ] Decorator pattern: `@Cacheable()`, `@Retry()`, `@Timed()` method decorators built on `Reflect.metadata`

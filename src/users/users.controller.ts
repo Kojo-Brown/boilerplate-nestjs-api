@@ -3,7 +3,6 @@ import {
   Body,
   Controller,
   Delete,
-  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -28,6 +27,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { CacheKey, CacheTTL, HttpCacheInterceptor } from "@/common/cache";
 import { USERS_LIST_CACHE_KEY } from "./users.service";
 import { UsersService } from "./users.service";
+import { UserAccessPolicy } from "./users.access-policy";
 import { StorageService } from "@/storage/storage.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserResponseDto } from "./dto/user-response.dto";
@@ -59,6 +59,7 @@ export class UsersController {
   constructor(
     private readonly users: UsersService,
     private readonly storage: StorageService,
+    private readonly policy: UserAccessPolicy,
   ) {}
 
   @Get()
@@ -105,7 +106,7 @@ export class UsersController {
     @Body() dto: UpdateUserDto,
     @CurrentUser() requester: AuthenticatedUser,
   ) {
-    return this.users.updateSelf(requester.id, id, dto, requester.role);
+    return this.users.updateSelf(requester, id, dto);
   }
 
   @Post(":id/avatar")
@@ -152,9 +153,9 @@ export class UsersController {
     @CurrentUser() requester: AuthenticatedUser,
   ) {
     if (!file) throw new BadRequestException("No file uploaded");
-    if (requester.id !== id && requester.role !== "ADMIN") {
-      throw new ForbiddenException("Cannot modify another user's avatar");
-    }
+    // Checked here rather than in `updateAvatar` so a forbidden request never
+    // reaches S3 — the upload happens before the row is touched.
+    this.policy.assertCanAct(requester, id, "update:avatar");
     const ext = (file.originalname.split(".").pop() ?? "bin").toLowerCase();
     const key = `avatars/${id}/${Date.now()}.${ext}`;
     await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
@@ -187,7 +188,7 @@ export class UsersController {
   @ApiForbiddenRole()
   @ApiCommonErrors()
   getPreferences(@Param("id") id: string, @CurrentUser() requester: AuthenticatedUser) {
-    return this.users.getPreferences(id, requester.id, requester.role);
+    return this.users.getPreferences(requester, id);
   }
 
   @Patch(":id/preferences")
@@ -206,6 +207,6 @@ export class UsersController {
     @Body() dto: UpdateUserPreferencesDto,
     @CurrentUser() requester: AuthenticatedUser,
   ) {
-    return this.users.updatePreferences(id, requester.id, requester.role, dto);
+    return this.users.updatePreferences(requester, id, dto);
   }
 }

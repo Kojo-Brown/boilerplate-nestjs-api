@@ -1,5 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { UsersRepository } from "./users.repository";
+import { PrismaUsersRepository } from "./prisma-users.repository";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import type { User } from "@prisma/client";
 import type { UserPreferences } from "./types/user-preferences";
@@ -39,8 +39,8 @@ const mockPrisma = {
   }),
 };
 
-describe("UsersRepository", () => {
-  let repo: UsersRepository;
+describe("PrismaUsersRepository", () => {
+  let repo: PrismaUsersRepository;
 
   beforeEach(async () => {
     jest.resetAllMocks();
@@ -49,10 +49,10 @@ describe("UsersRepository", () => {
     });
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [UsersRepository, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [PrismaUsersRepository, { provide: PrismaService, useValue: mockPrisma }],
     }).compile();
 
-    repo = module.get(UsersRepository);
+    repo = module.get(PrismaUsersRepository);
   });
 
   it("should be defined", () => {

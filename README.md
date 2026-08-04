@@ -62,6 +62,7 @@ GET  /v1/users/:id       → User
 src/
 ├── auth/           # JWT + OAuth 2.0 auth (service, controller, strategies)
 ├── users/          # Users CRUD
+│   └── ports/      # UserReader / UserWriter / UserPreferencesStore + DI tokens
 ├── common/
 │   ├── decorators/ # @Roles(), @CurrentUser()
 │   ├── filters/    # AllExceptionsFilter → structured JSON errors
@@ -80,6 +81,11 @@ prisma/
 ```bash
 docker-compose up        # postgres + redis + api
 ```
+
+## Docs
+
+- [docs/solid.md](./docs/solid.md) — SOLID audit of the users module, with the
+  before/after for each principle and the findings left open.
 
 ## Spec Progress
 

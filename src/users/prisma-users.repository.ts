@@ -1,10 +1,26 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService, ExtendedPrismaClient } from "@/common/prisma/prisma.service";
-import type { Prisma, User } from "@prisma/client";
+import type { User } from "@prisma/client";
 import type { UserPreferences } from "@/users/types/user-preferences";
+import type {
+  CreateUserData,
+  UpdateUserData,
+  UserListQuery,
+  UserPreferencesStore,
+  UserReader,
+  UserWriter,
+} from "./ports";
 
+/**
+ * The Prisma-backed adapter for the three user ports.
+ *
+ * One class implements all three: they are split for the *consumers*' benefit,
+ * not to force three adapters on anyone who only has one database. The module
+ * binds each token to this class with `useExisting`, so all three tokens
+ * resolve to a single instance.
+ */
 @Injectable()
-export class UsersRepository {
+export class PrismaUsersRepository implements UserReader, UserWriter, UserPreferencesStore {
   private readonly extended: ExtendedPrismaClient;
 
   constructor(private readonly prisma: PrismaService) {
@@ -23,28 +39,28 @@ export class UsersRepository {
     return this.prisma.user.findFirst({ where: { provider, providerAccountId } });
   }
 
-  findMany(args: { cursor?: string; limit: number; search?: string }): Promise<User[]> {
+  findMany(query: UserListQuery): Promise<User[]> {
     return this.prisma.user.findMany({
-      take: args.limit + 1,
-      cursor: args.cursor ? { id: args.cursor } : undefined,
-      skip: args.cursor ? 1 : 0,
+      take: query.limit + 1,
+      cursor: query.cursor ? { id: query.cursor } : undefined,
+      skip: query.cursor ? 1 : 0,
       orderBy: { createdAt: "asc" },
-      where: args.search
+      where: query.search
         ? {
             OR: [
-              { name: { contains: args.search, mode: "insensitive" } },
-              { email: { contains: args.search, mode: "insensitive" } },
+              { name: { contains: query.search, mode: "insensitive" } },
+              { email: { contains: query.search, mode: "insensitive" } },
             ],
           }
         : undefined,
     });
   }
 
-  create(data: Prisma.UserCreateInput): Promise<User> {
+  create(data: CreateUserData): Promise<User> {
     return this.prisma.user.create({ data });
   }
 
-  update(id: string, data: Prisma.UserUpdateInput): Promise<User> {
+  update(id: string, data: UpdateUserData): Promise<User> {
     return this.prisma.user.update({ where: { id }, data });
   }
 

@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException } from "@nestjs/common";
 import { CACHE_MANAGER } from "@nestjs/cache-manager";
 import { UsersController } from "./users.controller";
 import { UsersService } from "./users.service";
+import { UserAccessPolicy } from "./users.access-policy";
 import { StorageService } from "@/storage/storage.service";
 import type { AuthenticatedUser } from "@/auth/strategies/jwt.strategy";
 import { Role } from "@prisma/client";
@@ -57,6 +58,9 @@ describe("UsersController", () => {
       controllers: [UsersController],
       providers: [
         { provide: UsersService, useValue: mockUsersService },
+        // The real policy: it is pure decision logic, and stubbing it would
+        // mean the ownership rule on avatar upload was never actually asserted.
+        UserAccessPolicy,
         { provide: StorageService, useValue: mockStorageService },
         { provide: CACHE_MANAGER, useValue: mockCacheManager },
       ],
@@ -101,7 +105,7 @@ describe("UsersController", () => {
 
       const result = await controller.update("user-1", dto, requester);
 
-      expect(mockUsersService.updateSelf).toHaveBeenCalledWith("user-1", "user-1", dto, "USER");
+      expect(mockUsersService.updateSelf).toHaveBeenCalledWith(requester, "user-1", dto);
       expect(result).toBe(updated);
     });
   });
@@ -154,6 +158,7 @@ describe("UsersController", () => {
       await expect(controller.uploadAvatar("user-1", file, otherRequester)).rejects.toThrow(
         ForbiddenException,
       );
+      expect(mockStorageService.uploadBuffer).not.toHaveBeenCalled();
     });
 
     it("allows an ADMIN to upload avatar for another user", async () => {
@@ -195,7 +200,7 @@ describe("UsersController", () => {
 
       const result = await controller.getPreferences("user-1", requester);
 
-      expect(mockUsersService.getPreferences).toHaveBeenCalledWith("user-1", "user-1", "USER");
+      expect(mockUsersService.getPreferences).toHaveBeenCalledWith(requester, "user-1");
       expect(result).toBe(prefs);
     });
   });
@@ -214,12 +219,7 @@ describe("UsersController", () => {
 
       const result = await controller.updatePreferences("user-1", dto as never, requester);
 
-      expect(mockUsersService.updatePreferences).toHaveBeenCalledWith(
-        "user-1",
-        "user-1",
-        "USER",
-        dto,
-      );
+      expect(mockUsersService.updatePreferences).toHaveBeenCalledWith(requester, "user-1", dto);
       expect(result).toBe(prefs);
     });
   });

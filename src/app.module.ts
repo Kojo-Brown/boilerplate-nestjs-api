@@ -7,6 +7,7 @@ import { AppCacheModule } from "./common/cache";
 import { UsersModule } from "./users/users.module";
 import { AuthModule } from "./auth/auth.module";
 import { StorageModule } from "./storage/storage.module";
+import { PaymentsModule } from "./payments/payments.module";
 import { HealthModule } from "./health/health.module";
 import { QueueModule } from "./queue/queue.module";
 import { ShutdownModule } from "./common/shutdown/shutdown.module";
@@ -25,6 +26,7 @@ import { envSchema } from "./config/env.schema";
     AuthModule,
     UsersModule,
     StorageModule,
+    PaymentsModule,
     HealthModule,
     QueueModule,
     ShutdownModule,

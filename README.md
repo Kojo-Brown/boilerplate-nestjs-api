@@ -63,6 +63,9 @@ src/
 ├── auth/           # JWT + OAuth 2.0 auth (service, controller, strategies)
 ├── users/          # Users CRUD
 │   └── ports/      # UserReader / UserWriter / UserPreferencesStore + DI tokens
+├── payments/       # PaymentProviderFactory → Stripe / PayPal / mock
+│   ├── ports/      # PaymentProvider + PAYMENT_PROVIDERS token
+│   └── providers/  # One adapter per gateway, held to a shared contract
 ├── common/
 │   ├── decorators/ # @Roles(), @CurrentUser()
 │   ├── filters/    # AllExceptionsFilter → structured JSON errors
@@ -86,6 +89,9 @@ docker-compose up        # postgres + redis + api
 
 - [docs/solid.md](./docs/solid.md) — SOLID audit of the users module, with the
   before/after for each principle and the findings left open.
+- [docs/payments.md](./docs/payments.md) — the payment provider factory: how a
+  gateway is chosen at runtime, the shared lifecycle the adapters map onto, and
+  the contract suite that keeps them substitutable.
 
 ## Spec Progress
 

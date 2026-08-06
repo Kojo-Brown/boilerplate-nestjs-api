@@ -193,6 +193,31 @@ export function describeUsersStoreContract(name: string, createStore: () => User
 
         await expect(store.getPreferences(created.id)).resolves.toEqual(written);
       });
+
+      it("ignores keys explicitly set to undefined rather than erasing them", async () => {
+        // Not a hypothetical shape. A patch reaches the store as an
+        // `UpdateUserPreferencesDto` instance, and under `target: ES2022` every
+        // declared field exists on it — the untouched ones as `undefined`. A
+        // store that spreads the patch straight over the current value wipes
+        // every preference the caller did not mention, and the next read then
+        // returns `undefined` rather than even the default, which a notification
+        // channel reads as "the user switched this off".
+        const created = await store.create({ email: "ada@example.test" });
+        await store.setPreferences(created.id, { theme: "dark", smsNotifications: true });
+
+        const patched = await store.setPreferences(created.id, {
+          language: "fr",
+          theme: undefined,
+          smsNotifications: undefined,
+        });
+
+        expect(patched).toEqual({
+          ...DEFAULT_USER_PREFERENCES,
+          theme: "dark",
+          smsNotifications: true,
+          language: "fr",
+        });
+      });
     });
   });
 }

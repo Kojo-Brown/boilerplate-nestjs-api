@@ -5,13 +5,37 @@ import { ThrottlerStorage } from "@nestjs/throttler";
 import type { ThrottlerStorageRecord } from "@nestjs/throttler/dist/throttler-storage-record.interface";
 import { AppModule } from "@/app.module";
 import { QueueModule } from "@/queue/queue.module";
+import { EmailQueueService } from "@/queue/email/email-queue.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { AllExceptionsFilter } from "@/common/filters/all-exceptions.filter";
 import { ResponseEnvelopeInterceptor } from "@/common/interceptors/response-envelope.interceptor";
 import { LoggingInterceptor } from "@/common/interceptors/logging.interceptor";
 import { InMemoryPrismaService } from "./in-memory-prisma";
 
-@Module({})
+/**
+ * Stands in for `QueueModule`, so the suite needs no Redis.
+ *
+ * It has to export `EmailQueueService` rather than be empty: `EmailNotificationChannel`
+ * injects it, so an empty module would make `NotificationsModule` — and with
+ * it the whole application — fail to instantiate. Recording the enqueued jobs
+ * rather than discarding them means an e2e test can assert that an endpoint
+ * notified someone.
+ */
+export class RecordingEmailQueue {
+  readonly enqueued: { job: string; data: unknown }[] = [];
+
+  private nextJobId = 0;
+
+  async sendNotificationEmail(data: unknown): Promise<string> {
+    this.enqueued.push({ job: "send-notification", data });
+    return `test-job-${(this.nextJobId += 1)}`;
+  }
+}
+
+@Module({
+  providers: [{ provide: EmailQueueService, useClass: RecordingEmailQueue }],
+  exports: [EmailQueueService],
+})
 class MockQueueModule {}
 
 export interface TestApp {

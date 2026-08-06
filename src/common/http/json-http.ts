@@ -1,15 +1,21 @@
 /**
- * Shared plumbing for the HTTP-backed providers.
+ * Shared plumbing for the adapters that talk to a third-party JSON API.
  *
- * Both adapters talk to their gateway with `fetch` rather than a vendor SDK.
- * Stripe's SDK would be defensible; PayPal's server SDK for the Orders v2 API
- * was deprecated by PayPal itself, so half the pair would be a direct HTTP
- * client regardless. Two adapters written the same way are easier to hold to
- * one contract than one SDK wrapper and one HTTP client.
+ * Every outbound integration in this codebase — the payment gateways, the SMS
+ * and push notification channels — is a `fetch` client rather than a vendor
+ * SDK. That began as a constraint (PayPal deprecated its server SDK for the
+ * Orders v2 API, so half the payments pair had to be hand-written anyway) and
+ * stayed as a decision: adapters written the same way are much easier to hold
+ * to one behavioural contract than a mix of SDK wrappers and HTTP clients, and
+ * each can be driven end-to-end by an in-process fake of the real API rather
+ * than by mocking a vendor module.
+ *
+ * Lives under `common/` rather than inside one feature module so that neither
+ * feature has to import the other's internals to reuse it.
  */
 
 /** Anything slower than this is a failed request, not a slow one. */
-export const PAYMENT_HTTP_TIMEOUT_MS = 10_000;
+export const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
 
 export interface HttpJsonResponse {
   readonly status: number;
@@ -21,14 +27,14 @@ export interface HttpJsonResponse {
 /**
  * Performs a request and parses the body, never throwing for a non-2xx.
  *
- * Providers decide what a given status means — a 404 from `find()` is `null`,
- * the same 404 from `capture()` is an error — so transport stays here and
- * interpretation stays with the adapter.
+ * Callers decide what a given status means — a 404 from a payment `find()` is
+ * `null`, the same 404 from `capture()` is an error — so transport stays here
+ * and interpretation stays with the adapter.
  */
 export async function requestJson(
   url: string,
   init: RequestInit,
-  timeoutMs: number = PAYMENT_HTTP_TIMEOUT_MS,
+  timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS,
 ): Promise<HttpJsonResponse> {
   const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   const text = await response.text();
@@ -38,7 +44,7 @@ export async function requestJson(
     try {
       body = JSON.parse(text);
     } catch {
-      // A gateway returning HTML — a proxy error page, usually — is a failure
+      // An upstream returning HTML — a proxy error page, usually — is a failure
       // even on a 200. Surfacing the raw text lets the adapter say so.
       body = { rawBody: text.slice(0, 500) };
     }

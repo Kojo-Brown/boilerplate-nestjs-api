@@ -224,6 +224,59 @@ describe("Users (e2e)", () => {
     });
   });
 
+  // ─── Notification preferences ─────────────────────────────────────────────────
+
+  describe("/v1/users/:id/preferences", () => {
+    it("returns a flag for every notification channel, defaulted", async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}/preferences`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .expect(200);
+
+      // One flag per channel in `NOTIFICATION_CHANNEL_NAMES`. A channel with no
+      // flag would be undefined here and silently off for every user.
+      expect(res.body.data).toMatchObject({
+        emailNotifications: true,
+        smsNotifications: false,
+        pushNotifications: false,
+      });
+    });
+
+    it("round-trips a channel opt-in through validation and the store", async () => {
+      const patched = await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}/preferences`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .send({ smsNotifications: true })
+        .expect(200);
+
+      expect(patched.body.data.smsNotifications).toBe(true);
+      // Merged, not replaced: opting into SMS must not silently switch email off.
+      expect(patched.body.data.emailNotifications).toBe(true);
+
+      const reread = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}/preferences`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(reread.body.data.smsNotifications).toBe(true);
+    });
+
+    it("rejects a preference key the DTO does not declare", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}/preferences`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .send({ smsNotifications: true, telepathyNotifications: true })
+        .expect(400);
+    });
+
+    it("returns 403 when reading another user's preferences", async () => {
+      await request(app.getHttpServer())
+        .get(`/v1/users/${adminId}/preferences`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .expect(403);
+    });
+  });
+
   // ─── Error format ─────────────────────────────────────────────────────────────
 
   describe("Error response format", () => {

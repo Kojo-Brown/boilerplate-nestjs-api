@@ -2,7 +2,7 @@ import { Role } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { PrismaUsersRepository } from "./prisma-users.repository";
 import { describeUsersStoreContract } from "./users-store.contract";
-import { DEFAULT_USER_PREFERENCES } from "./types/user-preferences";
+import { DEFAULT_USER_PREFERENCES, mergePreferences } from "./types/user-preferences";
 import type { UserPreferences } from "./types/user-preferences";
 import type { CreateUserData, UpdateUserData } from "./ports";
 import { InMemoryUsersRepository } from "@/test-utils/in-memory-users.repository";
@@ -146,17 +146,20 @@ class FakePrismaClient {
       user: {
         getPreferences: (id: string): Promise<UserPreferences> => {
           const stored = this.rows.get(id)?.preferences as Partial<UserPreferences> | null;
-          return Promise.resolve({ ...DEFAULT_USER_PREFERENCES, ...(stored ?? {}) });
+          return Promise.resolve(mergePreferences(DEFAULT_USER_PREFERENCES, stored ?? {}));
         },
 
         setPreferences: (id: string, patch: Partial<UserPreferences>): Promise<UserPreferences> => {
           const existing = this.rows.get(id);
           if (!existing) return Promise.reject(new Error(`User ${id} not found`));
-          const merged: UserPreferences = {
-            ...DEFAULT_USER_PREFERENCES,
-            ...((existing.preferences as Partial<UserPreferences> | null) ?? {}),
-            ...patch,
-          };
+          // Same merge helper the real extension uses — this fake stands in
+          // for `preferencesExtension`, so it has to agree with it about
+          // what a patch key set to `undefined` means.
+          const current = mergePreferences(
+            DEFAULT_USER_PREFERENCES,
+            (existing.preferences as Partial<UserPreferences> | null) ?? {},
+          );
+          const merged = mergePreferences(current, patch);
           this.rows.set(id, { ...existing, preferences: merged });
           return Promise.resolve(merged);
         },

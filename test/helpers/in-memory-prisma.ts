@@ -1,5 +1,7 @@
 import { Role } from "@prisma/client";
 import type { User, RefreshToken } from "@prisma/client";
+import { DEFAULT_USER_PREFERENCES, mergePreferences } from "@/users/types/user-preferences";
+import type { UserPreferences } from "@/users/types/user-preferences";
 
 type StoredRefreshToken = RefreshToken & { user: User };
 
@@ -167,22 +169,24 @@ export class InMemoryPrismaService {
   withExtensions() {
     return {
       user: {
-        getPreferences: (id: string) => {
+        // Merged over `DEFAULT_USER_PREFERENCES` rather than over a copy of it,
+        // the same way `preferencesExtension` does. A hand-written default here
+        // drifts the moment a preference is added, and the fake then answers
+        // with fields the real store would never omit.
+        getPreferences: (id: string): Promise<UserPreferences> => {
           const user = this._users.get(id);
           if (!user) return Promise.reject(new Error("User not found"));
-          const stored = user.preferences as Record<string, unknown> | null;
-          return Promise.resolve({
-            theme: "system",
-            language: "en",
-            emailNotifications: true,
-            ...(stored ?? {}),
-          });
+          const stored = user.preferences as Partial<UserPreferences> | null;
+          return Promise.resolve(mergePreferences(DEFAULT_USER_PREFERENCES, stored ?? {}));
         },
-        setPreferences: (id: string, patch: Record<string, unknown>) => {
+        setPreferences: (id: string, patch: Partial<UserPreferences>): Promise<UserPreferences> => {
           const user = this._users.get(id);
           if (!user) return Promise.reject(new Error("User not found"));
-          const current = { theme: "system", language: "en", emailNotifications: true };
-          const updated = { ...current, ...patch };
+          const current = mergePreferences(
+            DEFAULT_USER_PREFERENCES,
+            (user.preferences as Partial<UserPreferences> | null) ?? {},
+          );
+          const updated = mergePreferences(current, patch);
           this._users.set(id, {
             ...user,
             preferences: updated as unknown as User["preferences"],

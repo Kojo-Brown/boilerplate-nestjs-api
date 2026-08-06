@@ -6,6 +6,7 @@ import type {
   WelcomeEmailData,
   PasswordResetEmailData,
   VerificationEmailData,
+  NotificationEmailData,
 } from "./dto/email-job.types";
 
 @Processor(EMAIL_QUEUE)
@@ -24,6 +25,9 @@ export class EmailProcessor extends WorkerHost {
         break;
       case EmailJobName.SEND_VERIFICATION:
         await this.handleVerificationEmail(job.data as VerificationEmailData);
+        break;
+      case EmailJobName.SEND_NOTIFICATION:
+        await this.handleNotificationEmail(job.data as NotificationEmailData);
         break;
       default:
         this.logger.warn(`Unrecognised job name: ${job.name}`);
@@ -45,6 +49,13 @@ export class EmailProcessor extends WorkerHost {
   private async handleVerificationEmail(data: VerificationEmailData): Promise<void> {
     this.logger.log(`Sending verification email to ${data.to}`);
     // Replace with a real mail provider.
+    await Promise.resolve();
+  }
+
+  private async handleNotificationEmail(data: NotificationEmailData): Promise<void> {
+    this.logger.log(`Sending notification email to ${data.to} (subject=${data.subject})`);
+    // Replace with a real mail provider. Subject and body arrive already
+    // composed by `EmailNotificationChannel`; nothing here needs a template.
     await Promise.resolve();
   }
 }

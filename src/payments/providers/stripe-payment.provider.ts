@@ -11,7 +11,7 @@ import {
 import { resolveRefundAmount } from "../refund-rules";
 import type { CreatePaymentInput, Payment, PaymentProvider, PaymentProviderName } from "../ports";
 import type { PaymentStatus } from "../ports";
-import { asRecord, readNumber, readString, requestJson } from "./http";
+import { asRecord, readNumber, readString, requestJson } from "@/common/http";
 
 const DEFAULT_BASE_URL = "https://api.stripe.com";
 

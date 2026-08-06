@@ -11,7 +11,7 @@ import {
 import { resolveRefundAmount } from "../refund-rules";
 import type { CreatePaymentInput, Payment, PaymentProvider, PaymentProviderName } from "../ports";
 import type { PaymentNextAction, PaymentStatus } from "../ports";
-import { asRecord, readArray, readString, requestJson } from "./http";
+import { asRecord, readArray, readString, requestJson } from "@/common/http";
 
 const DEFAULT_BASE_URL = "https://api-m.sandbox.paypal.com";
 

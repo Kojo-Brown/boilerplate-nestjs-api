@@ -7,6 +7,7 @@ import type {
   WelcomeEmailData,
   PasswordResetEmailData,
   VerificationEmailData,
+  NotificationEmailData,
 } from "./dto/email-job.types";
 
 const mockQueue = {};
@@ -48,6 +49,15 @@ describe("EmailProcessor", () => {
       to: "carol@example.com",
       verificationToken: "vtok456",
       verificationUrl: "https://app.example.com/verify",
+    });
+    await expect(processor.process(job as Job)).resolves.toBeUndefined();
+  });
+
+  it("processes send-notification jobs without throwing", async () => {
+    const job = makeJob<NotificationEmailData>(EmailJobName.SEND_NOTIFICATION, {
+      to: "dave@example.com",
+      subject: "Your export is ready",
+      body: "The report you requested has finished generating.",
     });
     await expect(processor.process(job as Job)).resolves.toBeUndefined();
   });

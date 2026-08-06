@@ -66,10 +66,14 @@ src/
 ├── payments/       # PaymentProviderFactory → Stripe / PayPal / mock
 │   ├── ports/      # PaymentProvider + PAYMENT_PROVIDERS token
 │   └── providers/  # One adapter per gateway, held to a shared contract
+├── notifications/  # NotificationDispatcher → email / SMS / push, per user preference
+│   ├── ports/      # NotificationChannel + NOTIFICATION_CHANNELS token
+│   └── channels/   # One adapter per transport, held to a shared contract
 ├── common/
 │   ├── decorators/ # @Roles(), @CurrentUser()
 │   ├── filters/    # AllExceptionsFilter → structured JSON errors
 │   ├── guards/     # JwtAuthGuard, RolesGuard
+│   ├── http/       # Shared fetch plumbing for third-party JSON APIs
 │   ├── pipes/      # Custom validation pipes
 │   └── prisma/     # Global PrismaModule + PrismaService
 ├── config/
@@ -92,6 +96,10 @@ docker-compose up        # postgres + redis + api
 - [docs/payments.md](./docs/payments.md) — the payment provider factory: how a
   gateway is chosen at runtime, the shared lifecycle the adapters map onto, and
   the contract suite that keeps them substitutable.
+- [docs/notifications.md](./docs/notifications.md) — the notification channel
+  strategy: how a user's preferences pick the channels, why a transactional
+  message still gets through when they have switched everything off, and what
+  `sent` means as opposed to `queued`.
 
 ## Spec Progress
 

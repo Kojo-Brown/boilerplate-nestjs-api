@@ -11,6 +11,9 @@ export class UserPreferencesDto {
   emailNotifications!: boolean;
 
   @ApiProperty({ example: false })
+  smsNotifications!: boolean;
+
+  @ApiProperty({ example: false })
   pushNotifications!: boolean;
 
   @ApiProperty({ example: "UTC", description: "IANA timezone identifier" })

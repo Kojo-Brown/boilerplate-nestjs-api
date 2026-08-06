@@ -1,6 +1,6 @@
 import { Role } from "@prisma/client";
 import type { User } from "@prisma/client";
-import { DEFAULT_USER_PREFERENCES } from "@/users/types/user-preferences";
+import { DEFAULT_USER_PREFERENCES, mergePreferences } from "@/users/types/user-preferences";
 import type { UserPreferences } from "@/users/types/user-preferences";
 import type { CreateUserData, UpdateUserData, UserListQuery, UsersStore } from "@/users/ports";
 
@@ -128,16 +128,19 @@ export class InMemoryUsersRepository implements UsersStore {
   }
 
   getPreferences(id: string): Promise<UserPreferences> {
-    return Promise.resolve({ ...DEFAULT_USER_PREFERENCES, ...(this.preferences.get(id) ?? {}) });
+    return Promise.resolve(
+      mergePreferences(DEFAULT_USER_PREFERENCES, this.preferences.get(id) ?? {}),
+    );
   }
 
   setPreferences(id: string, patch: Partial<UserPreferences>): Promise<UserPreferences> {
     if (!this.users.has(id)) return Promise.reject(new Error(`User ${id} not found`));
-    const merged: UserPreferences = {
-      ...DEFAULT_USER_PREFERENCES,
-      ...(this.preferences.get(id) ?? {}),
-      ...patch,
-    };
+    // Through `mergePreferences`, like the Prisma adapter: an implementation
+    // that spread the patch itself would drop every key the caller left
+    // `undefined`, and the contract suite would catch it here rather than in
+    // whatever endpoint used this double.
+    const current = mergePreferences(DEFAULT_USER_PREFERENCES, this.preferences.get(id) ?? {});
+    const merged = mergePreferences(current, patch);
     this.preferences.set(id, merged);
     return Promise.resolve(merged);
   }

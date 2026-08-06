@@ -168,6 +168,7 @@ describe("PrismaUsersRepository", () => {
         theme: "dark",
         language: "en",
         emailNotifications: true,
+        smsNotifications: false,
         pushNotifications: false,
         timezone: "UTC",
       };
@@ -186,6 +187,7 @@ describe("PrismaUsersRepository", () => {
         theme: "light",
         language: "fr",
         emailNotifications: false,
+        smsNotifications: true,
         pushNotifications: true,
         timezone: "Europe/Paris",
       };

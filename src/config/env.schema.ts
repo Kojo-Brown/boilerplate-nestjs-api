@@ -34,6 +34,30 @@ export const envSchema = z
     PAYPAL_CLIENT_ID: z.string().optional(),
     PAYPAL_CLIENT_SECRET: z.string().optional(),
     PAYPAL_API_BASE_URL: z.string().url().default("https://api-m.sandbox.paypal.com"),
+
+    /**
+     * Notification channels. All optional: a channel without credentials
+     * reports `isConfigured === false` and `NotificationDispatcher` skips it,
+     * so a deployment with no Twilio account still sends email and push. Unlike
+     * `PAYMENTS_PROVIDER` there is nothing to select here — the user's
+     * preferences choose the channel, not the environment.
+     */
+    TWILIO_ACCOUNT_SID: z.string().optional(),
+    TWILIO_AUTH_TOKEN: z.string().optional(),
+    /** E.164 sending number. Either this or a messaging service SID enables SMS. */
+    TWILIO_FROM_NUMBER: z.string().optional(),
+    /** `MG…`. Preferred over a bare number: Twilio then owns number pooling and opt-outs. */
+    TWILIO_MESSAGING_SERVICE_SID: z.string().optional(),
+    TWILIO_API_BASE_URL: z.string().url().default("https://api.twilio.com"),
+
+    /**
+     * Expo's push endpoint accepts unauthenticated requests, which would let
+     * anyone holding a device token push to that device. Supplying a token
+     * opts into Expo's enhanced security; the push channel treats it as
+     * required rather than optional for exactly that reason.
+     */
+    EXPO_ACCESS_TOKEN: z.string().optional(),
+    EXPO_PUSH_API_BASE_URL: z.string().url().default("https://exp.host"),
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -63,6 +87,39 @@ export const envSchema = z
             message: `${key} is required when PAYMENTS_PROVIDER=paypal`,
           });
         }
+      }
+    }
+
+    /**
+     * SMS is optional, but half-configured SMS is not: the channel needs an
+     * account, a token and something to send from, and missing any one of them
+     * makes it silently unavailable. Someone who set two of the three meant to
+     * enable it, so say which one is missing at boot rather than let every SMS
+     * be skipped as `not-configured` in production.
+     */
+    const twilio = {
+      TWILIO_ACCOUNT_SID: env.TWILIO_ACCOUNT_SID,
+      TWILIO_AUTH_TOKEN: env.TWILIO_AUTH_TOKEN,
+      sender: env.TWILIO_FROM_NUMBER ?? env.TWILIO_MESSAGING_SERVICE_SID,
+    };
+    if (Object.values(twilio).some(Boolean)) {
+      for (const key of ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} is required when any other Twilio credential is set`,
+          });
+        }
+      }
+      if (!twilio.sender) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["TWILIO_FROM_NUMBER"],
+          message:
+            "TWILIO_FROM_NUMBER or TWILIO_MESSAGING_SERVICE_SID is required when any " +
+            "other Twilio credential is set",
+        });
       }
     }
   });

@@ -82,6 +82,37 @@ describe("preferencesExtension", () => {
       });
     });
 
+    it("persists a patch shaped like the DTO the controller actually passes", async () => {
+      // `UpdateUserPreferencesDto` is a class, and under `target: ES2022` its
+      // fields are defined on construction — so a request body naming one
+      // preference reaches this extension as an object with every key, the
+      // untouched ones `undefined`. Spreading that straight over the current
+      // value wrote `undefined` for all of them, and since `JSON.stringify`
+      // drops `undefined`, the column came back holding only the one field the
+      // user changed. Turning on SMS erased their theme, language and timezone.
+      const current: Partial<UserPreferences> = { theme: "dark", language: "fr" };
+      mockFindUnique.mockResolvedValue({ preferences: current });
+      mockUpdate.mockResolvedValue({});
+
+      const dtoShapedPatch = {
+        theme: undefined,
+        language: undefined,
+        emailNotifications: undefined,
+        smsNotifications: true,
+        pushNotifications: undefined,
+        timezone: undefined,
+      } as Partial<UserPreferences>;
+
+      const result = await userExtension.setPreferences.call({}, "user-1", dtoShapedPatch);
+
+      expect(result).toEqual({
+        ...DEFAULT_USER_PREFERENCES,
+        theme: "dark",
+        language: "fr",
+        smsNotifications: true,
+      });
+    });
+
     it("throws when user is not found", async () => {
       mockFindUnique.mockResolvedValue(null);
       await expect(

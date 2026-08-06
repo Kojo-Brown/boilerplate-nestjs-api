@@ -21,6 +21,10 @@ import { StorageModule } from "@/storage/storage.module";
     { provide: USER_WRITER, useExisting: PrismaUsersRepository },
     { provide: USER_PREFERENCES_STORE, useExisting: PrismaUsersRepository },
   ],
-  exports: [UsersService],
+  // The preferences token as well as the service: `NotificationDispatcher`
+  // depends on the port, not on `UsersService`, so exporting the symbol keeps
+  // that inversion intact across the module boundary. The concrete repository
+  // stays private.
+  exports: [UsersService, USER_PREFERENCES_STORE],
 })
 export class UsersModule {}

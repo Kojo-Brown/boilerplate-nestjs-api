@@ -21,6 +21,11 @@ export class UpdateUserPreferencesDto {
   @ApiPropertyOptional({ example: false })
   @IsOptional()
   @IsBoolean()
+  smsNotifications?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
   pushNotifications?: boolean;
 
   @ApiPropertyOptional({ example: "America/New_York", description: "IANA timezone identifier" })

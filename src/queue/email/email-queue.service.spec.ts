@@ -6,6 +6,7 @@ import type {
   WelcomeEmailData,
   PasswordResetEmailData,
   VerificationEmailData,
+  NotificationEmailData,
 } from "./dto/email-job.types";
 
 const mockQueue = {
@@ -76,6 +77,34 @@ describe("EmailQueueService", () => {
         data,
         expect.objectContaining({ attempts: 3 }),
       );
+    });
+  });
+
+  describe("sendNotificationEmail", () => {
+    const data: NotificationEmailData = {
+      to: "dave@example.com",
+      subject: "Your export is ready",
+      body: "The report you requested has finished generating.",
+    };
+
+    it("enqueues a send-notification job with more attempts than a lifecycle email", async () => {
+      await service.sendNotificationEmail(data);
+
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        EmailJobName.SEND_NOTIFICATION,
+        data,
+        expect.objectContaining({ attempts: 5 }),
+      );
+    });
+
+    it("returns the job id, which is the only handle on a message not yet sent", async () => {
+      await expect(service.sendNotificationEmail(data)).resolves.toBe("job-1");
+    });
+
+    it("falls back rather than asserting when BullMQ omits the id", async () => {
+      mockQueue.add.mockResolvedValueOnce({});
+
+      await expect(service.sendNotificationEmail(data)).resolves.toBe("unknown");
     });
   });
 

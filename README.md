@@ -70,6 +70,8 @@ src/
 │   ├── ports/      # NotificationChannel + NOTIFICATION_CHANNELS token
 │   └── channels/   # One adapter per transport, held to a shared contract
 ├── common/
+│   ├── aspects/    # @Cacheable(), @Retry(), @Timed() + the weaver that applies them
+│   │   └── ports/  # Clock, randomness, cache and metrics-recorder tokens
 │   ├── decorators/ # @Roles(), @CurrentUser()
 │   ├── filters/    # AllExceptionsFilter → structured JSON errors
 │   ├── guards/     # JwtAuthGuard, RolesGuard
@@ -100,6 +102,10 @@ docker-compose up        # postgres + redis + api
   strategy: how a user's preferences pick the channels, why a transactional
   message still gets through when they have switched everything off, and what
   `sent` means as opposed to `queued`.
+- [docs/aspects.md](./docs/aspects.md) — the `@Cacheable()`, `@Retry()` and
+  `@Timed()` method decorators: how metadata written at import time becomes
+  behaviour once the container is up, the order they compose in, and the targets
+  the weaver refuses to wrap rather than silently no-op on.
 
 ## Spec Progress
 

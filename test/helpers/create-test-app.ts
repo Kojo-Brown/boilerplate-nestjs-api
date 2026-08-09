@@ -30,6 +30,21 @@ export class RecordingEmailQueue {
     this.enqueued.push({ job: "send-notification", data });
     return `test-job-${(this.nextJobId += 1)}`;
   }
+
+  /**
+   * Called by `WelcomeEmailListener`, which no endpoint invokes directly — it
+   * is subscribed to `user.registered`. A double missing this method would not
+   * fail a test: `@OnDomainEvent` contains the `TypeError` and registration
+   * still returns 201, which is exactly the failure mode that makes an event
+   * bus easy to get wrong and worth asserting on end to end.
+   */
+  async sendWelcomeEmail(data: unknown): Promise<void> {
+    this.enqueued.push({ job: "send-welcome", data });
+  }
+
+  reset(): void {
+    this.enqueued.length = 0;
+  }
 }
 
 @Module({
@@ -41,6 +56,8 @@ class MockQueueModule {}
 export interface TestApp {
   app: INestApplication;
   prisma: InMemoryPrismaService;
+  /** The queue the app actually resolved, for asserting on background effects. */
+  emails: RecordingEmailQueue;
 }
 
 export async function createTestApp(): Promise<TestApp> {
@@ -86,7 +103,10 @@ export async function createTestApp(): Promise<TestApp> {
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalInterceptors(new LoggingInterceptor(), new ResponseEnvelopeInterceptor(reflector));
 
+  // `init()` is also what runs `onApplicationBootstrap`, where the event
+  // subscriber loader registers every `@OnDomainEvent` method. Without it the
+  // app would answer requests with no subscribers attached at all.
   await app.init();
 
-  return { app, prisma };
+  return { app, prisma, emails: app.get<RecordingEmailQueue>(EmailQueueService) };
 }

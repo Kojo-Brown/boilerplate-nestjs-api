@@ -5,6 +5,7 @@ import { ThrottlerModule } from "@nestjs/throttler";
 import { PrismaModule } from "./common/prisma/prisma.module";
 import { AppCacheModule } from "./common/cache";
 import { AspectsModule } from "./common/aspects";
+import { EventsModule } from "./events";
 import { UsersModule } from "./users/users.module";
 import { AuthModule } from "./auth/auth.module";
 import { StorageModule } from "./storage/storage.module";
@@ -27,6 +28,9 @@ import { envSchema } from "./config/env.schema";
     AppCacheModule,
     // After AppCacheModule: `ASPECT_CACHE` is an alias of its `CacheService`.
     AspectsModule,
+    // Global: any module publishes through `DomainEventBus`, and subscribers
+    // are discovered wherever they are declared.
+    EventsModule,
     AuthModule,
     UsersModule,
     StorageModule,

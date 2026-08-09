@@ -5,6 +5,7 @@ import { EmailNotificationChannel } from "./channels/email-notification.channel"
 import { PushNotificationChannel } from "./channels/push-notification.channel";
 import { SmsNotificationChannel } from "./channels/sms-notification.channel";
 import { NotificationDispatcher } from "./notification-dispatcher.service";
+import { WelcomeEmailListener } from "./listeners/welcome-email.listener";
 import { NOTIFICATION_CHANNELS } from "./ports";
 import type { NotificationChannel } from "./ports";
 
@@ -31,6 +32,10 @@ import type { NotificationChannel } from "./ports";
       useFactory: (...channels: NotificationChannel[]): readonly NotificationChannel[] => channels,
     },
     NotificationDispatcher,
+    // A subscriber, not a collaborator: nothing injects it and nothing exports
+    // it. It is a provider only so that Nest instantiates it and the event
+    // loader can find its `@OnDomainEvent` method.
+    WelcomeEmailListener,
   ],
   // Only the dispatcher leaves the module. Exporting the channels would let a
   // consumer send an SMS directly and bypass the user's preferences entirely,

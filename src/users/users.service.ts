@@ -1,5 +1,6 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { CacheService } from "@/common/cache";
+import { DomainEventBus } from "@/events";
 import { buildCursorPage, decodeCursor } from "@/common/pagination";
 import type { CursorPage } from "@/common/pagination";
 import type { User } from "@prisma/client";
@@ -38,6 +39,7 @@ export class UsersService {
     @Inject(USER_PREFERENCES_STORE) private readonly preferences: UserPreferencesStore,
     private readonly cache: CacheService,
     private readonly policy: UserAccessPolicy,
+    private readonly events: DomainEventBus,
   ) {}
 
   async findById(id: string): Promise<User> {
@@ -90,9 +92,13 @@ export class UsersService {
   }
 
   async remove(id: string): Promise<void> {
-    await this.findById(id);
+    const user = await this.findById(id);
     await this.writer.delete(id);
     await this.invalidateUserCache(id);
+    // After the delete and the cache invalidation, so a subscriber that reads
+    // back through this service cannot see the row it was told is gone. The
+    // address travels on the event because nothing can look it up any more.
+    this.events.publish("user.deleted", { userId: id, email: user.email });
   }
 
   async getPreferences(requester: RequesterIdentity, userId: string): Promise<UserPreferences> {

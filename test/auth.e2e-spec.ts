@@ -1,16 +1,18 @@
 import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
-import { createTestApp, type TestApp } from "./helpers/create-test-app";
+import { createTestApp, type RecordingEmailQueue, type TestApp } from "./helpers/create-test-app";
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
 
 describe("Auth (e2e)", () => {
   let app: INestApplication;
   let prisma: InMemoryPrismaService;
+  let emails: RecordingEmailQueue;
 
   beforeAll(async () => {
     const fixture: TestApp = await createTestApp();
     app = fixture.app;
     prisma = fixture.prisma;
+    emails = fixture.emails;
   });
 
   afterAll(async () => {
@@ -19,6 +21,7 @@ describe("Auth (e2e)", () => {
 
   beforeEach(() => {
     prisma.reset();
+    emails.reset();
   });
 
   const TEST_EMAIL = "e2e@example.com";
@@ -41,6 +44,33 @@ describe("Auth (e2e)", () => {
         refreshToken: expect.any(String),
         expiresIn: 900,
       });
+    });
+
+    it("queues a welcome email through the domain event bus", async () => {
+      await request(app.getHttpServer())
+        .post("/v1/auth/register")
+        .send({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME })
+        .expect(201);
+
+      // Nothing in the request path calls the queue. `AuthService` published
+      // `user.registered`, the subscriber loader had wired `WelcomeEmailListener`
+      // to it at bootstrap, and the listener enqueued this — the whole chain,
+      // asserted from outside.
+      expect(emails.enqueued).toContainEqual({
+        job: "send-welcome",
+        data: { to: TEST_EMAIL, name: TEST_NAME },
+      });
+    });
+
+    it("still registers when the welcome email cannot be queued", async () => {
+      jest.spyOn(emails, "sendWelcomeEmail").mockRejectedValueOnce(new Error("redis down"));
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/register")
+        .send({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME })
+        .expect(201);
+
+      expect(prisma._users.size).toBe(1);
     });
 
     it("returns 409 when email is already registered", async () => {

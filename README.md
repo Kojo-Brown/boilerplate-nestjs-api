@@ -106,6 +106,10 @@ docker-compose up        # postgres + redis + api
   `@Timed()` method decorators: how metadata written at import time becomes
   behaviour once the container is up, the order they compose in, and the targets
   the weaver refuses to wrap rather than silently no-op on.
+- [docs/events.md](./docs/events.md) — the typed domain event bus: how a
+  publisher stays ignorant of its subscribers, why a failing handler must never
+  reach the operation that emitted the event, and what an in-memory bus cannot
+  promise you.
 
 ## Spec Progress
 

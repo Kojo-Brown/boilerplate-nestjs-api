@@ -4,6 +4,8 @@ import { ConfigService } from "@nestjs/config";
 import * as argon2 from "argon2";
 import { UsersService } from "@/users/users.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
+import { DomainEventBus } from "@/events";
+import type { User } from "@prisma/client";
 import type { RegisterDto } from "./dto/register.dto";
 import type { LoginDto } from "./dto/login.dto";
 import type { GoogleProfile } from "./strategies/google.strategy";
@@ -15,6 +17,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly events: DomainEventBus,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -22,6 +25,7 @@ export class AuthService {
     if (exists) throw new ConflictException("Email already in use");
     const hash = await argon2.hash(dto.password);
     const user = await this.users.create({ email: dto.email, password: hash, name: dto.name });
+    this.publishRegistered(user);
     return this.issueTokens(user.id, user.email, user.role);
   }
 
@@ -64,9 +68,30 @@ export class AuthService {
           provider: "google",
           providerAccountId: profile.googleId,
         });
+        // Only this branch is a registration. The one above links Google to an
+        // account that already exists and has already been welcomed, and the
+        // outer `if` is an ordinary sign-in.
+        this.publishRegistered(user);
       }
     }
     return this.issueTokens(user.id, user.email, user.role);
+  }
+
+  /**
+   * Announces a new account.
+   *
+   * Published after the row is committed and before tokens are issued, so a
+   * subscriber never reacts to a user that does not exist. It is deliberately
+   * not awaited: `publish` returns once every subscriber has started, so a
+   * welcome email that cannot be queued delays nothing and fails nothing here.
+   */
+  private publishRegistered(user: User): void {
+    this.events.publish("user.registered", {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      provider: user.provider,
+    });
   }
 
   private async issueTokens(userId: string, email: string, role: string) {

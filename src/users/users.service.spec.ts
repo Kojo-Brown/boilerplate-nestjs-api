@@ -5,6 +5,7 @@ import { UsersService, USERS_LIST_CACHE_KEY, userCacheKey } from "./users.servic
 import { UserAccessPolicy } from "./users.access-policy";
 import { USER_PREFERENCES_STORE, USER_READER, USER_WRITER } from "./ports";
 import { CacheService } from "@/common/cache";
+import { DomainEventBus } from "@/events";
 import { InMemoryUsersRepository } from "@/test-utils/in-memory-users.repository";
 import { DEFAULT_USER_PREFERENCES } from "./types/user-preferences";
 import type { RequesterIdentity } from "./users.access-policy";
@@ -23,6 +24,9 @@ const mockCache = {
   delMany: jest.fn().mockResolvedValue(undefined),
   reset: jest.fn(),
 };
+
+/** Publishing is a side effect with nothing observable, so this one is a spy. */
+const mockEvents = { publish: jest.fn() };
 
 const asUser = (id: string): RequesterIdentity => ({ id, role: Role.USER });
 const asAdmin = (id: string): RequesterIdentity => ({ id, role: Role.ADMIN });
@@ -45,6 +49,7 @@ describe("UsersService", () => {
         { provide: USER_WRITER, useValue: store },
         { provide: USER_PREFERENCES_STORE, useValue: store },
         { provide: CacheService, useValue: mockCache },
+        { provide: DomainEventBus, useValue: mockEvents },
       ],
     }).compile();
 
@@ -223,6 +228,23 @@ describe("UsersService", () => {
 
     it("throws NotFoundException for missing user", async () => {
       await expect(service.remove("missing")).rejects.toThrow(NotFoundException);
+    });
+
+    it("announces user.deleted with the address, which nothing can look up afterwards", async () => {
+      store.seed({ id: "user-1", email: "test@example.com" });
+
+      await service.remove("user-1");
+
+      expect(mockEvents.publish).toHaveBeenCalledWith("user.deleted", {
+        userId: "user-1",
+        email: "test@example.com",
+      });
+    });
+
+    it("announces nothing when the user does not exist", async () => {
+      await expect(service.remove("missing")).rejects.toThrow(NotFoundException);
+
+      expect(mockEvents.publish).not.toHaveBeenCalled();
     });
   });
 

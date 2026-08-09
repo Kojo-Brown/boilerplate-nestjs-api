@@ -6,6 +6,7 @@ import { Role } from "@prisma/client";
 import { AuthService } from "./auth.service";
 import { UsersService } from "@/users/users.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
+import { DomainEventBus } from "@/events";
 import type { User } from "@prisma/client";
 
 jest.mock("argon2", () => ({
@@ -41,6 +42,15 @@ const mockJwtService = {
   sign: jest.fn(),
 };
 
+/**
+ * A double rather than a real bus: what matters here is that registration
+ * announces itself with the right payload, not what any subscriber does with
+ * it. `src/events` covers delivery.
+ */
+const mockEvents = {
+  publish: jest.fn(),
+};
+
 const mockConfigService = {
   get: jest.fn(),
   getOrThrow: jest.fn(),
@@ -71,6 +81,7 @@ describe("AuthService", () => {
         { provide: JwtService, useValue: mockJwtService },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: PrismaService, useValue: mockPrismaService },
+        { provide: DomainEventBus, useValue: mockEvents },
       ],
     }).compile();
 
@@ -108,6 +119,38 @@ describe("AuthService", () => {
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
       expect(typeof result.refreshToken).toBe("string");
+    });
+
+    it("announces user.registered so subscribers need no reference to auth", async () => {
+      mockUsersService.findByEmail.mockResolvedValue(null);
+      argon2.hash.mockResolvedValue("hashed-password");
+      mockUsersService.create.mockResolvedValue(mockUser);
+      mockRefreshToken.create.mockResolvedValue({
+        id: "rt-1",
+        token: "refresh-token",
+        userId: "user-1",
+        expiresAt: new Date(),
+        createdAt: new Date(),
+      });
+
+      await service.register({ email: "test@example.com", password: "password123" });
+
+      expect(mockEvents.publish).toHaveBeenCalledWith("user.registered", {
+        userId: mockUser.id,
+        email: mockUser.email,
+        name: mockUser.name,
+        provider: null,
+      });
+    });
+
+    it("announces nothing when the email is already taken", async () => {
+      mockUsersService.findByEmail.mockResolvedValue(mockUser);
+
+      await expect(
+        service.register({ email: "test@example.com", password: "password123" }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(mockEvents.publish).not.toHaveBeenCalled();
     });
   });
 
@@ -234,6 +277,10 @@ describe("AuthService", () => {
         }),
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        "user.registered",
+        expect.objectContaining({ email: googleProfile.email, provider: "google" }),
+      );
     });
 
     it("links Google account to an existing user found by email", async () => {
@@ -259,6 +306,8 @@ describe("AuthService", () => {
         expect.objectContaining({ provider: "google", providerAccountId: "g-123" }),
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
+      // Linking is not a registration: this account has been welcomed already.
+      expect(mockEvents.publish).not.toHaveBeenCalled();
     });
 
     it("returns tokens for an existing user matched by Google provider account ID", async () => {
@@ -277,6 +326,7 @@ describe("AuthService", () => {
       expect(mockUsersService.findByEmail).not.toHaveBeenCalled();
       expect(mockUsersService.create).not.toHaveBeenCalled();
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
+      expect(mockEvents.publish).not.toHaveBeenCalled();
     });
   });
 });

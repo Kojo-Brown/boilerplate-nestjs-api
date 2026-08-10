@@ -7,3 +7,7 @@ coverage
 
 # macOS
 .DS_Store
+
+# Default STORAGE_LOCAL_ROOT for STORAGE_ADAPTER=local. Real uploaded files;
+# never a build artifact, and never something to commit.
+/storage/

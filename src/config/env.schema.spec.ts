@@ -140,3 +140,77 @@ describe("envSchema — notifications", () => {
     expect(() => envSchema.parse({ ...BASE_ENV, EXPO_PUSH_API_BASE_URL: "exp.host" })).toThrow();
   });
 });
+
+describe("envSchema — storage", () => {
+  it("defaults to the in-memory adapter so a clean clone boots with no configuration", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.STORAGE_ADAPTER).toBe("memory");
+    expect(env.STORAGE_LOCAL_ROOT).toBe("./storage");
+  });
+
+  it("rejects a backend that has no adapter", () => {
+    expect(() => envSchema.parse({ ...BASE_ENV, STORAGE_ADAPTER: "azure" })).toThrow();
+  });
+
+  it("refuses to boot on S3 without credentials, naming each missing variable", () => {
+    // The failure this prevents is a deploy that starts happily and 503s on the
+    // first upload.
+    expect(() => envSchema.parse({ ...BASE_ENV, STORAGE_ADAPTER: "s3" })).toThrow(
+      /S3_BUCKET is required when STORAGE_ADAPTER=s3/,
+    );
+  });
+
+  it("accepts S3 once every credential is present", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      STORAGE_ADAPTER: "s3",
+      S3_BUCKET: "app-uploads",
+      S3_ACCESS_KEY_ID: "fake-access-key-id",
+      S3_SECRET_ACCESS_KEY: "fake-secret-access-key",
+    });
+
+    expect(env.STORAGE_ADAPTER).toBe("s3");
+    expect(env.S3_REGION).toBe("us-east-1");
+  });
+
+  it("does not require S3 credentials for the other backends", () => {
+    // Selecting one adapter must not drag in another's configuration — that is
+    // the point of selecting rather than configuring all three.
+    expect(envSchema.parse({ ...BASE_ENV, STORAGE_ADAPTER: "local" }).STORAGE_ADAPTER).toBe(
+      "local",
+    );
+  });
+
+  it("refuses the in-memory adapter in production", () => {
+    // Unlike every other misconfiguration here, this one produces no error at
+    // runtime: uploads succeed and the files are simply gone after a restart.
+    expect(() =>
+      envSchema.parse({ ...BASE_ENV, NODE_ENV: "production", STORAGE_ADAPTER: "memory" }),
+    ).toThrow(/loses every stored object on restart/);
+  });
+
+  it("refuses the in-memory adapter in production even by default", () => {
+    // The default is the dangerous value, so leaving it unset must fail too.
+    expect(() => envSchema.parse({ ...BASE_ENV, NODE_ENV: "production" })).toThrow(
+      /STORAGE_ADAPTER=memory/,
+    );
+  });
+
+  it("allows the local disk in production, since a single node is a real deployment", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      NODE_ENV: "production",
+      STORAGE_ADAPTER: "local",
+      STORAGE_LOCAL_ROOT: "/var/lib/app/storage",
+    });
+
+    expect(env.STORAGE_LOCAL_ROOT).toBe("/var/lib/app/storage");
+  });
+
+  it("allows the in-memory adapter in test and development", () => {
+    for (const NODE_ENV of ["test", "development"] as const) {
+      expect(envSchema.parse({ ...BASE_ENV, NODE_ENV }).STORAGE_ADAPTER).toBe("memory");
+    }
+  });
+});

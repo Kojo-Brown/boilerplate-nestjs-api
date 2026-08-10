@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
+import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
 
 export const envSchema = z
   .object({
@@ -14,6 +15,20 @@ export const envSchema = z
     GOOGLE_CALLBACK_URL: z.string().optional(),
     ALLOWED_ORIGINS: z.string().default("*"),
     REDIS_URL: z.string().optional(),
+
+    /**
+     * Which backend `StorageService` stores files through.
+     *
+     * Defaults to `memory` so a clean clone boots with no storage
+     * configuration at all — the same reason `PAYMENTS_PROVIDER` defaults to
+     * `mock`. That default is refused outright in production below, because a
+     * memory-backed store does not fail loudly: it accepts every upload and
+     * loses them all on the next deploy.
+     */
+    STORAGE_ADAPTER: z.enum(STORAGE_ADAPTER_NAMES).default("memory"),
+    /** Root directory for `STORAGE_ADAPTER=local`. Created on first write. */
+    STORAGE_LOCAL_ROOT: z.string().default("./storage"),
+
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default("us-east-1"),
     S3_BUCKET: z.string().optional(),
@@ -70,6 +85,42 @@ export const envSchema = z
    * factory refuses the incomplete one if anything asks for it by name.
    */
   .superRefine((env, ctx) => {
+    /**
+     * Selecting S3 without its credentials is a deployment that boots happily
+     * and 503s on the first upload — the same failure the payment block below
+     * exists to prevent, so it gets the same treatment.
+     */
+    if (env.STORAGE_ADAPTER === "s3") {
+      for (const key of ["S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} is required when STORAGE_ADAPTER=s3`,
+          });
+        }
+      }
+    }
+
+    /**
+     * The in-memory store is refused in production rather than warned about.
+     *
+     * Every other misconfiguration in this file produces an error someone can
+     * see. This one does not: uploads succeed, downloads succeed, and the files
+     * are gone after the next restart — silently, and only for objects written
+     * before it. A default that is right for a test and catastrophic in
+     * production has to be unable to reach production.
+     */
+    if (env.NODE_ENV === "production" && env.STORAGE_ADAPTER === "memory") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["STORAGE_ADAPTER"],
+        message:
+          "STORAGE_ADAPTER=memory loses every stored object on restart and must not be " +
+          "used in production. Set STORAGE_ADAPTER=s3, or =local for a single-node deployment.",
+      });
+    }
+
     if (env.PAYMENTS_PROVIDER === "stripe" && !env.STRIPE_SECRET_KEY) {
       ctx.addIssue({
         code: "custom",

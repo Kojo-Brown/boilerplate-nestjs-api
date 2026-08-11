@@ -6,6 +6,7 @@ import { PrismaModule } from "./common/prisma/prisma.module";
 import { AppCacheModule } from "./common/cache";
 import { AspectsModule } from "./common/aspects";
 import { EventsModule } from "./events";
+import { DiScopesModule } from "./di-scopes";
 import { UsersModule } from "./users/users.module";
 import { AuthModule } from "./auth/auth.module";
 import { StorageModule } from "./storage/storage.module";
@@ -39,6 +40,10 @@ import { envSchema } from "./config/env.schema";
     HealthModule,
     QueueModule,
     ShutdownModule,
+    // Teaching module: the three provider scopes, and `ScopeAudit`, which
+    // reports at boot what the container rebuilds per request. See
+    // docs/di-scopes.md. Safe to delete along with `src/di-scopes`.
+    DiScopesModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ProxyAwareThrottlerGuard }],
 })

@@ -110,6 +110,10 @@ docker-compose up        # postgres + redis + api
   publisher stays ignorant of its subscribers, why a failing handler must never
   reach the operation that emitted the event, and what an in-memory bus cannot
   promise you.
+- [docs/di-scopes.md](./docs/di-scopes.md) — provider scopes: what `DEFAULT`,
+  `REQUEST` and `TRANSIENT` do to instance lifetime, how one request-scoped
+  dependency silently converts every consumer above it, what that actually
+  costs (measured), and the two ways to reach request data without paying it.
 
 ## Spec Progress
 

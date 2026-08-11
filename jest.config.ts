@@ -14,6 +14,11 @@ const config: Config = {
   collectCoverageFrom: [
     "**/*.ts",
     "!**/*.spec.ts",
+    // Benchmarks are run by hand (`pnpm bench:scopes`) and measure rather than
+    // assert. Holding one to a coverage threshold would mean asserting on a
+    // timing, which is the one thing a CI runner cannot be trusted to
+    // reproduce. `testRegex` already keeps them out of the suite.
+    "!**/*.bench.ts",
     "!main.ts",
     "!**/*.module.ts",
     "!**/dto/**",

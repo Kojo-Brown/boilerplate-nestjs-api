@@ -203,6 +203,10 @@ describe("envSchema — storage", () => {
       NODE_ENV: "production",
       STORAGE_ADAPTER: "local",
       STORAGE_LOCAL_ROOT: "/var/lib/app/storage",
+      // Unrelated to storage, but production refuses the in-memory idempotency
+      // store too, and this test is about the storage rule on its own.
+      IDEMPOTENCY_STORE: "redis",
+      REDIS_URL: "redis://localhost:6379",
     });
 
     expect(env.STORAGE_LOCAL_ROOT).toBe("/var/lib/app/storage");
@@ -211,6 +215,59 @@ describe("envSchema — storage", () => {
   it("allows the in-memory adapter in test and development", () => {
     for (const NODE_ENV of ["test", "development"] as const) {
       expect(envSchema.parse({ ...BASE_ENV, NODE_ENV }).STORAGE_ADAPTER).toBe("memory");
+    }
+  });
+});
+
+describe("envSchema — idempotency", () => {
+  it("defaults to the in-memory store and a 24-hour window", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.IDEMPOTENCY_STORE).toBe("memory");
+    expect(env.IDEMPOTENCY_TTL_SECONDS).toBe(86_400);
+  });
+
+  it("coerces the TTL from the string an environment actually supplies", () => {
+    expect(
+      envSchema.parse({ ...BASE_ENV, IDEMPOTENCY_TTL_SECONDS: "600" }).IDEMPOTENCY_TTL_SECONDS,
+    ).toBe(600);
+  });
+
+  it.each(["0", "-1", "1.5", "not-a-number"])("rejects a TTL of %s", (value) => {
+    // A zero or negative window would expire every record the instant it was
+    // written, which looks exactly like the feature being switched off.
+    expect(() => envSchema.parse({ ...BASE_ENV, IDEMPOTENCY_TTL_SECONDS: value })).toThrow();
+  });
+
+  it("refuses to boot on Redis without a URL", () => {
+    // Otherwise the deployment looks healthy and only finds out on the first
+    // request carrying an Idempotency-Key.
+    expect(() => envSchema.parse({ ...BASE_ENV, IDEMPOTENCY_STORE: "redis" })).toThrow(
+      /REDIS_URL is required when IDEMPOTENCY_STORE=redis/,
+    );
+  });
+
+  it("accepts Redis once the URL is present", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      IDEMPOTENCY_STORE: "redis",
+      REDIS_URL: "redis://localhost:6379",
+    });
+
+    expect(env.IDEMPOTENCY_STORE).toBe("redis");
+  });
+
+  it("refuses the in-memory store in production even by default", () => {
+    // The default is the dangerous value. A per-process store stops
+    // deduplicating the moment a second replica exists, and does it silently.
+    expect(() =>
+      envSchema.parse({ ...BASE_ENV, NODE_ENV: "production", STORAGE_ADAPTER: "local" }),
+    ).toThrow(/IDEMPOTENCY_STORE=memory/);
+  });
+
+  it("allows the in-memory store in test and development", () => {
+    for (const NODE_ENV of ["test", "development"] as const) {
+      expect(envSchema.parse({ ...BASE_ENV, NODE_ENV }).IDEMPOTENCY_STORE).toBe("memory");
     }
   });
 });

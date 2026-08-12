@@ -114,6 +114,11 @@ docker-compose up        # postgres + redis + api
   `REQUEST` and `TRANSIENT` do to instance lifetime, how one request-scoped
   dependency silently converts every consumer above it, what that actually
   costs (measured), and the two ways to reach request data without paying it.
+- [docs/idempotency.md](./docs/idempotency.md) — the `Idempotency-Key` header:
+  what a client sends and what each answer means, how a retry is told apart from
+  a key reused for a different request, why an unreachable store refuses the
+  request rather than running it, and what the in-memory store cannot promise
+  you.
 
 ## Spec Progress
 

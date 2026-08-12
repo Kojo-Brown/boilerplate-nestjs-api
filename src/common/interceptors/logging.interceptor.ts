@@ -1,6 +1,6 @@
 import { Injectable, NestInterceptor, ExecutionContext, CallHandler, Logger } from "@nestjs/common";
 import { Observable } from "rxjs";
-import { tap } from "rxjs/operators";
+import { finalize } from "rxjs/operators";
 import type { Request, Response } from "express";
 import { randomUUID } from "crypto";
 import type { AuthenticatedUser } from "@/auth/strategies/jwt.strategy";
@@ -26,12 +26,15 @@ export class LoggingInterceptor implements NestInterceptor {
     req.headers[CORRELATION_ID_HEADER] = correlationId;
     res.setHeader(CORRELATION_ID_HEADER, correlationId);
 
-    return next.handle().pipe(
-      tap({
-        next: () => this.writeLog(req, res.statusCode, startedAt, correlationId),
-        error: () => this.writeLog(req, res.statusCode || 500, startedAt, correlationId),
-      }),
-    );
+    // `finalize` rather than `tap`, because an access log has to record every
+    // request that ends, not only the ones that produce a value. An interceptor
+    // downstream may answer the request itself and complete without emitting —
+    // `IdempotencyInterceptor` does exactly that when it replays a stored
+    // response — and a client that disconnects unsubscribes without either a
+    // `next` or an `error`. Both used to leave no line at all.
+    return next
+      .handle()
+      .pipe(finalize(() => this.writeLog(req, res.statusCode || 500, startedAt, correlationId)));
   }
 
   private writeLog(

@@ -1,7 +1,7 @@
 import { LoggingInterceptor, CORRELATION_ID_HEADER } from "./logging.interceptor";
 import type { ExecutionContext, CallHandler } from "@nestjs/common";
 import { Logger } from "@nestjs/common";
-import { of, throwError, firstValueFrom } from "rxjs";
+import { EMPTY, of, throwError, firstValueFrom, lastValueFrom } from "rxjs";
 
 function makeContext(overrides?: {
   correlationId?: string;
@@ -103,5 +103,21 @@ describe("LoggingInterceptor", () => {
     const { context } = makeContext();
     const result = await firstValueFrom(interceptor.intercept(context, makeHandler(payload)));
     expect(result).toEqual(payload);
+  });
+
+  it("still logs when a downstream interceptor answers the request itself", async () => {
+    // An interceptor may complete without emitting — `IdempotencyInterceptor`
+    // does exactly that when it replays a stored response. There is no `next`
+    // and no `error`, so a `tap`-based log would leave the request out of the
+    // access log entirely.
+    const { context } = makeContext();
+
+    await lastValueFrom(interceptor.intercept(context, { handle: () => EMPTY } as CallHandler), {
+      defaultValue: undefined,
+    });
+
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const logged = JSON.parse(logSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+    expect(logged.statusCode).toBe(200);
   });
 });

@@ -5,6 +5,7 @@ import { AppModule } from "./app.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-envelope.interceptor";
 import { LoggingInterceptor } from "./common/interceptors/logging.interceptor";
+import { IdempotencyInterceptor } from "./common/idempotency";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { ConfigService } from "@nestjs/config";
 
@@ -30,7 +31,16 @@ async function bootstrap() {
 
   const reflector = app.get(Reflector);
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.useGlobalInterceptors(new LoggingInterceptor(), new ResponseEnvelopeInterceptor(reflector));
+  // Order is load-bearing. Logging is outermost so a replayed request still
+  // gets a correlation id and an access-log line. Idempotency sits above the
+  // envelope because a replay must be written verbatim rather than handed back
+  // to the serialiser — and because what it records is read off `res`, after
+  // every interceptor, pipe and filter has had its turn.
+  app.useGlobalInterceptors(
+    new LoggingInterceptor(),
+    app.get(IdempotencyInterceptor),
+    new ResponseEnvelopeInterceptor(reflector),
+  );
 
   app.enableCors({
     origin: config.get("ALLOWED_ORIGINS", "*"),

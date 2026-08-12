@@ -4,6 +4,7 @@ import { ConfigModule } from "@nestjs/config";
 import { ThrottlerModule } from "@nestjs/throttler";
 import { PrismaModule } from "./common/prisma/prisma.module";
 import { AppCacheModule } from "./common/cache";
+import { IdempotencyModule } from "./common/idempotency";
 import { AspectsModule } from "./common/aspects";
 import { EventsModule } from "./events";
 import { DiScopesModule } from "./di-scopes";
@@ -29,6 +30,8 @@ import { envSchema } from "./config/env.schema";
     AppCacheModule,
     // After AppCacheModule: `ASPECT_CACHE` is an alias of its `CacheService`.
     AspectsModule,
+    // Global: `IdempotencyInterceptor` is bound in main.ts, outside any module.
+    IdempotencyModule,
     // Global: any module publishes through `DomainEventBus`, and subscribers
     // are discovered wherever they are declared.
     EventsModule,

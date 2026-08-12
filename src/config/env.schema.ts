@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { IDEMPOTENCY_STORE_NAMES } from "@/common/idempotency/ports";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
 
@@ -28,6 +29,23 @@ export const envSchema = z
     STORAGE_ADAPTER: z.enum(STORAGE_ADAPTER_NAMES).default("memory"),
     /** Root directory for `STORAGE_ADAPTER=local`. Created on first write. */
     STORAGE_LOCAL_ROOT: z.string().default("./storage"),
+
+    /**
+     * Where `Idempotency-Key` records are kept.
+     *
+     * Defaults to `memory` for the same reason `STORAGE_ADAPTER` does — a clean
+     * clone boots with nothing configured — and is refused in production for a
+     * sharper version of the same reason: two replicas do not share a `Map`, so
+     * the retry that lands on the other one executes the operation twice, which
+     * is exactly what the header was sent to prevent.
+     */
+    IDEMPOTENCY_STORE: z.enum(IDEMPOTENCY_STORE_NAMES).default("memory"),
+    /**
+     * How long a key stays claimed. 24 hours matches Stripe's window and is
+     * comfortably longer than any client's retry ladder; the record is what
+     * makes a retry safe, so it has to outlive the retrying.
+     */
+    IDEMPOTENCY_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
 
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default("us-east-1"),
@@ -118,6 +136,35 @@ export const envSchema = z
         message:
           "STORAGE_ADAPTER=memory loses every stored object on restart and must not be " +
           "used in production. Set STORAGE_ADAPTER=s3, or =local for a single-node deployment.",
+      });
+    }
+
+    /**
+     * The Redis-backed dedupe store has nothing to connect to without a URL,
+     * and it would only find that out on the first request carrying an
+     * `Idempotency-Key` — long after the deployment looked healthy.
+     */
+    if (env.IDEMPOTENCY_STORE === "redis" && !env.REDIS_URL) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["REDIS_URL"],
+        message: "REDIS_URL is required when IDEMPOTENCY_STORE=redis",
+      });
+    }
+
+    /**
+     * Refused in production for the same reason `STORAGE_ADAPTER=memory` is,
+     * only worse: a per-process store does not lose data visibly, it silently
+     * stops deduplicating the moment a second replica exists — and the whole
+     * point of the feature is that the second charge never happens.
+     */
+    if (env.NODE_ENV === "production" && env.IDEMPOTENCY_STORE === "memory") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["IDEMPOTENCY_STORE"],
+        message:
+          "IDEMPOTENCY_STORE=memory deduplicates within one process only and must not be " +
+          "used in production. Set IDEMPOTENCY_STORE=redis and point REDIS_URL at a shared Redis.",
       });
     }
 

@@ -10,6 +10,7 @@ import { PrismaService } from "@/common/prisma/prisma.service";
 import { AllExceptionsFilter } from "@/common/filters/all-exceptions.filter";
 import { ResponseEnvelopeInterceptor } from "@/common/interceptors/response-envelope.interceptor";
 import { LoggingInterceptor } from "@/common/interceptors/logging.interceptor";
+import { IdempotencyInterceptor } from "@/common/idempotency";
 import { InMemoryPrismaService } from "./in-memory-prisma";
 
 /**
@@ -101,7 +102,14 @@ export async function createTestApp(): Promise<TestApp> {
 
   const reflector = app.get(Reflector);
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.useGlobalInterceptors(new LoggingInterceptor(), new ResponseEnvelopeInterceptor(reflector));
+  // Same order as main.ts, and for the same reasons — see the comment there.
+  // An e2e suite that bound these differently would be testing an application
+  // nobody deploys.
+  app.useGlobalInterceptors(
+    new LoggingInterceptor(),
+    app.get(IdempotencyInterceptor),
+    new ResponseEnvelopeInterceptor(reflector),
+  );
 
   // `init()` is also what runs `onApplicationBootstrap`, where the event
   // subscriber loader registers every `@OnDomainEvent` method. Without it the

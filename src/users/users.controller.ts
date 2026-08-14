@@ -25,6 +25,14 @@ import {
 } from "@nestjs/swagger";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { CacheKey, CacheTTL, HttpCacheInterceptor } from "@/common/cache";
+import {
+  ApiConditionalWrite,
+  ApiEntityTag,
+  IfMatch,
+  versioned,
+  type ExpectedVersion,
+} from "@/common/concurrency";
+import { UserResourceCacheInterceptor } from "./user-resource.cache.interceptor";
 import { USERS_LIST_CACHE_KEY } from "./users.service";
 import { UsersService } from "./users.service";
 import { UserAccessPolicy } from "./users.access-policy";
@@ -80,33 +88,43 @@ export class UsersController {
   }
 
   @Get(":id")
-  @UseInterceptors(HttpCacheInterceptor)
+  @UseInterceptors(UserResourceCacheInterceptor)
   @CacheTTL(30_000)
-  @ApiOperation({ summary: "Get user by ID" })
+  @ApiOperation({
+    summary: "Get user by ID",
+    description:
+      "Returns the user and an `ETag` naming its version. Send that `ETag` back in `If-Match` to modify it.",
+  })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserResponseDto) })
+  @ApiEntityTag()
   @ApiNotFound("User")
   @ApiCommonErrors()
-  findOne(@Param("id") id: string) {
-    return this.users.findById(id);
+  async findOne(@Param("id") id: string) {
+    const user = await this.users.findById(id);
+    return versioned(user, user.version);
   }
 
   @Patch(":id")
   @ApiOperation({
     summary: "Update user profile",
-    description: "A user may update their own profile. Admins may update any user.",
+    description:
+      "A user may update their own profile. Admins may update any user. Requires `If-Match`: the write applies only if the user is still at the version named there, and answers 412 otherwise.",
   })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserResponseDto) })
+  @ApiConditionalWrite()
   @ApiNotFound("User")
   @ApiForbiddenRole()
   @ApiCommonErrors()
-  update(
+  async update(
     @Param("id") id: string,
     @Body() dto: UpdateUserDto,
     @CurrentUser() requester: AuthenticatedUser,
+    @IfMatch() expected: ExpectedVersion,
   ) {
-    return this.users.updateSelf(requester, id, dto);
+    const user = await this.users.updateSelf(requester, id, dto, expected);
+    return versioned(user, user.version);
   }
 
   @Post(":id/avatar")
@@ -144,6 +162,7 @@ export class UsersController {
     },
   })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserResponseDto) })
+  @ApiConditionalWrite()
   @ApiNotFound("User")
   @ApiForbiddenRole()
   @ApiCommonErrors()
@@ -151,15 +170,23 @@ export class UsersController {
     @Param("id") id: string,
     @UploadedFile() file: Express.Multer.File | undefined,
     @CurrentUser() requester: AuthenticatedUser,
+    @IfMatch() expected: ExpectedVersion,
   ) {
     if (!file) throw new BadRequestException("No file uploaded");
     // Checked here rather than in `updateAvatar` so a forbidden request never
     // reaches S3 — the upload happens before the row is touched.
     this.policy.assertCanAct(requester, id, "update:avatar");
+    // Same reasoning for the precondition: a request that already cannot win
+    // should not leave a 5 MB object in the bucket that nothing will ever
+    // reference. This does not make the write safe — the row can still move
+    // between here and the update, which is what the conditional write below
+    // is for — it just keeps the common conflict from costing an upload.
+    await this.users.assertPrecondition(id, expected);
     const ext = (file.originalname.split(".").pop() ?? "bin").toLowerCase();
     const key = `avatars/${id}/${Date.now()}.${ext}`;
     await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
-    return this.users.updateAvatar(id, key);
+    const user = await this.users.updateAvatar(id, key, expected);
+    return versioned(user, user.version);
   }
 
   @Delete(":id")
@@ -169,11 +196,12 @@ export class UsersController {
   @ApiOperation({ summary: "Delete user (admin)" })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiNoContentResponse({ description: "User deleted" })
+  @ApiConditionalWrite()
   @ApiNotFound("User")
   @ApiForbiddenRole()
   @ApiCommonErrors()
-  remove(@Param("id") id: string) {
-    return this.users.remove(id);
+  remove(@Param("id") id: string, @IfMatch() expected: ExpectedVersion) {
+    return this.users.remove(id, expected);
   }
 
   @Get(":id/preferences")
@@ -184,29 +212,39 @@ export class UsersController {
   })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserPreferencesDto) })
+  @ApiEntityTag()
   @ApiNotFound("User")
   @ApiForbiddenRole()
   @ApiCommonErrors()
-  getPreferences(@Param("id") id: string, @CurrentUser() requester: AuthenticatedUser) {
-    return this.users.getPreferences(requester, id);
+  async getPreferences(@Param("id") id: string, @CurrentUser() requester: AuthenticatedUser) {
+    const { preferences, version } = await this.users.getPreferences(requester, id);
+    return versioned(preferences, version);
   }
 
   @Patch(":id/preferences")
   @ApiOperation({
     summary: "Update user preferences",
     description:
-      "Merges the provided fields into the user's stored preferences. Users may only update their own preferences; admins may update any.",
+      "Merges the provided fields into the user's stored preferences. Users may only update their own preferences; admins may update any. Requires `If-Match`; preferences share the user row's version, so a concurrent profile edit also invalidates it.",
   })
   @ApiParam({ name: "id", description: "User CUID", example: "clxxxxxxxxxxxxxxxx" })
   @ApiOkResponse({ type: ApiEnvelopeOf(UserPreferencesDto) })
+  @ApiConditionalWrite()
   @ApiNotFound("User")
   @ApiForbiddenRole()
   @ApiCommonErrors()
-  updatePreferences(
+  async updatePreferences(
     @Param("id") id: string,
     @Body() dto: UpdateUserPreferencesDto,
     @CurrentUser() requester: AuthenticatedUser,
+    @IfMatch() expected: ExpectedVersion,
   ) {
-    return this.users.updatePreferences(requester, id, dto);
+    const { preferences, version } = await this.users.updatePreferences(
+      requester,
+      id,
+      dto,
+      expected,
+    );
+    return versioned(preferences, version);
   }
 }

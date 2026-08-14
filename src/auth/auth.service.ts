@@ -5,6 +5,7 @@ import * as argon2 from "argon2";
 import { UsersService } from "@/users/users.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { DomainEventBus } from "@/events";
+import { UNCONDITIONAL } from "@/common/concurrency";
 import type { User } from "@prisma/client";
 import type { RegisterDto } from "./dto/register.dto";
 import type { LoginDto } from "./dto/login.dto";
@@ -57,10 +58,16 @@ export class AuthService {
     if (!user) {
       const byEmail = await this.users.findByEmail(profile.email);
       if (byEmail) {
-        user = await this.users.update(byEmail.id, {
-          provider: "google",
-          providerAccountId: profile.googleId,
-        });
+        // Unconditional, and deliberately so: linking a Google identity to an
+        // existing account is driven by the OAuth callback, not by a client
+        // that read a representation and is proposing an edit to it. There is
+        // no version the caller could have been holding, and refusing the link
+        // because an unrelated field moved would strand the sign-in.
+        user = await this.users.update(
+          byEmail.id,
+          { provider: "google", providerAccountId: profile.googleId },
+          UNCONDITIONAL,
+        );
       } else {
         user = await this.users.create({
           email: profile.email,

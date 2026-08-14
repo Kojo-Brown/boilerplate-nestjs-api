@@ -53,6 +53,26 @@ describe("Users (e2e)", () => {
     adminToken = adminLogin.body.data.accessToken as string;
   });
 
+  /**
+   * Reads the validator a client must hold before it may write.
+   *
+   * Round-tripped rather than hardcoded to `"0"`: the version a freshly
+   * registered user is at is an implementation detail, and a test that assumed
+   * one would start failing the day registration wrote to the row twice.
+   */
+  async function currentEtag(path: string, token: string): Promise<string> {
+    const res = await request(app.getHttpServer())
+      .get(path)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+
+    const etag = res.headers["etag"];
+    if (typeof etag !== "string") {
+      throw new Error(`GET ${path} returned no ETag; there is nothing to write against`);
+    }
+    return etag;
+  }
+
   // ─── List users ───────────────────────────────────────────────────────────────
 
   describe("GET /v1/users", () => {
@@ -143,6 +163,7 @@ describe("Users (e2e)", () => {
       const res = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", await currentEtag(`/v1/users/${userId}`, userToken))
         .send({ name: "Updated Name" })
         .expect(200);
 
@@ -155,6 +176,7 @@ describe("Users (e2e)", () => {
       const res = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${adminToken}`)
+        .set("If-Match", await currentEtag(`/v1/users/${userId}`, adminToken))
         .send({ name: "Admin-Set Name" })
         .expect(200);
 
@@ -196,6 +218,7 @@ describe("Users (e2e)", () => {
       await request(app.getHttpServer())
         .delete(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${adminToken}`)
+        .set("If-Match", await currentEtag(`/v1/users/${userId}`, adminToken))
         .expect(204);
 
       expect(prisma._users.has(userId)).toBe(false);
@@ -246,6 +269,7 @@ describe("Users (e2e)", () => {
       const patched = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}/preferences`)
         .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", await currentEtag(`/v1/users/${userId}/preferences`, userToken))
         .send({ smsNotifications: true })
         .expect(200);
 
@@ -302,6 +326,298 @@ describe("Users (e2e)", () => {
         path: expect.stringContaining("/v1/users/no-such-user-here"),
         timestamp: expect.any(String),
       });
+    });
+  });
+
+  // ─── Optimistic concurrency ──────────────────────────────────────────────────
+
+  describe("ETag / If-Match", () => {
+    it("returns a strong ETag on a read, which is what a write must echo", async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.headers["etag"]).toBe('"0"');
+      expect(res.body.data.version).toBe(0);
+    });
+
+    it("keeps the ETag stable across reads of an unchanged resource", async () => {
+      // Express would otherwise digest the response body, whose envelope
+      // carries a fresh `meta.timestamp` every time — a validator that changed
+      // on every read would make If-Match useless.
+      const first = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`);
+      const second = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`);
+
+      expect(second.headers["etag"]).toBe(first.headers["etag"]);
+      expect(second.text).not.toBe(first.text);
+    });
+
+    it("advances the ETag on a successful write and returns the new one", async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", '"0"')
+        .send({ name: "Ada" })
+        .expect(200);
+
+      expect(res.headers["etag"]).toBe('"1"');
+      expect(res.body.data.version).toBe(1);
+    });
+
+    it("serves the advanced ETag on the next read, not a cached one", async () => {
+      // `GET /users/:id` is cached for 30s. Before this feature the cache was
+      // keyed by URL while the invalidation used a different key, so the read
+      // came back pre-update — and would now hand out an ETag naming a version
+      // that no longer exists, refusing the client's own next write.
+      await request(app.getHttpServer())
+        .get(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", '"0"')
+        .send({ name: "Ada" })
+        .expect(200);
+
+      const reread = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(reread.headers["etag"]).toBe('"1"');
+      expect(reread.body.data.name).toBe("Ada");
+    });
+
+    it("answers 428 when a mutating request names no version", async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .send({ name: "Ada" })
+        .expect(428);
+
+      expect(res.body.statusCode).toBe(428);
+      expect(res.body.message).toMatch(/ETag/);
+    });
+
+    it("answers 412 when the resource has moved past the version named", async () => {
+      const etag = await currentEtag(`/v1/users/${userId}`, userToken);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", etag)
+        .send({ name: "First" })
+        .expect(200);
+
+      // The second writer is still holding the validator it read before the
+      // first one landed — the lost update this whole feature exists to refuse.
+      const conflict = await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", etag)
+        .send({ name: "Second" })
+        .expect(412);
+
+      expect(conflict.body.message).toContain('"1"');
+    });
+
+    it("leaves the winner's value in place after a refused write", async () => {
+      const etag = await currentEtag(`/v1/users/${userId}`, userToken);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", etag)
+        .send({ name: "First" });
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", etag)
+        .send({ name: "Second" })
+        .expect(412);
+
+      const reread = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`);
+
+      expect(reread.body.data.name).toBe("First");
+    });
+
+    it("lets the loser succeed once it re-reads and retries", async () => {
+      // The full read-modify-write loop a client is expected to run. It has to
+      // terminate, which is what the cache-key alignment above is for.
+      const stale = await currentEtag(`/v1/users/${userId}`, userToken);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", stale)
+        .send({ name: "First" })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", stale)
+        .send({ name: "Second" })
+        .expect(412);
+
+      const fresh = await currentEtag(`/v1/users/${userId}`, userToken);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", fresh)
+        .send({ name: "Second" })
+        .expect(200);
+    });
+
+    it("accepts `*` as a precondition asserting only that the user exists", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", "*")
+        .send({ name: "Ada" })
+        .expect(200);
+    });
+
+    it("accepts a list of entity-tags when any one of them matches", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", '"7", "0"')
+        .send({ name: "Ada" })
+        .expect(200);
+    });
+
+    it("answers 412 for a weak entity-tag, which If-Match compares strongly", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", 'W/"0"')
+        .send({ name: "Ada" })
+        .expect(412);
+    });
+
+    it("answers 400 for a malformed If-Match rather than ignoring it", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", "0")
+        .send({ name: "Ada" })
+        .expect(400);
+    });
+
+    // RFC 9110 §13.2.1: preconditions are evaluated after the server's normal
+    // request checks. Getting this backwards sends a client round a loop —
+    // fix the header, learn the body was wrong; fix the body, learn it never
+    // had permission.
+    it("answers 400 for an invalid body before complaining about a missing If-Match", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .send({ unknownField: "value" })
+        .expect(400);
+    });
+
+    it("answers 403 to a stranger before complaining about a missing If-Match", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${adminId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .send({ name: "Hacked" })
+        .expect(403);
+    });
+
+    it("answers 404 for an unknown user before complaining about a missing If-Match", async () => {
+      await request(app.getHttpServer())
+        .patch("/v1/users/nonexistent-id-xyz")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ name: "Nobody" })
+        .expect(404);
+    });
+
+    it("refuses a delete against a stale version and keeps the row", async () => {
+      const etag = await currentEtag(`/v1/users/${userId}`, adminToken);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", etag)
+        .send({ name: "Moved" })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .delete(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .set("If-Match", etag)
+        .expect(412);
+
+      expect(prisma._users.has(userId)).toBe(true);
+    });
+
+    it("shares one validator between a user and their preferences", async () => {
+      // Preferences are a JSON column on the user row, so a profile edit moves
+      // the validator a preferences write is holding. Conservative on purpose:
+      // one row, one version, no second counter for a client to confuse.
+      const etag = await currentEtag(`/v1/users/${userId}/preferences`, userToken);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", etag)
+        .send({ name: "Ada" })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}/preferences`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", etag)
+        .send({ smsNotifications: true })
+        .expect(412);
+    });
+
+    it("advances the shared validator when preferences are written", async () => {
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}/preferences`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", '"0"')
+        .send({ smsNotifications: true })
+        .expect(200);
+
+      const user = await request(app.getHttpServer())
+        .get(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`);
+
+      expect(user.headers["etag"]).toBe('"1"');
+    });
+
+    it("spends no upload on an avatar request that has already lost", async () => {
+      const stale = await currentEtag(`/v1/users/${userId}`, userToken);
+
+      await request(app.getHttpServer())
+        .patch(`/v1/users/${userId}`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", stale)
+        .send({ name: "Moved" })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post(`/v1/users/${userId}/avatar`)
+        .set("Authorization", `Bearer ${userToken}`)
+        .set("If-Match", stale)
+        .attach("file", Buffer.from("fake-jpeg-bytes"), {
+          filename: "photo.jpg",
+          contentType: "image/jpeg",
+        })
+        .expect(412);
     });
   });
 });

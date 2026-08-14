@@ -58,11 +58,16 @@ describe("Storage (e2e)", () => {
     expect(storage.supportsPresignedUrls).toBe(false);
   });
 
+  // The avatar route is a conditional write. `*` is the right precondition for
+  // a suite about where the bytes land: it asserts the user exists and nothing
+  // about which version, which is all these tests depend on.
+
   describe("avatar upload", () => {
     it("stores the file in the selected backend and records its key", async () => {
       const response = await request(app.getHttpServer())
         .post(`/v1/users/${userId}/avatar`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .attach("file", Buffer.from("fake-jpeg-bytes"), {
           filename: "photo.jpg",
           contentType: "image/jpeg",
@@ -87,6 +92,7 @@ describe("Storage (e2e)", () => {
       const response = await request(app.getHttpServer())
         .post(`/v1/users/${userId}/avatar`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .attach("file", Buffer.from("#!/bin/sh"), {
           filename: "payload.sh",
           contentType: "application/x-sh",

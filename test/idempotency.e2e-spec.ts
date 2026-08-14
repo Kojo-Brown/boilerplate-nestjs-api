@@ -75,6 +75,11 @@ describe("Idempotency (e2e)", () => {
     adminToken = adminLogin.body.data.accessToken as string;
   });
 
+  // Every mutating route on `/v1/users` now requires `If-Match`. This suite is
+  // about replay, not about concurrency, so it sends `*` — the entity-tag that
+  // asserts only "the resource exists", which is exactly the precondition these
+  // tests mean. Conflicts are covered in `users.e2e-spec.ts`.
+
   describe("without the header", () => {
     it("leaves existing routes exactly as they were", async () => {
       // The feature is opt-in per request. Every other e2e suite in this repo
@@ -83,10 +88,12 @@ describe("Idempotency (e2e)", () => {
       const first = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .send({ name: "First" });
       const second = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .send({ name: "Second" });
 
       expect(first.status).toBe(HttpStatus.OK);
@@ -102,6 +109,7 @@ describe("Idempotency (e2e)", () => {
       const first = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .send({ name: "Ada" });
 
@@ -111,6 +119,7 @@ describe("Idempotency (e2e)", () => {
       const retry = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .send({ name: "Ada" });
 
@@ -131,6 +140,7 @@ describe("Idempotency (e2e)", () => {
         request(app.getHttpServer())
           .patch(`/v1/users/${userId}`)
           .set("Authorization", `Bearer ${token}`)
+          .set("If-Match", "*")
           .set("Idempotency-Key", key)
           .send({ name: "Grace" });
 
@@ -150,6 +160,7 @@ describe("Idempotency (e2e)", () => {
         request(app.getHttpServer())
           .delete(`/v1/users/${userId}`)
           .set("Authorization", `Bearer ${adminToken}`)
+          .set("If-Match", "*")
           .set("Idempotency-Key", key);
 
       const first = await send();
@@ -172,6 +183,7 @@ describe("Idempotency (e2e)", () => {
         request(app.getHttpServer())
           .patch(`/v1/users/00000000-0000-4000-8000-000000000000`)
           .set("Authorization", `Bearer ${token}`)
+          .set("If-Match", "*")
           .set("Idempotency-Key", key)
           .send({ name: "Nobody" });
 
@@ -189,12 +201,14 @@ describe("Idempotency (e2e)", () => {
       await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .send({ name: "Ada" });
 
       const conflicting = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .send({ name: "Someone else" });
 
@@ -210,6 +224,7 @@ describe("Idempotency (e2e)", () => {
       const first = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}/preferences`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .set("Content-Type", "application/json")
         .send('{"theme":"dark","language":"fr"}');
@@ -217,6 +232,7 @@ describe("Idempotency (e2e)", () => {
       const retry = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}/preferences`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .set("Content-Type", "application/json")
         .send('{"language":"fr","theme":"dark"}');
@@ -233,6 +249,7 @@ describe("Idempotency (e2e)", () => {
       const response = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .send({ name: "Ada" });
 
@@ -261,6 +278,7 @@ describe("Idempotency (e2e)", () => {
       await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${token}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .send({ name: "Ada" });
 
@@ -274,6 +292,7 @@ describe("Idempotency (e2e)", () => {
       const theirs = await request(app.getHttpServer())
         .patch(`/v1/users/${userId}`)
         .set("Authorization", `Bearer ${otherToken}`)
+        .set("If-Match", "*")
         .set("Idempotency-Key", key)
         .send({ name: "Ada" });
 
@@ -296,6 +315,7 @@ describe("Idempotency (e2e)", () => {
         request(app.getHttpServer())
           .patch(`/v1/users/${userId}`)
           .set("Authorization", `Bearer ${token}`)
+          .set("If-Match", "*")
           .set("Idempotency-Key", key)
           .send({ name: "Concurrent" });
 

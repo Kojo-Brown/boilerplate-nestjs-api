@@ -1,4 +1,5 @@
 import type { User } from "@prisma/client";
+import type { ExpectedVersion } from "@/common/concurrency";
 
 /**
  * Write-side port for user persistence.
@@ -12,11 +13,26 @@ import type { User } from "@prisma/client";
 export interface UserWriter {
   create(data: CreateUserData): Promise<User>;
 
-  /** Rejects when no user has this id. */
-  update(id: string, data: UpdateUserData): Promise<User>;
+  /**
+   * Rejects when no user has this id, and with `VersionConflictError` when the
+   * row's version does not satisfy `expected`.
+   *
+   * `expected` is required rather than defaulted to unconditional: a forgotten
+   * argument would silently reopen the lost-update window at that one call
+   * site, and nothing in a review or a type check would show it. Writers that
+   * genuinely have no version to check pass `UNCONDITIONAL`, which says so.
+   *
+   * Every successful write increments the version, conditional or not — a row
+   * that could be changed without moving its validator would hand out `ETag`s
+   * that outlive the state they describe.
+   */
+  update(id: string, data: UpdateUserData, expected: ExpectedVersion): Promise<User>;
 
-  /** Rejects when no user has this id. Resolves with the deleted row. */
-  delete(id: string): Promise<User>;
+  /**
+   * Rejects when no user has this id, and with `VersionConflictError` when the
+   * row's version does not satisfy `expected`. Resolves with the deleted row.
+   */
+  delete(id: string, expected: ExpectedVersion): Promise<User>;
 }
 
 export interface CreateUserData {

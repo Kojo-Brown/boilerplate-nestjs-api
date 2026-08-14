@@ -32,7 +32,8 @@ type PreferencesModel = {
     this: unknown,
     id: string,
     patch: Partial<UserPreferences>,
-  ): Promise<UserPreferences>;
+    versionFilter?: { in: number[] },
+  ): Promise<{ preferences: UserPreferences; version: number }>;
 };
 
 const userExtension = (preferencesExtension as unknown as { model: { user: PreferencesModel } })
@@ -68,18 +69,56 @@ describe("preferencesExtension", () => {
     it("merges patch over current preferences and persists", async () => {
       const current: Partial<UserPreferences> = { theme: "dark" };
       mockFindUnique.mockResolvedValue({ preferences: current });
-      mockUpdate.mockResolvedValue({});
+      mockUpdate.mockResolvedValue({ version: 1 });
 
       const patch: Partial<UserPreferences> = { language: "fr" };
       const result = await userExtension.setPreferences.call({}, "user-1", patch);
 
-      expect(result).toEqual({ ...DEFAULT_USER_PREFERENCES, theme: "dark", language: "fr" });
+      expect(result).toEqual({
+        preferences: { ...DEFAULT_USER_PREFERENCES, theme: "dark", language: "fr" },
+        version: 1,
+      });
       expect(mockUpdate).toHaveBeenCalledWith({
         where: { id: "user-1" },
         data: {
           preferences: { ...DEFAULT_USER_PREFERENCES, theme: "dark", language: "fr" },
+          version: { increment: 1 },
         },
+        select: { version: true },
       });
+    });
+
+    it("moves the row's version, because preferences are part of that row", async () => {
+      mockFindUnique.mockResolvedValue({ preferences: null });
+      mockUpdate.mockResolvedValue({ version: 8 });
+
+      const result = await userExtension.setPreferences.call({}, "user-1", { theme: "dark" });
+
+      // Reported back from the write rather than inferred: this is a
+      // read-modify-write, so nothing the caller knew going in predicts it.
+      expect(result.version).toBe(8);
+    });
+
+    it("turns the write into a compare-and-set when given a version filter", async () => {
+      mockFindUnique.mockResolvedValue({ preferences: null });
+      mockUpdate.mockResolvedValue({ version: 4 });
+
+      await userExtension.setPreferences.call({}, "user-1", { theme: "dark" }, { in: [3] });
+
+      expect(mockUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "user-1", version: { in: [3] } } }),
+      );
+    });
+
+    it("omits the version filter entirely when none was given", async () => {
+      // Not `version: undefined` — Prisma would still see the key, and an
+      // unconditional preference write must not narrow the `where` at all.
+      mockFindUnique.mockResolvedValue({ preferences: null });
+      mockUpdate.mockResolvedValue({ version: 1 });
+
+      await userExtension.setPreferences.call({}, "user-1", { theme: "dark" });
+
+      expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "user-1" } }));
     });
 
     it("persists a patch shaped like the DTO the controller actually passes", async () => {
@@ -92,7 +131,7 @@ describe("preferencesExtension", () => {
       // user changed. Turning on SMS erased their theme, language and timezone.
       const current: Partial<UserPreferences> = { theme: "dark", language: "fr" };
       mockFindUnique.mockResolvedValue({ preferences: current });
-      mockUpdate.mockResolvedValue({});
+      mockUpdate.mockResolvedValue({ version: 1 });
 
       const dtoShapedPatch = {
         theme: undefined,
@@ -105,7 +144,7 @@ describe("preferencesExtension", () => {
 
       const result = await userExtension.setPreferences.call({}, "user-1", dtoShapedPatch);
 
-      expect(result).toEqual({
+      expect(result.preferences).toEqual({
         ...DEFAULT_USER_PREFERENCES,
         theme: "dark",
         language: "fr",

@@ -5,7 +5,7 @@ export { USER_WRITER } from "./user-writer.port";
 export type { UserWriter, CreateUserData, UpdateUserData } from "./user-writer.port";
 
 export { USER_PREFERENCES_STORE } from "./user-preferences-store.port";
-export type { UserPreferencesStore } from "./user-preferences-store.port";
+export type { PreferencesWriteResult, UserPreferencesStore } from "./user-preferences-store.port";
 
 import type { UserReader } from "./user-reader.port";
 import type { UserWriter } from "./user-writer.port";

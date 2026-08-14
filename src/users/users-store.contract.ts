@@ -1,4 +1,6 @@
 import { DEFAULT_USER_PREFERENCES } from "./types/user-preferences";
+import { UNCONDITIONAL, VersionConflictError } from "@/common/concurrency";
+import type { ExpectedVersion } from "@/common/concurrency";
 import type { UsersStore } from "./ports";
 
 /**
@@ -125,14 +127,18 @@ export function describeUsersStoreContract(name: string, createStore: () => User
 
     describe("update()", () => {
       it("rejects for an unknown id instead of creating a row", async () => {
-        await expect(store.update("missing", { name: "Nobody" })).rejects.toThrow();
+        await expect(store.update("missing", { name: "Nobody" }, UNCONDITIONAL)).rejects.toThrow();
         await expect(store.findById("missing")).resolves.toBeNull();
       });
 
       it("leaves omitted fields untouched", async () => {
         const created = await store.create({ email: "ada@example.test", name: "Ada" });
 
-        const updated = await store.update(created.id, { avatarUrl: "avatars/ada.png" });
+        const updated = await store.update(
+          created.id,
+          { avatarUrl: "avatars/ada.png" },
+          UNCONDITIONAL,
+        );
 
         expect(updated.name).toBe("Ada");
         expect(updated.avatarUrl).toBe("avatars/ada.png");
@@ -141,13 +147,15 @@ export function describeUsersStoreContract(name: string, createStore: () => User
 
     describe("delete()", () => {
       it("rejects for an unknown id", async () => {
-        await expect(store.delete("missing")).rejects.toThrow();
+        await expect(store.delete("missing", UNCONDITIONAL)).rejects.toThrow();
       });
 
       it("resolves with the deleted row and removes it", async () => {
         const created = await store.create({ email: "ada@example.test" });
 
-        await expect(store.delete(created.id)).resolves.toMatchObject({ id: created.id });
+        await expect(store.delete(created.id, UNCONDITIONAL)).resolves.toMatchObject({
+          id: created.id,
+        });
         await expect(store.findById(created.id)).resolves.toBeNull();
       });
     });
@@ -159,7 +167,7 @@ export function describeUsersStoreContract(name: string, createStore: () => User
 
       it("fills unset fields from the defaults", async () => {
         const created = await store.create({ email: "ada@example.test" });
-        await store.setPreferences(created.id, { theme: "dark" });
+        await store.setPreferences(created.id, { theme: "dark" }, UNCONDITIONAL);
 
         await expect(store.getPreferences(created.id)).resolves.toEqual({
           ...DEFAULT_USER_PREFERENCES,
@@ -170,16 +178,18 @@ export function describeUsersStoreContract(name: string, createStore: () => User
 
     describe("setPreferences()", () => {
       it("rejects for an unknown id", async () => {
-        await expect(store.setPreferences("missing", { theme: "dark" })).rejects.toThrow();
+        await expect(
+          store.setPreferences("missing", { theme: "dark" }, UNCONDITIONAL),
+        ).rejects.toThrow();
       });
 
       it("merges rather than replaces", async () => {
         const created = await store.create({ email: "ada@example.test" });
 
-        await store.setPreferences(created.id, { theme: "dark" });
-        const merged = await store.setPreferences(created.id, { language: "fr" });
+        await store.setPreferences(created.id, { theme: "dark" }, UNCONDITIONAL);
+        const merged = await store.setPreferences(created.id, { language: "fr" }, UNCONDITIONAL);
 
-        expect(merged).toEqual({
+        expect(merged.preferences).toEqual({
           ...DEFAULT_USER_PREFERENCES,
           theme: "dark",
           language: "fr",
@@ -189,9 +199,13 @@ export function describeUsersStoreContract(name: string, createStore: () => User
       it("resolves with the same value a subsequent read returns", async () => {
         const created = await store.create({ email: "ada@example.test" });
 
-        const written = await store.setPreferences(created.id, { pushNotifications: true });
+        const written = await store.setPreferences(
+          created.id,
+          { pushNotifications: true },
+          UNCONDITIONAL,
+        );
 
-        await expect(store.getPreferences(created.id)).resolves.toEqual(written);
+        await expect(store.getPreferences(created.id)).resolves.toEqual(written.preferences);
       });
 
       it("ignores keys explicitly set to undefined rather than erasing them", async () => {
@@ -203,15 +217,19 @@ export function describeUsersStoreContract(name: string, createStore: () => User
         // returns `undefined` rather than even the default, which a notification
         // channel reads as "the user switched this off".
         const created = await store.create({ email: "ada@example.test" });
-        await store.setPreferences(created.id, { theme: "dark", smsNotifications: true });
+        await store.setPreferences(
+          created.id,
+          { theme: "dark", smsNotifications: true },
+          UNCONDITIONAL,
+        );
 
-        const patched = await store.setPreferences(created.id, {
-          language: "fr",
-          theme: undefined,
-          smsNotifications: undefined,
-        });
+        const patched = await store.setPreferences(
+          created.id,
+          { language: "fr", theme: undefined, smsNotifications: undefined },
+          UNCONDITIONAL,
+        );
 
-        expect(patched).toEqual({
+        expect(patched.preferences).toEqual({
           ...DEFAULT_USER_PREFERENCES,
           theme: "dark",
           smsNotifications: true,
@@ -219,5 +237,162 @@ export function describeUsersStoreContract(name: string, createStore: () => User
         });
       });
     });
+
+    // ─── Optimistic concurrency ───────────────────────────────────────────────
+    //
+    // These are the assertions the `ETag`/`If-Match` endpoints rest on, and the
+    // reason they live in the shared contract rather than beside the Prisma
+    // adapter: the e2e suite drives the whole application against an in-memory
+    // store, so a double whose version counter drifted from the real one would
+    // make every conflict test pass without proving anything about Postgres.
+
+    describe("version", () => {
+      it("starts a new row at 0", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+
+        expect(created.version).toBe(0);
+      });
+
+      it("increments on every successful write, conditional or not", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+
+        const first = await store.update(created.id, { name: "Ada" }, UNCONDITIONAL);
+        expect(first.version).toBe(1);
+
+        const second = await store.update(created.id, { name: "Ada L" }, exactly(1));
+        expect(second.version).toBe(2);
+      });
+
+      it("moves when preferences are written, because they live on the same row", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+
+        const written = await store.setPreferences(created.id, { theme: "dark" }, UNCONDITIONAL);
+
+        expect(written.version).toBe(1);
+        await expect(store.findById(created.id)).resolves.toMatchObject({ version: 1 });
+      });
+    });
+
+    describe("conditional writes", () => {
+      it("applies an update whose expected version matches", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+
+        await expect(store.update(created.id, { name: "Ada" }, exactly(0))).resolves.toMatchObject({
+          name: "Ada",
+          version: 1,
+        });
+      });
+
+      it("rejects with VersionConflictError when the row has moved on", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        await store.update(created.id, { name: "Ada" }, UNCONDITIONAL);
+
+        await expect(store.update(created.id, { name: "Grace" }, exactly(0))).rejects.toThrow(
+          VersionConflictError,
+        );
+      });
+
+      it("reports the version the row is actually at, so the caller knows what to re-read", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        await store.update(created.id, { name: "Ada" }, UNCONDITIONAL);
+        await store.update(created.id, { name: "Ada L" }, UNCONDITIONAL);
+
+        await expect(store.update(created.id, { name: "Grace" }, exactly(0))).rejects.toMatchObject(
+          {
+            currentVersion: 2,
+          },
+        );
+      });
+
+      it("leaves the row untouched when the precondition fails", async () => {
+        const created = await store.create({ email: "ada@example.test", name: "Ada" });
+        await store.update(created.id, { avatarUrl: "avatars/ada.png" }, UNCONDITIONAL);
+
+        await expect(store.update(created.id, { name: "Grace" }, exactly(0))).rejects.toThrow();
+
+        await expect(store.findById(created.id)).resolves.toMatchObject({ name: "Ada" });
+      });
+
+      it("settles a lost update: only the first of two writers holding the same version wins", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        // Both read version 0 — the interleaving optimistic concurrency exists
+        // to catch. Sequential here because the in-memory store is not
+        // genuinely concurrent; what is being pinned is that the *second*
+        // write is refused rather than silently applied over the first.
+        const bothRead = exactly(created.version);
+
+        await expect(store.update(created.id, { name: "Ada" }, bothRead)).resolves.toBeDefined();
+        await expect(store.update(created.id, { name: "Grace" }, bothRead)).rejects.toThrow(
+          VersionConflictError,
+        );
+
+        await expect(store.findById(created.id)).resolves.toMatchObject({ name: "Ada" });
+      });
+
+      it("accepts any of several expected versions", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        await store.update(created.id, { name: "Ada" }, UNCONDITIONAL);
+
+        const expected: ExpectedVersion = {
+          mode: "list",
+          tags: [
+            { weak: false, opaque: "0", version: 0 },
+            { weak: false, opaque: "1", version: 1 },
+          ],
+        };
+
+        await expect(store.update(created.id, { name: "Grace" }, expected)).resolves.toMatchObject({
+          version: 2,
+        });
+      });
+
+      it("treats `If-Match: *` as satisfied by whatever version exists", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        await store.update(created.id, { name: "Ada" }, UNCONDITIONAL);
+
+        await expect(
+          store.update(created.id, { name: "Grace" }, { mode: "any" }),
+        ).resolves.toMatchObject({ version: 2 });
+      });
+
+      it("refuses a conditional delete against a stale version and keeps the row", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        await store.update(created.id, { name: "Ada" }, UNCONDITIONAL);
+
+        await expect(store.delete(created.id, exactly(0))).rejects.toThrow(VersionConflictError);
+        await expect(store.findById(created.id)).resolves.not.toBeNull();
+      });
+
+      it("refuses a conditional preference write against a stale version", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        await store.setPreferences(created.id, { theme: "dark" }, UNCONDITIONAL);
+
+        await expect(
+          store.setPreferences(created.id, { language: "fr" }, exactly(0)),
+        ).rejects.toThrow(VersionConflictError);
+
+        await expect(store.getPreferences(created.id)).resolves.toMatchObject({ theme: "dark" });
+      });
+
+      it("prefers the absence of a row over a conflict — a deleted row is not a stale one", async () => {
+        const created = await store.create({ email: "ada@example.test" });
+        await store.delete(created.id, UNCONDITIONAL);
+
+        // Whatever error this is, it must not be a version conflict: telling a
+        // caller to re-read and retry a row that no longer exists sends it
+        // round a loop that cannot terminate.
+        await expect(store.update(created.id, { name: "Grace" }, exactly(0))).rejects.not.toThrow(
+          VersionConflictError,
+        );
+      });
+    });
   });
+}
+
+/** The `If-Match` a client sends after reading version `version`. */
+function exactly(version: number): ExpectedVersion {
+  return {
+    mode: "list",
+    tags: [{ weak: false, opaque: String(version), version }],
+  };
 }

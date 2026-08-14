@@ -2,7 +2,15 @@ import { Role } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { DEFAULT_USER_PREFERENCES, mergePreferences } from "@/users/types/user-preferences";
 import type { UserPreferences } from "@/users/types/user-preferences";
-import type { CreateUserData, UpdateUserData, UserListQuery, UsersStore } from "@/users/ports";
+import { VersionConflictError, isSatisfiedBy } from "@/common/concurrency";
+import type { ExpectedVersion } from "@/common/concurrency";
+import type {
+  CreateUserData,
+  PreferencesWriteResult,
+  UpdateUserData,
+  UserListQuery,
+  UsersStore,
+} from "@/users/ports";
 
 let sequence = 0;
 
@@ -40,6 +48,7 @@ export class InMemoryUsersRepository implements UsersStore {
       preferences: null,
       createdAt: now,
       updatedAt: now,
+      version: 0,
       ...overrides,
     };
     this.users.set(user.id, user);
@@ -99,14 +108,18 @@ export class InMemoryUsersRepository implements UsersStore {
       preferences: null,
       createdAt: now,
       updatedAt: now,
+      version: 0,
     };
     this.users.set(user.id, user);
     return Promise.resolve(user);
   }
 
-  update(id: string, data: UpdateUserData): Promise<User> {
+  update(id: string, data: UpdateUserData, expected: ExpectedVersion): Promise<User> {
     const existing = this.users.get(id);
     if (!existing) return Promise.reject(new Error(`User ${id} not found`));
+    if (!isSatisfiedBy(expected, existing.version)) {
+      return Promise.reject(new VersionConflictError(existing.version));
+    }
     const updated: User = {
       ...existing,
       name: data.name ?? existing.name,
@@ -114,14 +127,18 @@ export class InMemoryUsersRepository implements UsersStore {
       providerAccountId: data.providerAccountId ?? existing.providerAccountId,
       avatarUrl: data.avatarUrl ?? existing.avatarUrl,
       updatedAt: new Date(),
+      version: existing.version + 1,
     };
     this.users.set(id, updated);
     return Promise.resolve(updated);
   }
 
-  delete(id: string): Promise<User> {
+  delete(id: string, expected: ExpectedVersion): Promise<User> {
     const existing = this.users.get(id);
     if (!existing) return Promise.reject(new Error(`User ${id} not found`));
+    if (!isSatisfiedBy(expected, existing.version)) {
+      return Promise.reject(new VersionConflictError(existing.version));
+    }
     this.users.delete(id);
     this.preferences.delete(id);
     return Promise.resolve(existing);
@@ -133,8 +150,16 @@ export class InMemoryUsersRepository implements UsersStore {
     );
   }
 
-  setPreferences(id: string, patch: Partial<UserPreferences>): Promise<UserPreferences> {
-    if (!this.users.has(id)) return Promise.reject(new Error(`User ${id} not found`));
+  setPreferences(
+    id: string,
+    patch: Partial<UserPreferences>,
+    expected: ExpectedVersion,
+  ): Promise<PreferencesWriteResult> {
+    const user = this.users.get(id);
+    if (!user) return Promise.reject(new Error(`User ${id} not found`));
+    if (!isSatisfiedBy(expected, user.version)) {
+      return Promise.reject(new VersionConflictError(user.version));
+    }
     // Through `mergePreferences`, like the Prisma adapter: an implementation
     // that spread the patch itself would drop every key the caller left
     // `undefined`, and the contract suite would catch it here rather than in
@@ -142,6 +167,11 @@ export class InMemoryUsersRepository implements UsersStore {
     const current = mergePreferences(DEFAULT_USER_PREFERENCES, this.preferences.get(id) ?? {});
     const merged = mergePreferences(current, patch);
     this.preferences.set(id, merged);
-    return Promise.resolve(merged);
+    // Preferences are a projection of the user row in the Prisma adapter, so
+    // writing them moves that row's version there. Keeping the same rule here
+    // is what lets the contract suite assert it once for both.
+    const version = user.version + 1;
+    this.users.set(id, { ...user, version, updatedAt: new Date() });
+    return Promise.resolve({ preferences: merged, version });
   }
 }

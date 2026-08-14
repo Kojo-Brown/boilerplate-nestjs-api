@@ -19,6 +19,12 @@ model User {
   createdAt         DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Optimistic-concurrency counter. Every write to this row increments it, and
+  /// the value is what `ETag` / `If-Match` carry. Not `updatedAt`: two writes
+  /// inside the same clock tick share a timestamp, and a client would then be
+  /// allowed to overwrite a change it never saw.
+  version Int @default(0)
+
   refreshTokens RefreshToken[]
 
   @@map("users")

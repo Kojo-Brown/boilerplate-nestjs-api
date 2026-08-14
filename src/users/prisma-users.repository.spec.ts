@@ -4,6 +4,8 @@ import { PrismaService } from "@/common/prisma/prisma.service";
 import type { User } from "@prisma/client";
 import type { UserPreferences } from "./types/user-preferences";
 import { Role } from "@prisma/client";
+import { UNCONDITIONAL } from "@/common/concurrency";
+import type { ExpectedVersion } from "@/common/concurrency";
 
 const baseUser: User = {
   id: "user-1",
@@ -17,6 +19,7 @@ const baseUser: User = {
   preferences: null,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-01"),
+  version: 0,
 };
 
 const mockGetPreferences = jest.fn();
@@ -138,16 +141,79 @@ describe("PrismaUsersRepository", () => {
 
   describe("update()", () => {
     it("calls prisma.user.update with the correct id and data", async () => {
-      const updated = { ...baseUser, name: "Updated" };
+      const updated = { ...baseUser, name: "Updated", version: 1 };
       mockPrisma.user.update.mockResolvedValue(updated);
 
-      const result = await repo.update("user-1", { name: "Updated" });
+      const result = await repo.update("user-1", { name: "Updated" }, UNCONDITIONAL);
 
       expect(mockPrisma.user.update).toHaveBeenCalledWith({
         where: { id: "user-1" },
-        data: { name: "Updated" },
+        data: { name: "Updated", version: { increment: 1 } },
       });
       expect(result).toBe(updated);
+    });
+
+    it("adds no version filter for an unconditional write", async () => {
+      mockPrisma.user.update.mockResolvedValue(baseUser);
+
+      await repo.update("user-1", { name: "Updated" }, UNCONDITIONAL);
+
+      expect(mockPrisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "user-1" } }),
+      );
+    });
+
+    it("narrows the where clause to the expected versions", async () => {
+      mockPrisma.user.update.mockResolvedValue(baseUser);
+
+      await repo.update("user-1", { name: "Updated" }, ifMatch(3, 4));
+
+      expect(mockPrisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "user-1", version: { in: [3, 4] } } }),
+      );
+    });
+
+    it("drops entity-tags it never issued, leaving a filter that matches nothing", async () => {
+      mockPrisma.user.update.mockResolvedValue(baseUser);
+
+      await repo.update(
+        "user-1",
+        { name: "Updated" },
+        { mode: "list", tags: [{ weak: false, opaque: "deadbeef", version: null }] },
+      );
+
+      expect(mockPrisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "user-1", version: { in: [] } } }),
+      );
+    });
+
+    it("reclassifies a failed conditional write as a conflict when the row moved", async () => {
+      mockPrisma.user.update.mockRejectedValue(new Error("P2025"));
+      mockPrisma.user.findUnique.mockResolvedValue({ version: 7 });
+
+      await expect(repo.update("user-1", { name: "x" }, ifMatch(3))).rejects.toMatchObject({
+        name: "VersionConflictError",
+        currentVersion: 7,
+      });
+    });
+
+    it("rethrows the original failure when the row is simply gone", async () => {
+      const original = new Error("P2025");
+      mockPrisma.user.update.mockRejectedValue(original);
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(repo.update("user-1", { name: "x" }, ifMatch(3))).rejects.toBe(original);
+    });
+
+    it("rethrows the original failure when the version was never the problem", async () => {
+      // A unique-constraint violation, a dead connection — anything that fails
+      // a write the precondition would have allowed. Reporting 412 for these
+      // would send the client round a re-read loop that cannot fix them.
+      const original = new Error("connection terminated");
+      mockPrisma.user.update.mockRejectedValue(original);
+      mockPrisma.user.findUnique.mockResolvedValue({ version: 3 });
+
+      await expect(repo.update("user-1", { name: "x" }, ifMatch(3))).rejects.toBe(original);
     });
   });
 
@@ -155,10 +221,20 @@ describe("PrismaUsersRepository", () => {
     it("calls prisma.user.delete with the correct id", async () => {
       mockPrisma.user.delete.mockResolvedValue(baseUser);
 
-      const result = await repo.delete("user-1");
+      const result = await repo.delete("user-1", UNCONDITIONAL);
 
       expect(mockPrisma.user.delete).toHaveBeenCalledWith({ where: { id: "user-1" } });
       expect(result).toBe(baseUser);
+    });
+
+    it("narrows the where clause to the expected versions", async () => {
+      mockPrisma.user.delete.mockResolvedValue(baseUser);
+
+      await repo.delete("user-1", ifMatch(2));
+
+      expect(mockPrisma.user.delete).toHaveBeenCalledWith({
+        where: { id: "user-1", version: { in: [2] } },
+      });
     });
   });
 
@@ -191,12 +267,38 @@ describe("PrismaUsersRepository", () => {
         pushNotifications: true,
         timezone: "Europe/Paris",
       };
-      mockSetPreferences.mockResolvedValue(prefs);
+      const written = { preferences: prefs, version: 4 };
+      mockSetPreferences.mockResolvedValue(written);
 
-      const result = await repo.setPreferences("user-1", { theme: "light" });
+      const result = await repo.setPreferences("user-1", { theme: "light" }, UNCONDITIONAL);
 
-      expect(mockSetPreferences).toHaveBeenCalledWith("user-1", { theme: "light" });
-      expect(result).toBe(prefs);
+      expect(mockSetPreferences).toHaveBeenCalledWith("user-1", { theme: "light" }, undefined);
+      expect(result).toBe(written);
+    });
+
+    it("passes the expected versions to the extension as a Prisma filter", async () => {
+      mockSetPreferences.mockResolvedValue({ preferences: {}, version: 4 });
+
+      await repo.setPreferences("user-1", { theme: "light" }, ifMatch(3));
+
+      expect(mockSetPreferences).toHaveBeenCalledWith("user-1", { theme: "light" }, { in: [3] });
+    });
+
+    it("reclassifies a stale preference write as a conflict", async () => {
+      mockSetPreferences.mockRejectedValue(new Error("P2025"));
+      mockPrisma.user.findUnique.mockResolvedValue({ version: 9 });
+
+      await expect(
+        repo.setPreferences("user-1", { theme: "light" }, ifMatch(3)),
+      ).rejects.toMatchObject({ name: "VersionConflictError", currentVersion: 9 });
     });
   });
 });
+
+/** The `If-Match` a client sends after reading one of `versions`. */
+function ifMatch(...versions: number[]): ExpectedVersion {
+  return {
+    mode: "list",
+    tags: versions.map((version) => ({ weak: false, opaque: String(version), version })),
+  };
+}

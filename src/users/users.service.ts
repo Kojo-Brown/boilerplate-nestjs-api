@@ -1,5 +1,12 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { Inject, Injectable, NotFoundException, PreconditionFailedException } from "@nestjs/common";
 import { CacheService } from "@/common/cache";
+import {
+  VersionConflictError,
+  describeMismatch,
+  isSatisfiedBy,
+  requireConditional,
+} from "@/common/concurrency";
+import type { ExpectedVersion } from "@/common/concurrency";
 import { DomainEventBus } from "@/events";
 import { buildCursorPage, decodeCursor } from "@/common/pagination";
 import type { CursorPage } from "@/common/pagination";
@@ -9,6 +16,7 @@ import {
   USER_READER,
   USER_WRITER,
   type CreateUserData,
+  type PreferencesWriteResult,
   type UpdateUserData,
   type UserPreferencesStore,
   type UserReader,
@@ -17,7 +25,6 @@ import {
 import { UserAccessPolicy, type RequesterIdentity } from "./users.access-policy";
 import type { UpdateUserDto } from "./dto/update-user.dto";
 import type { ListUsersQueryDto } from "./dto/list-users-query.dto";
-import type { UserPreferences } from "./types/user-preferences";
 import type { UpdateUserPreferencesDto } from "./dto/update-user-preferences.dto";
 
 export const USERS_LIST_CACHE_KEY = "v1:users:list";
@@ -70,30 +77,41 @@ export class UsersService {
     return this.writer.create(data);
   }
 
-  /** Unconditional update — callers that act on behalf of a user use {@link updateSelf}. */
-  async update(id: string, data: UpdateUserData): Promise<User> {
+  /**
+   * Applies `data` only if the row still satisfies `expected`.
+   *
+   * Does not demand a precondition — this is the entry point for internal
+   * callers with no version to check, which pass `UNCONDITIONAL` and say so at
+   * the call site. Anything acting on behalf of a client uses {@link updateSelf}.
+   */
+  async update(id: string, data: UpdateUserData, expected: ExpectedVersion): Promise<User> {
     await this.findById(id);
-    const updated = await this.writer.update(id, data);
-    await this.invalidateUserCache(id);
-    return updated;
+    return this.write(id, data, expected);
   }
 
   async updateSelf(
     requester: RequesterIdentity,
     targetId: string,
     dto: UpdateUserDto,
+    expected: ExpectedVersion,
   ): Promise<User> {
     this.policy.assertCanAct(requester, targetId, "update:profile");
-    return this.update(targetId, dto);
+    await this.assertPrecondition(targetId, expected);
+    return this.write(targetId, dto, expected);
   }
 
-  async updateAvatar(id: string, avatarUrl: string): Promise<User> {
-    return this.update(id, { avatarUrl });
+  /**
+   * The caller has already checked ownership and the precondition — the upload
+   * had to happen before the row could be touched, and neither check is worth
+   * repeating against a row that has not moved since.
+   */
+  async updateAvatar(id: string, avatarUrl: string, expected: ExpectedVersion): Promise<User> {
+    return this.update(id, { avatarUrl }, expected);
   }
 
-  async remove(id: string): Promise<void> {
-    const user = await this.findById(id);
-    await this.writer.delete(id);
+  async remove(id: string, expected: ExpectedVersion): Promise<void> {
+    const user = await this.assertPrecondition(id, expected);
+    await this.conditionally(() => this.writer.delete(id, expected));
     await this.invalidateUserCache(id);
     // After the delete and the cache invalidation, so a subscriber that reads
     // back through this service cannot see the row it was told is gone. The
@@ -101,22 +119,90 @@ export class UsersService {
     this.events.publish("user.deleted", { userId: id, email: user.email });
   }
 
-  async getPreferences(requester: RequesterIdentity, userId: string): Promise<UserPreferences> {
+  /**
+   * Returns the preferences together with the version they were read at, so
+   * the endpoint can emit an `ETag` the caller can write back against.
+   *
+   * The version comes from the user row rather than from the preferences store,
+   * which has none of its own: they are a projection of a JSON column on that
+   * row, and the row's counter is the only thing that moves when they change.
+   */
+  async getPreferences(
+    requester: RequesterIdentity,
+    userId: string,
+  ): Promise<PreferencesWriteResult> {
     this.policy.assertCanAct(requester, userId, "read:preferences");
-    await this.findById(userId);
-    return this.preferences.getPreferences(userId);
+    const user = await this.findById(userId);
+    const preferences = await this.preferences.getPreferences(userId);
+    return { preferences, version: user.version };
+  }
+
+  /**
+   * Runs every precondition on a conditional write, and resolves with the row.
+   *
+   * The order is the point, and it is RFC 9110 §13.2.1's: 404 for a resource
+   * that is not there, then 428 for a caller that named no version, then 412
+   * for one whose version has been overtaken. Answering 428 to a request for a
+   * row that does not exist would send the client to fetch an `ETag` it can
+   * never obtain, and answering 412 before 428 would tell a client that sent no
+   * validator at all that the one it sent was stale.
+   *
+   * The 412 here is a fast check, not the guarantee: the row can still move
+   * between this read and the write, which is why every write also carries the
+   * predicate. What this buys is that an expensive side effect — an S3 upload —
+   * is not spent on a request that has already lost.
+   */
+  async assertPrecondition(id: string, expected: ExpectedVersion): Promise<User> {
+    const user = await this.findById(id);
+    requireConditional(expected);
+    if (!isSatisfiedBy(expected, user.version)) {
+      throw new PreconditionFailedException(describeMismatch(expected, user.version));
+    }
+    return user;
+  }
+
+  /** The write itself, once every precondition has been cleared. */
+  private async write(id: string, data: UpdateUserData, expected: ExpectedVersion): Promise<User> {
+    const updated = await this.conditionally(() => this.writer.update(id, data, expected));
+    await this.invalidateUserCache(id);
+    return updated;
   }
 
   async updatePreferences(
     requester: RequesterIdentity,
     userId: string,
     dto: UpdateUserPreferencesDto,
-  ): Promise<UserPreferences> {
+    expected: ExpectedVersion,
+  ): Promise<PreferencesWriteResult> {
     this.policy.assertCanAct(requester, userId, "update:preferences");
-    await this.findById(userId);
-    const prefs = await this.preferences.setPreferences(userId, dto);
+    await this.assertPrecondition(userId, expected);
+    const written = await this.conditionally(() =>
+      this.preferences.setPreferences(userId, dto, expected),
+    );
     await this.cache.del(`${userCacheKey(userId)}:prefs`);
-    return prefs;
+    // Preferences are stored on the user row, so writing them moved the row's
+    // version — the cached representation of the user is now stale too.
+    await this.invalidateUserCache(userId);
+    return written;
+  }
+
+  /**
+   * Runs a conditional write, translating a storage-layer conflict into 412.
+   *
+   * The store raises `VersionConflictError`, which names no status because it
+   * is not an HTTP concern where it is thrown. This is the boundary where it
+   * becomes one, so the mapping lives here once rather than in each of the four
+   * endpoints that can hit it.
+   */
+  private async conditionally<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (error) {
+      if (error instanceof VersionConflictError) {
+        throw new PreconditionFailedException(error.message);
+      }
+      throw error;
+    }
   }
 
   private invalidateUserCache(id: string): Promise<void> {

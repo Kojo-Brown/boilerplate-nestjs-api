@@ -28,6 +28,7 @@ export function buildUser(overrides: Partial<User> = {}): User {
     preferences: null,
     createdAt: now,
     updatedAt: now,
+    version: 0,
     ...overrides,
   };
 }

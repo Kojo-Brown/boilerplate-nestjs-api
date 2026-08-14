@@ -8,6 +8,15 @@ import type { CreateUserData, UpdateUserData } from "./ports";
 import { InMemoryUsersRepository } from "@/test-utils/in-memory-users.repository";
 import type { PrismaService } from "@/common/prisma/prisma.service";
 
+interface VersionedWhere {
+  id: string;
+  version?: { in: number[] };
+}
+
+function matchesVersion(where: VersionedWhere, actual: number): boolean {
+  return where.version === undefined || where.version.in.includes(actual);
+}
+
 /**
  * A stand-in for the pieces of `PrismaService` the adapter touches, backed by a
  * Map.
@@ -100,6 +109,7 @@ class FakePrismaClient {
         preferences: null,
         createdAt: now,
         updatedAt: now,
+        version: 0,
       };
       this.rows.set(row.id, row);
       return Promise.resolve(row);
@@ -109,11 +119,17 @@ class FakePrismaClient {
       where,
       data,
     }: {
-      where: { id: string };
-      data: UpdateUserData | { preferences: UserPreferences };
+      where: VersionedWhere;
+      data: (UpdateUserData | { preferences: UserPreferences }) & {
+        version?: { increment: number };
+      };
     }): Promise<User> => {
       const existing = this.rows.get(where.id);
-      if (!existing) {
+      // A version that does not match is the same P2025 as a row that is not
+      // there — Prisma reports "no record matched the `where`" and says no more.
+      // The fake must be equally unhelpful, or the adapter's read-back would be
+      // dead code here and the only thing testing it would be production.
+      if (!existing || !matchesVersion(where, existing.version)) {
         return Promise.reject(
           new Error(
             "An operation failed because it depends on one or more records that were " +
@@ -123,17 +139,23 @@ class FakePrismaClient {
       }
       // Prisma ignores keys whose value is `undefined`; spreading `data`
       // wholesale would overwrite columns with undefined instead.
+      const { version, ...columns } = data;
       const patch = Object.fromEntries(
-        Object.entries(data).filter(([, value]) => value !== undefined),
+        Object.entries(columns).filter(([, value]) => value !== undefined),
       );
-      const updated: User = { ...existing, ...patch, updatedAt: new Date() };
+      const updated: User = {
+        ...existing,
+        ...patch,
+        updatedAt: new Date(),
+        version: existing.version + (version?.increment ?? 0),
+      };
       this.rows.set(where.id, updated);
       return Promise.resolve(updated);
     },
 
-    delete: ({ where }: { where: { id: string } }): Promise<User> => {
+    delete: ({ where }: { where: VersionedWhere }): Promise<User> => {
       const existing = this.rows.get(where.id);
-      if (!existing) {
+      if (!existing || !matchesVersion(where, existing.version)) {
         return Promise.reject(new Error("Record to delete does not exist. (P2025)"));
       }
       this.rows.delete(where.id);
@@ -149,9 +171,23 @@ class FakePrismaClient {
           return Promise.resolve(mergePreferences(DEFAULT_USER_PREFERENCES, stored ?? {}));
         },
 
-        setPreferences: (id: string, patch: Partial<UserPreferences>): Promise<UserPreferences> => {
+        setPreferences: (
+          id: string,
+          patch: Partial<UserPreferences>,
+          versionFilter?: { in: number[] },
+        ): Promise<{ preferences: UserPreferences; version: number }> => {
           const existing = this.rows.get(id);
           if (!existing) return Promise.reject(new Error(`User ${id} not found`));
+          // The real extension applies the filter in the `where` of its write,
+          // so a stale version fails as a missing record, after the merge.
+          if (!matchesVersion({ id, version: versionFilter }, existing.version)) {
+            return Promise.reject(
+              new Error(
+                "An operation failed because it depends on one or more records that were " +
+                  "required but not found. (P2025)",
+              ),
+            );
+          }
           // Same merge helper the real extension uses — this fake stands in
           // for `preferencesExtension`, so it has to agree with it about
           // what a patch key set to `undefined` means.
@@ -160,8 +196,9 @@ class FakePrismaClient {
             (existing.preferences as Partial<UserPreferences> | null) ?? {},
           );
           const merged = mergePreferences(current, patch);
-          this.rows.set(id, { ...existing, preferences: merged });
-          return Promise.resolve(merged);
+          const version = existing.version + 1;
+          this.rows.set(id, { ...existing, preferences: merged, version });
+          return Promise.resolve({ preferences: merged, version });
         },
       },
     };

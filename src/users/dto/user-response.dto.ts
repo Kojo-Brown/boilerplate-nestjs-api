@@ -29,4 +29,11 @@ export class UserResponseDto {
 
   @ApiProperty({ example: "2024-01-01T00:00:00.000Z" })
   updatedAt!: Date;
+
+  @ApiProperty({
+    example: 3,
+    description:
+      "Optimistic-concurrency version. Also returned as the `ETag` header, which is the form to send back in `If-Match`.",
+  })
+  version!: number;
 }

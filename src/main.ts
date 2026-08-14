@@ -6,6 +6,7 @@ import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-envelope.interceptor";
 import { LoggingInterceptor } from "./common/interceptors/logging.interceptor";
 import { IdempotencyInterceptor } from "./common/idempotency";
+import { EntityTagInterceptor } from "./common/concurrency";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { ConfigService } from "@nestjs/config";
 
@@ -35,11 +36,15 @@ async function bootstrap() {
   // gets a correlation id and an access-log line. Idempotency sits above the
   // envelope because a replay must be written verbatim rather than handed back
   // to the serialiser — and because what it records is read off `res`, after
-  // every interceptor, pipe and filter has had its turn.
+  // every interceptor, pipe and filter has had its turn. The entity-tag
+  // interceptor is innermost, so it unwraps a versioned result and sets `ETag`
+  // before the envelope wraps it: nothing further out has to know that some
+  // handlers return a version alongside their payload.
   app.useGlobalInterceptors(
     new LoggingInterceptor(),
     app.get(IdempotencyInterceptor),
     new ResponseEnvelopeInterceptor(reflector),
+    new EntityTagInterceptor(),
   );
 
   app.enableCors({

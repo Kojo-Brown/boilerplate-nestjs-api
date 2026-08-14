@@ -119,6 +119,12 @@ docker-compose up        # postgres + redis + api
   a key reused for a different request, why an unreachable store refuses the
   request rather than running it, and what the in-memory store cannot promise
   you.
+- [docs/optimistic-concurrency.md](./docs/optimistic-concurrency.md) — the
+  `ETag` / `If-Match` loop: how a client reads a validator and writes against
+  it, what 412 and 428 each mean and the order they are evaluated in, why the
+  validator is a version counter rather than a digest of the body, and how the
+  version predicate rides along in the `WHERE` clause so there is no window
+  between checking and writing.
 
 ## Spec Progress
 

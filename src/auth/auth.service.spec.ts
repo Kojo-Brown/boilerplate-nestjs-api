@@ -7,6 +7,7 @@ import { AuthService } from "./auth.service";
 import { UsersService } from "@/users/users.service";
 import { PrismaService } from "@/common/prisma/prisma.service";
 import { DomainEventBus } from "@/events";
+import { UNCONDITIONAL } from "@/common/concurrency";
 import type { User } from "@prisma/client";
 
 jest.mock("argon2", () => ({
@@ -29,6 +30,7 @@ const mockUser: User = {
   preferences: null,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-01"),
+  version: 0,
 };
 
 const mockUsersService = {
@@ -304,6 +306,9 @@ describe("AuthService", () => {
       expect(mockUsersService.update).toHaveBeenCalledWith(
         mockUser.id,
         expect.objectContaining({ provider: "google", providerAccountId: "g-123" }),
+        // Unconditional: the OAuth callback is not a client proposing an edit
+        // to a representation it read, so there is no version it could name.
+        UNCONDITIONAL,
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
       // Linking is not a registration: this account has been welcomed already.

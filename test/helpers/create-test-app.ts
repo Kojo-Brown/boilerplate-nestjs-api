@@ -11,6 +11,7 @@ import { AllExceptionsFilter } from "@/common/filters/all-exceptions.filter";
 import { ResponseEnvelopeInterceptor } from "@/common/interceptors/response-envelope.interceptor";
 import { LoggingInterceptor } from "@/common/interceptors/logging.interceptor";
 import { IdempotencyInterceptor } from "@/common/idempotency";
+import { EntityTagInterceptor } from "@/common/concurrency";
 import { InMemoryPrismaService } from "./in-memory-prisma";
 
 /**
@@ -109,6 +110,7 @@ export async function createTestApp(): Promise<TestApp> {
     new LoggingInterceptor(),
     app.get(IdempotencyInterceptor),
     new ResponseEnvelopeInterceptor(reflector),
+    new EntityTagInterceptor(),
   );
 
   // `init()` is also what runs `onApplicationBootstrap`, where the event

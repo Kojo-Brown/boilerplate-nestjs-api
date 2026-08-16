@@ -9,6 +9,8 @@ import { GoogleStrategy } from "./strategies/google.strategy";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 import { RolesGuard } from "./guards/roles.guard";
 import { UsersModule } from "@/users/users.module";
+import { PrismaRefreshTokenStore } from "./prisma-refresh-token.store";
+import { REFRESH_TOKEN_STORE } from "./ports";
 
 /**
  * Google OAuth is optional (`GOOGLE_*` are optional in the env schema), but
@@ -48,7 +50,17 @@ export const googleStrategyProvider: Provider = {
     UsersModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, googleStrategyProvider, JwtAuthGuard, RolesGuard],
+  providers: [
+    AuthService,
+    // Bound by token so a suite can substitute a store without a database, and
+    // so `AuthService` names no persistence technology (DIP). `useClass` rather
+    // than listing the class as well: nothing injects the concrete adapter.
+    { provide: REFRESH_TOKEN_STORE, useClass: PrismaRefreshTokenStore },
+    JwtStrategy,
+    googleStrategyProvider,
+    JwtAuthGuard,
+    RolesGuard,
+  ],
   exports: [AuthService, JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}

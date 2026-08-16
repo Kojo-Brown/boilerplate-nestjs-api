@@ -2,17 +2,20 @@ import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { createTestApp, type RecordingEmailQueue, type TestApp } from "./helpers/create-test-app";
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
+import type { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
 
 describe("Auth (e2e)", () => {
   let app: INestApplication;
   let prisma: InMemoryPrismaService;
   let emails: RecordingEmailQueue;
+  let refreshTokens: InMemoryRefreshTokenStore;
 
   beforeAll(async () => {
     const fixture: TestApp = await createTestApp();
     app = fixture.app;
     prisma = fixture.prisma;
     emails = fixture.emails;
+    refreshTokens = fixture.refreshTokens;
   });
 
   afterAll(async () => {
@@ -22,6 +25,7 @@ describe("Auth (e2e)", () => {
   beforeEach(() => {
     prisma.reset();
     emails.reset();
+    refreshTokens.reset();
   });
 
   const TEST_EMAIL = "e2e@example.com";
@@ -204,17 +208,50 @@ describe("Auth (e2e)", () => {
     });
 
     it("returns 401 for an expired refresh token", async () => {
-      // Manually expire the token in the store
-      const stored = prisma._refreshTokens.get(refreshToken);
-      if (stored) {
-        stored.expiresAt = new Date(Date.now() - 1000);
-        prisma._refreshTokens.set(refreshToken, stored);
-      }
+      const owner = [...prisma._users.values()][0]!;
+      await refreshTokens.issue({
+        token: "already-expired-token",
+        userId: owner.id,
+        expiresAt: new Date(Date.now() - 1_000),
+      });
 
       await request(app.getHttpServer())
         .post("/v1/auth/refresh")
-        .send({ refreshToken })
+        .send({ refreshToken: "already-expired-token" })
         .expect(401);
+    });
+
+    it("spends an expired token rather than leaving it behind", async () => {
+      // Expiry is the service's policy and the claim is the store's job, so a
+      // rejected token is still consumed. Anything else accumulates rows nobody
+      // can use.
+      const owner = [...prisma._users.values()][0]!;
+      await refreshTokens.issue({
+        token: "expired-and-spent",
+        userId: owner.id,
+        expiresAt: new Date(Date.now() - 1_000),
+      });
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken: "expired-and-spent" })
+        .expect(401);
+
+      expect(refreshTokens.has("expired-and-spent")).toBe(false);
+    });
+
+    it("answers the loser of a concurrent rotation with 401, not 500", async () => {
+      // Both requests are in flight before either is awaited. Exactly one may
+      // rotate; the other has to be told its token is invalid. Reading the row
+      // and then deleting it answered the loser with a driver error, which this
+      // application renders as a 500.
+      const responses = await Promise.all([
+        request(app.getHttpServer()).post("/v1/auth/refresh").send({ refreshToken }),
+        request(app.getHttpServer()).post("/v1/auth/refresh").send({ refreshToken }),
+      ]);
+
+      const statuses = responses.map((response) => response.status).sort();
+      expect(statuses).toEqual([200, 401]);
     });
   });
 
@@ -240,7 +277,7 @@ describe("Auth (e2e)", () => {
         .expect(204);
 
       // Token is now gone from the store
-      expect(prisma._refreshTokens.has(refreshToken)).toBe(false);
+      expect(refreshTokens.has(refreshToken)).toBe(false);
     });
 
     it("returns 401 without a bearer token", async () => {

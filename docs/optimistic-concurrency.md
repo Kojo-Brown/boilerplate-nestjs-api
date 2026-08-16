@@ -172,4 +172,4 @@ aligns the two keys.
   `version` column and the wiring exist only on `User` so far.
 - **Cross-row transactions.** A version guards one row. Two rows that must move
   together need a transaction, and a write that must block rather than fail
-  needs pessimistic locking — the next item in `SPEC.md`.
+  needs pessimistic locking — see [`pessimistic-locking.md`](./pessimistic-locking.md).

@@ -12,6 +12,8 @@ import { ResponseEnvelopeInterceptor } from "@/common/interceptors/response-enve
 import { LoggingInterceptor } from "@/common/interceptors/logging.interceptor";
 import { IdempotencyInterceptor } from "@/common/idempotency";
 import { EntityTagInterceptor } from "@/common/concurrency";
+import { REFRESH_TOKEN_STORE } from "@/auth/ports";
+import { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
 import { InMemoryPrismaService } from "./in-memory-prisma";
 
 /**
@@ -60,10 +62,18 @@ export interface TestApp {
   prisma: InMemoryPrismaService;
   /** The queue the app actually resolved, for asserting on background effects. */
   emails: RecordingEmailQueue;
+  /** The refresh-token store the app actually resolved. */
+  refreshTokens: InMemoryRefreshTokenStore;
 }
 
 export async function createTestApp(): Promise<TestApp> {
   const prisma = new InMemoryPrismaService();
+  // `PrismaRefreshTokenStore` claims tokens with `SELECT … FOR UPDATE` in an
+  // interactive transaction, neither of which `InMemoryPrismaService` has or
+  // could honestly fake — so the port is substituted rather than the client
+  // underneath it. Owners are read from the same map the rest of the fake uses,
+  // so the join the real adapter performs stays accurate here.
+  const refreshTokens = new InMemoryRefreshTokenStore((userId) => prisma._users.get(userId));
 
   const moduleFixture = await Test.createTestingModule({
     imports: [AppModule],
@@ -72,6 +82,8 @@ export async function createTestApp(): Promise<TestApp> {
     .useModule(MockQueueModule)
     .overrideProvider(PrismaService)
     .useValue(prisma)
+    .overrideProvider(REFRESH_TOKEN_STORE)
+    .useValue(refreshTokens)
     // A whole suite makes far more auth calls per minute than any real client,
     // so the rate limiter would 429 every spec after the tenth. The guard itself
     // is registered via `{ provide: APP_GUARD, useClass }` and so cannot be
@@ -118,5 +130,5 @@ export async function createTestApp(): Promise<TestApp> {
   // app would answer requests with no subscribers attached at all.
   await app.init();
 
-  return { app, prisma, emails: app.get<RecordingEmailQueue>(EmailQueueService) };
+  return { app, prisma, emails: app.get<RecordingEmailQueue>(EmailQueueService), refreshTokens };
 }

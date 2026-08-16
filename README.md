@@ -125,6 +125,24 @@ docker-compose up        # postgres + redis + api
   validator is a version counter rather than a digest of the body, and how the
   version predicate rides along in the `WHERE` clause so there is no window
   between checking and writing.
+- [docs/pessimistic-locking.md](./docs/pessimistic-locking.md) — row locks in an
+  interactive transaction: when blocking beats retrying, why a lock only means
+  anything inside a transaction, the foreign-key trap that makes `FOR UPDATE` on
+  a parent row stall every child insert, how sorting keys keeps two callers from
+  deadlocking, and why the suites that assert any of it need a real Postgres.
+
+## Testing
+
+```bash
+pnpm test          # unit suites, no external services
+pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
+pnpm test:db       # row-locking suites — needs Postgres and DATABASE_URL
+```
+
+`pnpm test:db` has no skip-if-absent branch: it asserts properties of Postgres
+itself, and a suite that passed without a database would be reporting that the
+database behaves correctly while never having asked it. Start one with
+`docker-compose up postgres -d` and apply `pnpm db:migrate:prod` first.
 
 ## Spec Progress
 

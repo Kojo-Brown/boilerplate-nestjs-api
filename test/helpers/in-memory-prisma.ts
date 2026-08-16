@@ -1,9 +1,7 @@
 import { Role } from "@prisma/client";
-import type { User, RefreshToken } from "@prisma/client";
+import type { User } from "@prisma/client";
 import { DEFAULT_USER_PREFERENCES, mergePreferences } from "@/users/types/user-preferences";
 import type { UserPreferences } from "@/users/types/user-preferences";
-
-type StoredRefreshToken = RefreshToken & { user: User };
 
 function cuid(): string {
   return "c" + Math.random().toString(36).slice(2, 11) + Math.random().toString(36).slice(2, 6);
@@ -33,7 +31,6 @@ function applyWrite(data: UserWriteData, current: User): Partial<User> {
 
 export class InMemoryPrismaService {
   readonly _users = new Map<string, User>();
-  readonly _refreshTokens = new Map<string, StoredRefreshToken>();
 
   readonly user = {
     findUnique: (args: {
@@ -150,58 +147,6 @@ export class InMemoryPrismaService {
     },
   };
 
-  readonly refreshToken = {
-    create: (args: {
-      data: { token: string; userId: string; expiresAt: Date };
-    }): Promise<RefreshToken> => {
-      const user = this._users.get(args.data.userId);
-      if (!user) return Promise.reject(new Error("User not found"));
-      const rt: StoredRefreshToken = {
-        id: cuid(),
-        token: args.data.token,
-        userId: args.data.userId,
-        expiresAt: args.data.expiresAt,
-        createdAt: new Date(),
-        user,
-      };
-      this._refreshTokens.set(args.data.token, rt);
-      return Promise.resolve(rt);
-    },
-
-    findUnique: (args: {
-      where: { token?: string; id?: string };
-      include?: { user?: boolean };
-    }): Promise<StoredRefreshToken | null> => {
-      if (args.where.token) {
-        return Promise.resolve(this._refreshTokens.get(args.where.token) ?? null);
-      }
-      if (args.where.id) {
-        for (const rt of this._refreshTokens.values()) {
-          if (rt.id === args.where.id) return Promise.resolve(rt);
-        }
-      }
-      return Promise.resolve(null);
-    },
-
-    delete: (args: { where: { id: string } }): Promise<RefreshToken> => {
-      for (const [key, rt] of this._refreshTokens.entries()) {
-        if (rt.id === args.where.id) {
-          this._refreshTokens.delete(key);
-          return Promise.resolve(rt);
-        }
-      }
-      return Promise.reject(new Error("Record not found"));
-    },
-
-    deleteMany: (args: { where: { token?: string } }): Promise<{ count: number }> => {
-      if (args.where.token !== undefined) {
-        const existed = this._refreshTokens.delete(args.where.token);
-        return Promise.resolve({ count: existed ? 1 : 0 });
-      }
-      return Promise.resolve({ count: 0 });
-    },
-  };
-
   withExtensions() {
     return {
       user: {
@@ -250,6 +195,5 @@ export class InMemoryPrismaService {
 
   reset() {
     this._users.clear();
-    this._refreshTokens.clear();
   }
 }

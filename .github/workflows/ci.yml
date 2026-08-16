@@ -116,10 +116,25 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
+      # Builds the schema from the migration history, which is also the only
+      # thing that checks the history can build it. It could not until the
+      # `20260701000000_init` migration was added: every migration in the
+      # repository was an `ALTER TABLE` against tables nothing ever created, so
+      # `migrate deploy` failed on a clean database and nobody found out,
+      # because no job had ever run it.
+      - run: pnpm db:migrate:prod
       - run: pnpm test:cov
         env:
           NODE_OPTIONS: --throw-deprecation
       - run: pnpm test:e2e
+        env:
+          NODE_OPTIONS: --throw-deprecation
+      # Runs against the Postgres service above. The row-locking suites assert
+      # properties of the database itself — that `FOR UPDATE` excludes a second
+      # transaction, that `FOR KEY SHARE` conflicts with one lock mode and not
+      # another — and none of it can be covered by the unit or e2e suites, both
+      # of which run entirely on in-memory doubles.
+      - run: pnpm test:db
         env:
           NODE_OPTIONS: --throw-deprecation
       - run: pnpm build

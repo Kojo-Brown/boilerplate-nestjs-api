@@ -1,12 +1,13 @@
-import { Injectable, UnauthorizedException, ConflictException } from "@nestjs/common";
+import { Inject, Injectable, UnauthorizedException, ConflictException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import * as argon2 from "argon2";
 import { UsersService } from "@/users/users.service";
-import { PrismaService } from "@/common/prisma/prisma.service";
 import { DomainEventBus } from "@/events";
 import { UNCONDITIONAL } from "@/common/concurrency";
-import type { User } from "@prisma/client";
+import { REFRESH_TOKEN_STORE } from "./ports";
+import type { RefreshTokenStore } from "./ports";
+import type { Role, User } from "@prisma/client";
 import type { RegisterDto } from "./dto/register.dto";
 import type { LoginDto } from "./dto/login.dto";
 import type { GoogleProfile } from "./strategies/google.strategy";
@@ -17,7 +18,7 @@ export class AuthService {
     private readonly users: UsersService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
-    private readonly prisma: PrismaService,
+    @Inject(REFRESH_TOKEN_STORE) private readonly refreshTokens: RefreshTokenStore,
     private readonly events: DomainEventBus,
   ) {}
 
@@ -38,19 +39,37 @@ export class AuthService {
     return this.issueTokens(user.id, user.email, user.role);
   }
 
+  /**
+   * Rotates a refresh token: the presented one is spent, a new pair is issued.
+   *
+   * The claim is delegated to the store because it has to be atomic, and this
+   * used to read the row, check it, and then delete it by id. Two requests
+   * carrying the same token — a client retrying over a flaky connection, most
+   * often — both passed the check, and only the `DELETE` separated them, by
+   * raising `P2025` on a row the winner had already removed. Nothing maps that
+   * to a status, so the loser was answered **500** where the truthful answer is
+   * 401: the token really was spent, just not by them.
+   *
+   * The token stayed single-use throughout, so this is a fix to what a losing
+   * client is told rather than to a replay hole. What has changed is where the
+   * property lives: it was an incidental consequence of `delete`-by-id, and it
+   * is now the store's stated contract, asserted against every implementation.
+   *
+   * Expiry stays here rather than in the store. The store decides *who* gets
+   * the row; whether the credential is still acceptable is this service's
+   * policy, and an expired token is spent on presentation either way — it is
+   * of no further use to anyone, and leaving it behind would only mean writing
+   * a sweeper for rows nobody can use.
+   */
   async refresh(token: string) {
-    const stored = await this.prisma.refreshToken.findUnique({
-      where: { token },
-      include: { user: true },
-    });
-    if (!stored || stored.expiresAt < new Date())
-      throw new UnauthorizedException("Refresh token expired");
-    await this.prisma.refreshToken.delete({ where: { id: stored.id } });
-    return this.issueTokens(stored.user.id, stored.user.email, stored.user.role);
+    const claimed = await this.refreshTokens.consume(token);
+    if (!claimed) throw new UnauthorizedException("Invalid refresh token");
+    if (claimed.expiresAt < new Date()) throw new UnauthorizedException("Refresh token expired");
+    return this.issueTokens(claimed.userId, claimed.email, claimed.role);
   }
 
   async logout(token: string): Promise<void> {
-    await this.prisma.refreshToken.deleteMany({ where: { token } });
+    await this.refreshTokens.revoke(token);
   }
 
   async loginWithGoogle(profile: GoogleProfile) {
@@ -101,13 +120,13 @@ export class AuthService {
     });
   }
 
-  private async issueTokens(userId: string, email: string, role: string) {
+  private async issueTokens(userId: string, email: string, role: Role) {
     const payload = { sub: userId, email, role };
     const accessToken = this.jwt.sign(payload);
     const refreshExpiry = this.config.get("JWT_REFRESH_EXPIRY", "7d");
     const expiresAt = new Date(Date.now() + ms(refreshExpiry));
     const refreshToken = crypto.randomUUID();
-    await this.prisma.refreshToken.create({ data: { token: refreshToken, userId, expiresAt } });
+    await this.refreshTokens.issue({ token: refreshToken, userId, expiresAt });
     return { accessToken, refreshToken, expiresIn: 900 };
   }
 }

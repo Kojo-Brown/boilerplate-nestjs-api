@@ -5,7 +5,7 @@ import { ConflictException, UnauthorizedException } from "@nestjs/common";
 import { Role } from "@prisma/client";
 import { AuthService } from "./auth.service";
 import { UsersService } from "@/users/users.service";
-import { PrismaService } from "@/common/prisma/prisma.service";
+import { REFRESH_TOKEN_STORE } from "./ports";
 import { DomainEventBus } from "@/events";
 import { UNCONDITIONAL } from "@/common/concurrency";
 import type { User } from "@prisma/client";
@@ -58,14 +58,19 @@ const mockConfigService = {
   getOrThrow: jest.fn(),
 };
 
-const mockRefreshToken = {
-  create: jest.fn(),
-  findUnique: jest.fn(),
-  delete: jest.fn(),
-  deleteMany: jest.fn(),
+/**
+ * A double for the refresh-token store.
+ *
+ * `consume` is what rotation now goes through, and its atomicity is asserted
+ * against real implementations by `refresh-token-store.contract.ts` — this file
+ * covers what `AuthService` does with the answer, not how the answer is
+ * reached.
+ */
+const mockRefreshTokens = {
+  issue: jest.fn(),
+  consume: jest.fn(),
+  revoke: jest.fn(),
 };
-
-const mockPrismaService = { refreshToken: mockRefreshToken };
 
 describe("AuthService", () => {
   let service: AuthService;
@@ -82,7 +87,7 @@ describe("AuthService", () => {
         { provide: UsersService, useValue: mockUsersService },
         { provide: JwtService, useValue: mockJwtService },
         { provide: ConfigService, useValue: mockConfigService },
-        { provide: PrismaService, useValue: mockPrismaService },
+        { provide: REFRESH_TOKEN_STORE, useValue: mockRefreshTokens },
         { provide: DomainEventBus, useValue: mockEvents },
       ],
     }).compile();
@@ -105,13 +110,7 @@ describe("AuthService", () => {
       mockUsersService.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       mockUsersService.create.mockResolvedValue(mockUser);
-      mockRefreshToken.create.mockResolvedValue({
-        id: "rt-1",
-        token: "refresh-token",
-        userId: "user-1",
-        expiresAt: new Date(),
-        createdAt: new Date(),
-      });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       const result = await service.register({ email: "test@example.com", password: "password123" });
 
@@ -127,13 +126,7 @@ describe("AuthService", () => {
       mockUsersService.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       mockUsersService.create.mockResolvedValue(mockUser);
-      mockRefreshToken.create.mockResolvedValue({
-        id: "rt-1",
-        token: "refresh-token",
-        userId: "user-1",
-        expiresAt: new Date(),
-        createdAt: new Date(),
-      });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       await service.register({ email: "test@example.com", password: "password123" });
 
@@ -177,13 +170,7 @@ describe("AuthService", () => {
     it("returns tokens on valid credentials", async () => {
       mockUsersService.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(true);
-      mockRefreshToken.create.mockResolvedValue({
-        id: "rt-1",
-        token: "refresh-token",
-        userId: "user-1",
-        expiresAt: new Date(),
-        createdAt: new Date(),
-      });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       const result = await service.login({ email: "test@example.com", password: "password123" });
 
@@ -193,60 +180,72 @@ describe("AuthService", () => {
   });
 
   describe("refresh", () => {
-    it("throws UnauthorizedException for unknown token", async () => {
-      mockRefreshToken.findUnique.mockResolvedValue(null);
+    it("throws UnauthorizedException when the token could not be claimed", async () => {
+      mockRefreshTokens.consume.mockResolvedValue(null);
 
       await expect(service.refresh("bad-token")).rejects.toThrow(UnauthorizedException);
     });
 
-    it("throws UnauthorizedException for expired token", async () => {
-      mockRefreshToken.findUnique.mockResolvedValue({
-        id: "rt-1",
-        token: "expired",
+    it("issues nothing when the claim came back empty", async () => {
+      // A rejected refresh must not mint a replacement — the losing side of a
+      // rotation race lands here, and handing it a token family would be the
+      // exact bug `consume` exists to prevent.
+      mockRefreshTokens.consume.mockResolvedValue(null);
+
+      await expect(service.refresh("bad-token")).rejects.toThrow(UnauthorizedException);
+      expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
+    });
+
+    it("throws UnauthorizedException for an expired token", async () => {
+      mockRefreshTokens.consume.mockResolvedValue({
         userId: "user-1",
+        email: mockUser.email,
+        role: Role.USER,
         expiresAt: new Date(Date.now() - 1_000),
-        createdAt: new Date(),
-        user: mockUser,
       });
 
       await expect(service.refresh("expired")).rejects.toThrow(UnauthorizedException);
+      expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
     });
 
-    it("deletes old token and issues new tokens (rotation)", async () => {
-      const futureDate = new Date(Date.now() + 86_400_000);
-      mockRefreshToken.findUnique.mockResolvedValue({
-        id: "rt-1",
-        token: "valid-token",
+    it("claims the presented token and issues a new one (rotation)", async () => {
+      mockRefreshTokens.consume.mockResolvedValue({
         userId: "user-1",
-        expiresAt: futureDate,
-        createdAt: new Date(),
-        user: mockUser,
-      });
-      mockRefreshToken.delete.mockResolvedValue({ id: "rt-1" });
-      mockRefreshToken.create.mockResolvedValue({
-        id: "rt-2",
-        token: "new-token",
-        userId: "user-1",
-        expiresAt: new Date(Date.now() + 86_400_000 * 7),
-        createdAt: new Date(),
+        email: mockUser.email,
+        role: Role.USER,
+        expiresAt: new Date(Date.now() + 86_400_000),
       });
 
       const result = await service.refresh("valid-token");
 
-      expect(mockRefreshToken.delete).toHaveBeenCalledWith({ where: { id: "rt-1" } });
+      expect(mockRefreshTokens.consume).toHaveBeenCalledWith("valid-token");
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
+      expect(mockRefreshTokens.issue).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "user-1", token: result.refreshToken }),
+      );
+    });
+
+    it("issues a token that is not the one just spent", async () => {
+      mockRefreshTokens.consume.mockResolvedValue({
+        userId: "user-1",
+        email: mockUser.email,
+        role: Role.USER,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+
+      const result = await service.refresh("valid-token");
+
+      expect(result.refreshToken).not.toBe("valid-token");
     });
   });
 
   describe("logout", () => {
-    it("deletes the refresh token from the database", async () => {
-      mockRefreshToken.deleteMany.mockResolvedValue({ count: 1 });
+    it("revokes the refresh token", async () => {
+      mockRefreshTokens.revoke.mockResolvedValue(undefined);
 
       await service.logout("my-token");
 
-      expect(mockRefreshToken.deleteMany).toHaveBeenCalledWith({
-        where: { token: "my-token" },
-      });
+      expect(mockRefreshTokens.revoke).toHaveBeenCalledWith("my-token");
     });
   });
 
@@ -261,13 +260,7 @@ describe("AuthService", () => {
         email: googleProfile.email,
         provider: "google",
       });
-      mockRefreshToken.create.mockResolvedValue({
-        id: "rt-1",
-        token: "rt",
-        userId: "user-1",
-        expiresAt: new Date(),
-        createdAt: new Date(),
-      });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       const result = await service.loginWithGoogle(googleProfile);
 
@@ -293,13 +286,7 @@ describe("AuthService", () => {
         provider: "google",
         providerAccountId: "g-123",
       });
-      mockRefreshToken.create.mockResolvedValue({
-        id: "rt-1",
-        token: "rt",
-        userId: "user-1",
-        expiresAt: new Date(),
-        createdAt: new Date(),
-      });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       const result = await service.loginWithGoogle(googleProfile);
 
@@ -318,13 +305,7 @@ describe("AuthService", () => {
     it("returns tokens for an existing user matched by Google provider account ID", async () => {
       const googleUser = { ...mockUser, provider: "google", providerAccountId: "g-123" };
       mockUsersService.findByProviderAccount.mockResolvedValue(googleUser);
-      mockRefreshToken.create.mockResolvedValue({
-        id: "rt-1",
-        token: "rt",
-        userId: "user-1",
-        expiresAt: new Date(),
-        createdAt: new Date(),
-      });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       const result = await service.loginWithGoogle(googleProfile);
 

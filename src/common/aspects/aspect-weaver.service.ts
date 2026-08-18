@@ -1,15 +1,21 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import type { OnModuleInit } from "@nestjs/common";
 import { DiscoveryService, MetadataScanner } from "@nestjs/core";
 import type { InstanceWrapper } from "@nestjs/core/injector/instance-wrapper";
+import { DISTRIBUTED_LOCK, SystemLockClock } from "@/common/locking";
+import type { DistributedLock } from "@/common/locking";
 import {
   CACHEABLE_METADATA,
+  LOCK_METADATA,
   RETRY_METADATA,
   TIMED_METADATA,
   hasAspectMetadata,
   readAspectMetadata,
 } from "./aspect.metadata";
+import { AspectConfigurationError } from "./aspect.types";
 import type { AspectContext, AspectInvocation } from "./aspect.types";
+import { applyLock } from "./lock.aspect";
+import type { ResolvedLockOptions } from "./lock.aspect";
 import { applyCacheable } from "./cacheable.aspect";
 import type { ResolvedCacheableOptions } from "./cacheable.aspect";
 import { applyRetry } from "./retry.aspect";
@@ -28,6 +34,8 @@ export interface WeaveSkip {
   readonly target: string;
   readonly method: string;
   readonly reason: WeaveSkipReason;
+  /** Whether `@Lock()` is among the decorators that will not take effect. */
+  readonly lock: boolean;
 }
 
 export interface WeaveReport {
@@ -68,6 +76,13 @@ export class AspectWeaver implements OnModuleInit {
   private readonly cacheableLogger = new Logger("Cacheable");
   private readonly retryLogger = new Logger("Retry");
   private readonly timedLogger = new Logger("Timed");
+  private readonly lockLogger = new Logger("Lock");
+  /**
+   * `@Lock()` measures leases against a monotonic clock, which `ASPECT_CLOCK`
+   * (`Date.now()`) is not — see `LockClock`. It is not injected because there
+   * is nothing to configure: a test drives `applyLock` directly with a fake.
+   */
+  private readonly lockClock = new SystemLockClock();
 
   constructor(
     private readonly discovery: DiscoveryService,
@@ -76,6 +91,13 @@ export class AspectWeaver implements OnModuleInit {
     @Inject(ASPECT_CLOCK) private readonly clock: AspectClock,
     @Inject(ASPECT_RANDOM) private readonly random: AspectRandom,
     @Inject(METHOD_TIMING_RECORDER) private readonly recorder: MethodTimingRecorder,
+    /**
+     * Optional so an application that uses none of the locking features does
+     * not have to bind one — but a `@Lock()` found without it is a boot
+     * failure, not a warning. There is no safe way to run a method that asked
+     * for mutual exclusion without any.
+     */
+    @Optional() @Inject(DISTRIBUTED_LOCK) private readonly distributedLock?: DistributedLock,
   ) {}
 
   onModuleInit(): void {
@@ -122,6 +144,22 @@ export class AspectWeaver implements OnModuleInit {
             : "the provider is request- or transient-scoped, so its instances are created after weaving."),
       );
     }
+
+    // Every other aspect degrades into an absence — no cache, no retries, no
+    // timing sample. `@Lock()` degrades into a method that runs without the
+    // mutual exclusion it was written to assume, which nothing downstream can
+    // detect. A skipped one is therefore refused at boot rather than logged.
+    const unlockable = report.skipped.filter((skip) => skip.lock);
+    if (unlockable.length > 0) {
+      throw new AspectConfigurationError(
+        `@Lock() cannot be installed on ${unlockable
+          .map((skip) => `${skip.target}.${skip.method}()`)
+          .join(", ")} — ` +
+          "a controller handler is bound to the router before weaving, and a request- or " +
+          "transient-scoped provider is instantiated after it. Move the work into a singleton " +
+          "provider, or call withLock() directly.",
+      );
+    }
     if (report.woven.length > 0) {
       this.logger.log(`Wove aspects into ${report.woven.length} method(s)`);
     }
@@ -156,8 +194,8 @@ export class AspectWeaver implements OnModuleInit {
   }
 
   /**
-   * Outermost first: `@Timed()` wraps `@Cacheable()` wraps `@Retry()` wraps the
-   * method.
+   * Outermost first: `@Timed()` wraps `@Cacheable()` wraps `@Lock()` wraps
+   * `@Retry()` wraps the method.
    *
    * The order is fixed here rather than taken from how the decorators are
    * stacked in the source, because the useful arrangement is the same every
@@ -165,7 +203,14 @@ export class AspectWeaver implements OnModuleInit {
    * (decorators apply bottom-up) that nobody should have to remember. It means:
    * a cache hit costs no retries, a call that only succeeds on its third
    * attempt is cached once, and the recorded duration is what the caller
-   * actually waited — cache lookup, retries, backoff sleeps and all.
+   * actually waited — cache lookup, lock contention, retries, backoff sleeps
+   * and all.
+   *
+   * `@Lock()` sits between them for two reasons. Inside `@Cacheable()`, so a
+   * cache hit — which reads nothing and writes nothing — does not queue behind
+   * whoever holds the lock. Outside `@Retry()`, so the retries happen *while
+   * holding* it: a retry ladder run outside the lock would drop the exclusion
+   * between attempts and let another caller in halfway through.
    */
   private buildChain(
     instance: object,
@@ -188,6 +233,7 @@ export class AspectWeaver implements OnModuleInit {
       prototype,
       context.method,
     );
+    const lock = readAspectMetadata<ResolvedLockOptions>(LOCK_METADATA, prototype, context.method);
 
     let invoke: AspectInvocation = (args) => original.apply(instance, args as unknown[]);
 
@@ -196,6 +242,19 @@ export class AspectWeaver implements OnModuleInit {
         clock: this.clock,
         random: this.random,
         logger: this.retryLogger,
+      });
+    }
+    if (lock) {
+      if (!this.distributedLock) {
+        throw new AspectConfigurationError(
+          `@Lock() on ${context.target}.${context.method}() needs a DISTRIBUTED_LOCK provider. ` +
+            "Import LockingModule (it is global) and set DISTRIBUTED_LOCK in the environment.",
+        );
+      }
+      invoke = applyLock(invoke, context, lock, {
+        lock: this.distributedLock,
+        clock: this.lockClock,
+        logger: this.lockLogger,
       });
     }
     if (cacheable) {
@@ -231,7 +290,8 @@ export class AspectWeaver implements OnModuleInit {
 
     for (const method of this.scanner.getAllMethodNames(prototype)) {
       if (hasAspectMetadata(prototype, method)) {
-        report.skipped.push({ target: nameOf(wrapper), method, reason });
+        const lock = readAspectMetadata(LOCK_METADATA, prototype, method) !== undefined;
+        report.skipped.push({ target: nameOf(wrapper), method, reason, lock });
       }
     }
   }

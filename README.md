@@ -130,6 +130,11 @@ docker-compose up        # postgres + redis + api
   anything inside a transaction, the foreign-key trap that makes `FOR UPDATE` on
   a parent row stall every child insert, how sorting keys keeps two callers from
   deadlocking, and why the suites that assert any of it need a real Postgres.
+- [docs/distributed-locking.md](./docs/distributed-locking.md) — Redlock and the
+  `@Lock()` decorator: what a lease can and cannot promise, why every
+  acquisition carries a monotonic fencing token and how one is drawn from a
+  quorum, how a lock that could not be renewed is reported rather than hidden,
+  and when a Postgres row lock is the better answer.
 
 ## Testing
 
@@ -137,6 +142,12 @@ docker-compose up        # postgres + redis + api
 pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
 pnpm test:db       # row-locking suites — needs Postgres and DATABASE_URL
+
+# The Redlock legs of `pnpm test` need independent Redis nodes. Without
+# REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as
+# pending rather than quietly passing.
+for port in 6379 6380 6381; do redis-server --port $port --daemonize yes; done
+REDLOCK_NODES=redis://127.0.0.1:6379,redis://127.0.0.1:6380,redis://127.0.0.1:6381 pnpm test
 ```
 
 `pnpm test:db` has no skip-if-absent branch: it asserts properties of Postgres

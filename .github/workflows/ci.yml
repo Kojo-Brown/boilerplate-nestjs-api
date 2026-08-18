@@ -90,13 +90,26 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Three independent masters, because that is what Redlock is: the
+      # distributed-lock contract runs its quorum legs against these, including
+      # one with a node missing. A single service would only ever exercise the
+      # degenerate one-node case, where a majority is trivially itself.
       redis:
         image: redis:8-alpine
         ports:
           - 6379:6379
+      redis2:
+        image: redis:8-alpine
+        ports:
+          - 6380:6379
+      redis3:
+        image: redis:8-alpine
+        ports:
+          - 6381:6379
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
       REDIS_URL: redis://localhost:6379
+      REDLOCK_NODES: redis://localhost:6379,redis://localhost:6380,redis://localhost:6381
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: ${{ secrets.CI_AWS_ACCESS_KEY_ID || 'test' }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY || 'test' }}

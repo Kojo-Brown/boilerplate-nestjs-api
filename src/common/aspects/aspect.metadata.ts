@@ -18,11 +18,13 @@ import "reflect-metadata";
 export const CACHEABLE_METADATA = Symbol("aspect:cacheable");
 export const RETRY_METADATA = Symbol("aspect:retry");
 export const TIMED_METADATA = Symbol("aspect:timed");
+export const LOCK_METADATA = Symbol("aspect:lock");
 
 const ASPECT_METADATA_KEYS: readonly symbol[] = [
   CACHEABLE_METADATA,
   RETRY_METADATA,
   TIMED_METADATA,
+  LOCK_METADATA,
 ];
 
 export function defineAspectMetadata(

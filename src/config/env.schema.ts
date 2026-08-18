@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IDEMPOTENCY_STORE_NAMES } from "@/common/idempotency/ports";
+import { DISTRIBUTED_LOCK_NAMES } from "@/common/locking/ports";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
 
@@ -46,6 +47,30 @@ export const envSchema = z
      * makes a retry safe, so it has to outlive the retrying.
      */
     IDEMPOTENCY_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
+
+    /**
+     * What backs `@Lock()` and `withLock()`.
+     *
+     * Defaults to `memory` for the same reason `IDEMPOTENCY_STORE` does — a
+     * clean clone boots with nothing configured — and is refused in production
+     * for the same reason too, only sooner: a `Map` is not shared between
+     * replicas, so the second replica takes every lock the first one is
+     * already holding.
+     */
+    DISTRIBUTED_LOCK: z.enum(DISTRIBUTED_LOCK_NAMES).default("memory"),
+    /**
+     * Comma-separated URLs of the **independent** Redis masters Redlock votes
+     * over — `redis://a:6379,redis://b:6379,redis://c:6379`.
+     *
+     * Independent is the requirement, not a suggestion: nodes that replicate to
+     * each other do not make a quorum, they make one node with copies. A lock
+     * acknowledged by a primary and not yet replicated simply is not there
+     * after a failover, and the next caller takes a lock somebody holds.
+     *
+     * Falls back to `REDIS_URL` when unset, which is a one-node configuration
+     * and logs a warning saying so.
+     */
+    REDLOCK_NODES: z.string().optional(),
 
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default("us-east-1"),
@@ -165,6 +190,36 @@ export const envSchema = z
         message:
           "IDEMPOTENCY_STORE=memory deduplicates within one process only and must not be " +
           "used in production. Set IDEMPOTENCY_STORE=redis and point REDIS_URL at a shared Redis.",
+      });
+    }
+
+    /**
+     * Redlock with nothing to vote over. Caught here rather than at the first
+     * contended call, which may be days after the deployment looked healthy.
+     */
+    if (env.DISTRIBUTED_LOCK === "redlock" && !env.REDLOCK_NODES && !env.REDIS_URL) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["REDLOCK_NODES"],
+        message:
+          "REDLOCK_NODES (or REDIS_URL, for a single node) is required when DISTRIBUTED_LOCK=redlock",
+      });
+    }
+
+    /**
+     * Refused in production for the same reason `IDEMPOTENCY_STORE=memory` is:
+     * it does not fail visibly. Every acquisition succeeds, every release
+     * succeeds, and two replicas run the guarded operation at the same time —
+     * which is the one thing the caller was written to assume cannot happen.
+     */
+    if (env.NODE_ENV === "production" && env.DISTRIBUTED_LOCK === "memory") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["DISTRIBUTED_LOCK"],
+        message:
+          "DISTRIBUTED_LOCK=memory excludes callers within one process only and must not be " +
+          "used in production. Set DISTRIBUTED_LOCK=redlock and point REDLOCK_NODES at three " +
+          "or more independent Redis masters.",
       });
     }
 

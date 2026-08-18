@@ -2,11 +2,19 @@ import { Controller, Injectable, Logger, Scope } from "@nestjs/common";
 import { DiscoveryModule } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
 import type { TestingModule } from "@nestjs/testing";
+import {
+  DISTRIBUTED_LOCK,
+  InMemoryDistributedLock,
+  LockNotAcquiredError,
+  currentLock,
+} from "@/common/locking";
 import { FakeAspectClock, FakeAspectRandom } from "@/test-utils/fake-aspect-clock";
 import { InMemoryAspectCache } from "@/test-utils/in-memory-aspect-cache";
 import { AspectWeaver } from "./aspect-weaver.service";
 import type { WeaveReport } from "./aspect-weaver.service";
+import { AspectConfigurationError } from "./aspect.types";
 import { Cacheable } from "./cacheable.decorator";
+import { Lock } from "./lock.decorator";
 import { Retry } from "./retry.decorator";
 import { Timed } from "./timed.decorator";
 import { ASPECT_CACHE, ASPECT_CLOCK, ASPECT_RANDOM, METHOD_TIMING_RECORDER } from "./ports";
@@ -50,6 +58,12 @@ class DemoService {
       throw new Error("transient");
     }
     return `value-${key}`;
+  }
+
+  @Lock({ ttlMs: 1_000 })
+  async guarded(id: string): Promise<{ id: string; fencingToken: number | undefined }> {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { id, fencingToken: currentLock()?.fencingToken };
   }
 
   plain(): string {
@@ -115,6 +129,7 @@ describe("AspectWeaver", () => {
         { provide: ASPECT_CACHE, useValue: cache },
         { provide: ASPECT_CLOCK, useValue: clock },
         { provide: ASPECT_RANDOM, useValue: new FakeAspectRandom([1]) },
+        { provide: DISTRIBUTED_LOCK, useValue: new InMemoryDistributedLock() },
         {
           provide: METHOD_TIMING_RECORDER,
           useValue: { record: (timing: MethodTiming) => samples.push(timing) },
@@ -224,6 +239,30 @@ describe("AspectWeaver", () => {
     });
   });
 
+  describe("@Lock", () => {
+    it("keeps a second caller out while the first one is inside", async () => {
+      const [first, second] = await Promise.allSettled([
+        service.guarded("o-1"),
+        service.guarded("o-1"),
+      ]);
+
+      expect(first.status).toBe("fulfilled");
+      expect((second as PromiseRejectedResult).reason).toBeInstanceOf(LockNotAcquiredError);
+    });
+
+    it("hands the method its fencing token without changing its signature", async () => {
+      const result = await service.guarded("o-1");
+
+      expect(result.fencingToken).toBeGreaterThan(0);
+    });
+
+    it("releases the key, so the next call is not blocked by the last one", async () => {
+      await service.guarded("o-1");
+
+      await expect(service.guarded("o-1")).resolves.toMatchObject({ id: "o-1" });
+    });
+  });
+
   describe("what it refuses to wrap", () => {
     it("reports a decorated controller handler instead of pretending it works", () => {
       // `registerRouter()` runs before `onModuleInit`, so the router already
@@ -232,6 +271,7 @@ describe("AspectWeaver", () => {
         target: "DemoController",
         method: "list",
         reason: "controller",
+        lock: false,
       });
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("DemoController.list()"));
     });
@@ -239,9 +279,94 @@ describe("AspectWeaver", () => {
     it.each([["RequestScopedService"], ["TransientService"]])(
       "reports a decorated %s, whose real instances are created after weaving",
       (target) => {
-        expect(report.skipped).toContainEqual({ target, method: "run", reason: "non-singleton" });
+        expect(report.skipped).toContainEqual({
+          target,
+          method: "run",
+          reason: "non-singleton",
+          lock: false,
+        });
         expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${target}.run()`));
       },
     );
+  });
+});
+
+/**
+ * The two ways a `@Lock()` ends up doing nothing, both of which have to be
+ * fatal.
+ *
+ * Every other aspect degrades into an absence — no cache, no retries, no
+ * timing sample — and a warning is proportionate. A method that asked for
+ * mutual exclusion and did not get any has no such fallback: it runs, it looks
+ * fine, and the damage is a race nobody can attribute afterwards.
+ */
+describe("AspectWeaver and @Lock", () => {
+  @Controller("orders")
+  class LockedController {
+    @Lock({ ttlMs: 1_000 })
+    async capture(): Promise<string> {
+      return "captured";
+    }
+  }
+
+  @Injectable()
+  class LockedService {
+    @Lock({ ttlMs: 1_000 })
+    async capture(): Promise<string> {
+      return "captured";
+    }
+  }
+
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, "log").mockImplementation();
+    jest.spyOn(Logger.prototype, "warn").mockImplementation();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /**
+   * `weave()` is called rather than `init()` because it is the same call
+   * `onModuleInit` makes, and asserting on it keeps the failure this test is
+   * about out of Nest's own bootstrap error handling.
+   */
+  async function weaverFor(
+    definition: Parameters<typeof Test.createTestingModule>[0],
+  ): Promise<{ weave: () => void; close: () => Promise<void> }> {
+    const moduleRef = await Test.createTestingModule({
+      imports: [DiscoveryModule],
+      ...definition,
+      providers: [
+        AspectWeaver,
+        { provide: ASPECT_CACHE, useValue: new InMemoryAspectCache() },
+        { provide: ASPECT_CLOCK, useValue: new FakeAspectClock() },
+        { provide: ASPECT_RANDOM, useValue: new FakeAspectRandom([1]) },
+        { provide: METHOD_TIMING_RECORDER, useValue: { record: () => {} } },
+        ...(definition.providers ?? []),
+      ],
+    }).compile();
+
+    return {
+      weave: () => moduleRef.get(AspectWeaver).weave(),
+      close: () => moduleRef.close(),
+    };
+  }
+
+  it("refuses to boot when the lock cannot be installed on a controller", async () => {
+    const weaver = await weaverFor({
+      controllers: [LockedController],
+      providers: [{ provide: DISTRIBUTED_LOCK, useValue: new InMemoryDistributedLock() }],
+    });
+
+    expect(() => weaver.weave()).toThrow(AspectConfigurationError);
+    await weaver.close();
+  });
+
+  it("refuses to boot when no DISTRIBUTED_LOCK is bound", async () => {
+    const weaver = await weaverFor({ providers: [LockedService] });
+
+    expect(() => weaver.weave()).toThrow(/needs a DISTRIBUTED_LOCK provider/);
+    await weaver.close();
   });
 });

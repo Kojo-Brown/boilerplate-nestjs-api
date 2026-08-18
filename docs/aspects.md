@@ -1,11 +1,12 @@
-# Method aspects — `@Cacheable()`, `@Retry()`, `@Timed()`
+# Method aspects — `@Cacheable()`, `@Lock()`, `@Retry()`, `@Timed()`
 
-Three decorators that add a cross-cutting concern to a provider method without
+Four decorators that add a cross-cutting concern to a provider method without
 that method knowing about it:
 
 | Decorator      | Adds                                                      |
 | -------------- | --------------------------------------------------------- |
 | `@Cacheable()` | Memoises the resolved value in the application cache      |
+| `@Lock()`      | Runs it under a distributed lock, one caller at a time    |
 | `@Retry()`     | Re-runs transient failures under a jittered backoff       |
 | `@Timed()`     | Reports the call's duration and outcome to a metrics sink |
 
@@ -83,12 +84,15 @@ checks read the same as before.
 Stacking order in the source does not matter. The weaver always builds:
 
 ```
-@Timed  →  @Cacheable  →  @Retry  →  your method
+@Timed  →  @Cacheable  →  @Lock  →  @Retry  →  your method
 ```
 
 Which gives:
 
-- **a cache hit costs no retries** — it never reaches the retry layer at all;
+- **a cache hit costs no retries, and takes no lock** — it never reaches either
+  layer at all;
+- **retries happen while holding the lock** — a ladder run outside it would drop
+  the exclusion between attempts and let another caller in halfway through;
 - **a call that only succeeds on its third attempt is cached once**, as a
   success, with no trace of the two failures;
 - **the recorded duration is what the caller actually waited** — cache lookup,
@@ -206,9 +210,41 @@ failing a call over.
 
 ---
 
+## `@Lock()`
+
+```ts
+@Lock({ key: ([month]) => `reports:${month as string}`, ttlMs: 30_000, waitMs: 5_000 })
+async rebuild(month: string): Promise<Report> {
+  const fence = currentLock()!.fencingToken;
+  ...
+}
+```
+
+One caller at a time across the whole deployment, backed by whichever
+implementation `DISTRIBUTED_LOCK` selects. It is the one aspect that never
+degrades into an absence:
+
+- an argument list the key cannot be derived from **throws**, where
+  `@Cacheable()` would call through — a cache may not turn a working call into a
+  failing one, and a lock may not silently stop excluding;
+- contention throws `LockNotAcquiredError`, and a lease that lapsed while the
+  method ran throws `LockLostError` **even if the method returned a value**;
+- applying it to a controller handler or a request-scoped provider is a boot
+  failure rather than a warning, because neither can be woven (see above).
+
+The lease is renewed while the method runs, so `ttlMs` is a bet on how quickly a
+_dead_ holder should be noticed rather than on how long the work takes.
+
+`docs/distributed-locking.md` is the full picture: what a lease can and cannot
+promise, why every acquisition carries a fencing token, how the quorum and the
+token counter work, and when to reach for a Postgres row lock instead.
+
+---
+
 ## Type safety
 
-`@Cacheable()` and `@Retry()` only compile on a method that returns a promise.
+`@Cacheable()`, `@Lock()` and `@Retry()` only compile on a method that returns a
+promise.
 Both have to `await` — a cache cannot be read synchronously and a retry has to
 wait between attempts — so applying them to a synchronous method would silently
 start returning a promise to callers expecting a value:

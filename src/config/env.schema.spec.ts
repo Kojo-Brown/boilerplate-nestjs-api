@@ -204,8 +204,10 @@ describe("envSchema — storage", () => {
       STORAGE_ADAPTER: "local",
       STORAGE_LOCAL_ROOT: "/var/lib/app/storage",
       // Unrelated to storage, but production refuses the in-memory idempotency
-      // store too, and this test is about the storage rule on its own.
+      // store and the in-memory lock too, and this test is about the storage
+      // rule on its own.
       IDEMPOTENCY_STORE: "redis",
+      DISTRIBUTED_LOCK: "redlock",
       REDIS_URL: "redis://localhost:6379",
     });
 
@@ -268,6 +270,53 @@ describe("envSchema — idempotency", () => {
   it("allows the in-memory store in test and development", () => {
     for (const NODE_ENV of ["test", "development"] as const) {
       expect(envSchema.parse({ ...BASE_ENV, NODE_ENV }).IDEMPOTENCY_STORE).toBe("memory");
+    }
+  });
+});
+
+describe("envSchema — distributed lock", () => {
+  it("defaults to the in-memory lock, so a clean clone boots with nothing configured", () => {
+    expect(envSchema.parse(BASE_ENV).DISTRIBUTED_LOCK).toBe("memory");
+  });
+
+  it("rejects an implementation that does not exist", () => {
+    expect(() => envSchema.parse({ ...BASE_ENV, DISTRIBUTED_LOCK: "zookeeper" })).toThrow();
+  });
+
+  it("refuses Redlock with nothing to vote over", () => {
+    // Otherwise the deployment looks healthy and finds out at the first
+    // contended call, which may be days later.
+    expect(() => envSchema.parse({ ...BASE_ENV, DISTRIBUTED_LOCK: "redlock" })).toThrow(
+      /REDLOCK_NODES \(or REDIS_URL, for a single node\) is required/,
+    );
+  });
+
+  it.each([
+    ["REDLOCK_NODES", { REDLOCK_NODES: "redis://a:6379,redis://b:6379,redis://c:6379" }],
+    ["REDIS_URL alone", { REDIS_URL: "redis://localhost:6379" }],
+  ])("accepts Redlock configured through %s", (_why, extra) => {
+    const env = envSchema.parse({ ...BASE_ENV, DISTRIBUTED_LOCK: "redlock", ...extra });
+
+    expect(env.DISTRIBUTED_LOCK).toBe("redlock");
+  });
+
+  it("refuses the in-memory lock in production even by default", () => {
+    // The default is the dangerous value, and it is dangerous silently: every
+    // acquisition succeeds on every replica.
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        NODE_ENV: "production",
+        STORAGE_ADAPTER: "local",
+        IDEMPOTENCY_STORE: "redis",
+        REDIS_URL: "redis://localhost:6379",
+      }),
+    ).toThrow(/DISTRIBUTED_LOCK=memory/);
+  });
+
+  it("allows the in-memory lock in test and development", () => {
+    for (const NODE_ENV of ["test", "development"] as const) {
+      expect(envSchema.parse({ ...BASE_ENV, NODE_ENV }).DISTRIBUTED_LOCK).toBe("memory");
     }
   });
 });

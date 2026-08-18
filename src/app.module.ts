@@ -5,6 +5,7 @@ import { ThrottlerModule } from "@nestjs/throttler";
 import { PrismaModule } from "./common/prisma/prisma.module";
 import { AppCacheModule } from "./common/cache";
 import { IdempotencyModule } from "./common/idempotency";
+import { LockingModule } from "./common/locking";
 import { AspectsModule } from "./common/aspects";
 import { EventsModule } from "./events";
 import { DiScopesModule } from "./di-scopes";
@@ -28,6 +29,9 @@ import { envSchema } from "./config/env.schema";
     ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 100 }]),
     PrismaModule,
     AppCacheModule,
+    // Global, and before AspectsModule: `AspectWeaver` installs `@Lock()` from
+    // the `DISTRIBUTED_LOCK` this binds, and refuses to boot without it.
+    LockingModule,
     // After AppCacheModule: `ASPECT_CACHE` is an alias of its `CacheService`.
     AspectsModule,
     // Global: `IdempotencyInterceptor` is bound in main.ts, outside any module.

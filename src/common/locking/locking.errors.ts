@@ -47,3 +47,56 @@ export class DeadlockDetectedError extends Error {
     if (options?.cause !== undefined) this.cause = options.cause;
   }
 }
+
+/**
+ * A distributed lock could not be taken within the caller's wait budget.
+ *
+ * Covers both "someone else holds it" and "not enough Redis nodes answered",
+ * deliberately — see {@link DistributedLock.acquire}. Neither is a reason for
+ * this caller to proceed, and code that branches on the difference eventually
+ * branches wrongly.
+ *
+ * A plain `Error` rather than an `HttpException`, for the same reason
+ * {@link LockUnavailableError} is: contention reached over a queue consumer or
+ * a CLI is not a "409". `docs/distributed-locking.md` shows the mapping to use
+ * at an HTTP call site.
+ */
+export class LockNotAcquiredError extends Error {
+  constructor(
+    readonly key: string,
+    readonly waitedMs: number,
+    options?: { cause?: unknown },
+  ) {
+    super(`Could not acquire the distributed lock "${key}" within ${waitedMs}ms`);
+    this.name = "LockNotAcquiredError";
+    if (options?.cause !== undefined) this.cause = options.cause;
+  }
+}
+
+/**
+ * The lease lapsed while the guarded method was still running.
+ *
+ * Raised even when that method resolved successfully, which is the point: the
+ * result was computed by a caller that had stopped being the holder, so
+ * somebody else may have been running the same operation at the same time.
+ * Reporting success would hide exactly the interleaving the lock was there to
+ * prevent.
+ *
+ * It is not a rollback — nothing here can retract what the method already did.
+ * The recourse is on the resource: a fenced write quoting
+ * {@link LockHandle.fencingToken} would have been refused, and an operation
+ * that cannot be fenced has to be idempotent instead.
+ */
+export class LockLostError extends Error {
+  constructor(
+    readonly key: string,
+    readonly fencingToken: number,
+    readonly heldMs: number,
+  ) {
+    super(
+      `Lost the distributed lock "${key}" (fencing token ${fencingToken}) after ${heldMs}ms, ` +
+        "while the guarded operation was still running",
+    );
+    this.name = "LockLostError";
+  }
+}

@@ -51,6 +51,48 @@ services:
       retries: 10
       start_period: 5s
 
+  # Two more independent masters, so Redlock has a majority to vote over. They
+  # deliberately do not replicate to each other or to `redis` above: nodes that
+  # replicate are not a quorum, they are one node with copies, and a lock
+  # acknowledged before replication is simply absent after a failover.
+  #
+  # No `allkeys-lru` here, unlike `redis`: evicting a lock key hands the lock to
+  # somebody else, and evicting the fencing counter restarts the token sequence.
+  # These hold locks only, so a memory cap they could reach would be a bug.
+  redis2:
+    image: redis:8-alpine
+    restart: unless-stopped
+    networks:
+      - app-network
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS2_PORT:-6380}:6379"
+    volumes:
+      - redis2data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  redis3:
+    image: redis:8-alpine
+    restart: unless-stopped
+    networks:
+      - app-network
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS3_PORT:-6381}:6379"
+    volumes:
+      - redis3data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   api:
     build:
       context: .
@@ -64,6 +106,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis2:
+        condition: service_healthy
+      redis3:
+        condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-4000}
@@ -71,6 +117,15 @@ services:
       DATABASE_URL: >-
         postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-app_db}
       REDIS_URL: redis://redis:6379
+      # `NODE_ENV=production` above refuses every in-memory backend, which is
+      # the whole point of those rules — a default that is right for a test and
+      # catastrophic in production must not be able to reach production. The
+      # compose file therefore has to name a real one for each.
+      STORAGE_ADAPTER: ${STORAGE_ADAPTER:-local}
+      STORAGE_LOCAL_ROOT: ${STORAGE_LOCAL_ROOT:-/app/storage}
+      IDEMPOTENCY_STORE: ${IDEMPOTENCY_STORE:-redis}
+      DISTRIBUTED_LOCK: ${DISTRIBUTED_LOCK:-redlock}
+      REDLOCK_NODES: ${REDLOCK_NODES:-redis://redis:6379,redis://redis2:6379,redis://redis3:6379}
       # JWT — override JWT_SECRET in production; default is only for local dev
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-min-32-chars!!}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
@@ -101,3 +156,5 @@ services:
 volumes:
   pgdata:
   redisdata:
+  redis2data:
+  redis3data:

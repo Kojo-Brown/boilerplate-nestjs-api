@@ -3,10 +3,13 @@ export { AspectWeaver } from "./aspect-weaver.service";
 export type { WeaveReport, WeaveSkip, WeaveSkipReason } from "./aspect-weaver.service";
 
 export { Cacheable } from "./cacheable.decorator";
+export { Lock } from "./lock.decorator";
 export { Retry } from "./retry.decorator";
 export { Timed } from "./timed.decorator";
 
 export type { CacheableOptions } from "./cacheable.aspect";
+export { DEFAULT_LOCK_TTL_MS } from "./lock.aspect";
+export type { LockOptions } from "./lock.aspect";
 export { DEFAULT_RETRY_OPTIONS, isTransientError } from "./retry.aspect";
 export type { RetryBackoff, RetryOptions } from "./retry.aspect";
 export type { TimedOptions } from "./timed.aspect";

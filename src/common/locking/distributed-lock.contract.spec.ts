@@ -37,8 +37,18 @@ describeDistributedLockContract("InMemoryDistributedLock", () => {
  */
 const NODE_URLS = parseRedlockNodes(process.env["REDLOCK_NODES"] ?? process.env["REDIS_URL"] ?? "");
 
-/** Kept away from db 0, which the cache and BullMQ share in a dev environment. */
-const CONTRACT_DB = 15;
+/**
+ * Kept away from db 0, which the cache and BullMQ share in a dev environment,
+ * and away from db 15, which `idempotency-store.contract.spec.ts` uses.
+ *
+ * The separation has to be a database rather than a key prefix: `reset()` here
+ * is a `FLUSHDB`, which knows nothing about prefixes, and Jest runs the two
+ * contract suites in parallel workers against the same server. Sharing db 15
+ * made this suite delete the idempotency suite's records mid-test — which is
+ * how it failed in CI while passing locally, where the two happened not to
+ * overlap.
+ */
+const CONTRACT_DB = 14;
 
 function connect(url: string): Redis {
   return new Redis(url, {

@@ -29,8 +29,14 @@ export interface DistributedLockHarness {
 
 const KEY = "orders:o-1";
 const OTHER_KEY = "orders:o-2";
-/** Long enough to survive a slow CI runner between two commands, short enough to wait out. */
-const TTL_MS = 400;
+/**
+ * The lease for tests that only need the lock to still be held at the end.
+ *
+ * Generous on purpose: a lease that lapses mid-test would let a second caller
+ * in and fail an assertion about exclusion for a reason that has nothing to do
+ * with exclusion. Tests that are *about* expiry set their own short TTL.
+ */
+const TTL_MS = 2_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -145,11 +151,16 @@ export function describeDistributedLockContract(
 
     describe("extend", () => {
       it("keeps a key that would otherwise have lapsed", async () => {
-        const held = await lock.acquire(KEY, { ttlMs: 200 });
+        // `delay` guarantees a lower bound only, so the renewal has to have
+        // room to land well inside the original lease: 100ms into a 600ms one,
+        // rather than 100ms into a 200ms one, which a loaded runner overshoots.
+        // The second wait then takes the total past the original expiry, so a
+        // lock still held at the end can only be held because of the renewal.
+        const held = await lock.acquire(KEY, { ttlMs: 600 });
         await delay(100);
 
-        expect(await held?.extend(1_000)).toBe(true);
-        await delay(200);
+        expect(await held?.extend(5_000)).toBe(true);
+        await delay(700);
 
         expect(await lock.acquire(KEY, { ttlMs: TTL_MS })).toBeNull();
         expect(held?.remainingMs()).toBeGreaterThan(0);

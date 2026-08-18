@@ -158,10 +158,17 @@ export function describeIdempotencyStoreContract(
         // only the remainder of the reservation's window, and two clients
         // retrying the same operation seconds apart would get different
         // answers depending on how long the original took.
-        await store.reserve(KEY, inFlight("lease-1"), 60);
-        await sleep(40);
+        //
+        // The property needs the two sleeps to add up to more than the
+        // reservation's TTL — without the restart the record is gone by the
+        // final read — and needs `complete` to land inside it. The margins are
+        // 100ms on each side rather than 20ms: `sleep` guarantees a lower bound
+        // only, and a parallel Jest worker on a loaded runner overshoots a 40ms
+        // timer often enough that this failed in CI while passing locally.
+        await store.reserve(KEY, inFlight("lease-1"), 200);
+        await sleep(100);
         await store.complete(KEY, "lease-1", RESPONSE, 5_000);
-        await sleep(40);
+        await sleep(150);
 
         expect((await store.get(KEY))?.state).toBe("completed");
       });

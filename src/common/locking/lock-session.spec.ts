@@ -83,15 +83,17 @@ describe("withLock", () => {
       const result = await withLock(
         observed,
         KEY,
-        { ttlMs: 60, renewIntervalMs: 10, logger },
+        { ttlMs: 400, renewIntervalMs: 50, logger },
         async () => {
-          await delay(150);
+          await delay(600);
           return "finished";
         },
       );
 
-      // Without renewal a 60ms lease under a 150ms operation lapses, and the
-      // session refuses to report success — see the next test.
+      // Without renewal a 400ms lease under a 600ms operation lapses, and the
+      // session refuses to report success — see the next test. The interval is
+      // an eighth of the lease rather than a third so that several renewals can
+      // be late, as they are on a loaded runner, before one is too late.
       expect(result).toBe("finished");
     });
 

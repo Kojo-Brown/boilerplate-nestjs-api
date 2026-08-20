@@ -16,6 +16,7 @@ import { PaymentsModule } from "./payments/payments.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { HealthModule } from "./health/health.module";
 import { QueueModule } from "./queue/queue.module";
+import { WorkersModule } from "./workers/workers.module";
 import { ShutdownModule } from "./common/shutdown/shutdown.module";
 import { ProxyAwareThrottlerGuard } from "./common/guards/throttler.guard";
 import { envSchema } from "./config/env.schema";
@@ -46,6 +47,10 @@ import { envSchema } from "./config/env.schema";
     NotificationsModule,
     HealthModule,
     QueueModule,
+    // Global: `WORKER_POOL` is a scarce process-scoped resource, and every
+    // caller wants the one the module provides — a second pool defeats the
+    // point of a bounded queue.
+    WorkersModule,
     ShutdownModule,
     // Teaching module: the three provider scopes, and `ScopeAudit`, which
     // reports at boot what the container rebuilds per request. See

@@ -3,6 +3,7 @@ import { IDEMPOTENCY_STORE_NAMES } from "@/common/idempotency/ports";
 import { DISTRIBUTED_LOCK_NAMES } from "@/common/locking/ports";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
+import { WORKER_POOL_NAMES } from "@/workers/ports";
 
 export const envSchema = z
   .object({
@@ -71,6 +72,45 @@ export const envSchema = z
      * and logs a warning saying so.
      */
     REDLOCK_NODES: z.string().optional(),
+
+    /**
+     * Which `WorkerPool` runs CPU-bound tasks.
+     *
+     * `piscina` is the real one — a fixed thread pool with a bounded queue,
+     * built for exactly this. `inline` runs each task on the caller's thread
+     * inside a resolved promise and preserves the pool's observable contract
+     * (queue depth, `stats()`, `shutdown()`) without offloading any work; it
+     * is the right choice for tests and a knowingly-degraded choice for a
+     * small deployment where blocking the event loop for a few dozen
+     * milliseconds is not a concern. See `docs/worker-pool.md`.
+     */
+    WORKER_POOL: z.enum(WORKER_POOL_NAMES).default("inline"),
+    /**
+     * Hard cap on concurrent workers. Piscina's own default is
+     * `availableParallelism() - 1`, which is invisible to a container's
+     * cgroup CPU quota — an operator has to name a number they mean.
+     *
+     * A `piscina` pool with `maxThreads=0` starts no workers at all, so the
+     * schema refuses it: choose `WORKER_POOL=inline` for that instead of
+     * pretending the pool is running.
+     */
+    WORKER_POOL_MAX_THREADS: z.coerce.number().int().positive().default(2),
+    /**
+     * Hard cap on queued (not yet running) tasks. Piscina's default is
+     * `Infinity`, which turns the pool into a memory leak the moment
+     * producers outrun workers; the pool rejects overflow with
+     * `WorkerPoolSaturatedError` before calling into Piscina at all, which
+     * is what an HTTP caller wants — a fast 503 rather than latency behind
+     * a backlog that will not clear.
+     */
+    WORKER_POOL_MAX_QUEUE: z.coerce.number().int().nonnegative().default(32),
+    /**
+     * Default wait a `run()` will tolerate before rejecting with
+     * `WorkerPoolTimeoutError`. Overridable per call. The wait ends;
+     * the worker keeps burning until the task returns, which is the one
+     * thing Piscina cannot help with without discarding the thread.
+     */
+    WORKER_POOL_TASK_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default("us-east-1"),

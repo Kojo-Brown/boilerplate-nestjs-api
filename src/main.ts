@@ -7,6 +7,7 @@ import { ResponseEnvelopeInterceptor } from "./common/interceptors/response-enve
 import { LoggingInterceptor } from "./common/interceptors/logging.interceptor";
 import { IdempotencyInterceptor } from "./common/idempotency";
 import { EntityTagInterceptor } from "./common/concurrency";
+import { DeepFreezePipe, freezingEnabledFor } from "./common/immutable";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { ConfigService } from "@nestjs/config";
 
@@ -21,6 +22,10 @@ async function bootstrap() {
 
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
 
+  // `DeepFreezePipe` is bound after `ValidationPipe`, and global pipes run in
+  // the order they are registered: it must freeze the DTO instance
+  // `class-transformer` produces, not the plain body that `ValidationPipe` is
+  // about to replace. Outside production only — see docs/immutability.md.
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -28,6 +33,7 @@ async function bootstrap() {
       transform: true,
       transformOptions: { enableImplicitConversion: true },
     }),
+    new DeepFreezePipe(freezingEnabledFor(config.get<string>("NODE_ENV"))),
   );
 
   const reflector = app.get(Reflector);

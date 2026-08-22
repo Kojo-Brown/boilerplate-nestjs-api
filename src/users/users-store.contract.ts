@@ -1,4 +1,6 @@
 import { DEFAULT_USER_PREFERENCES } from "./types/user-preferences";
+import type { UserPreferences } from "./types/user-preferences";
+import { isDeeplyFrozen } from "@/common/immutable";
 import { UNCONDITIONAL, VersionConflictError } from "@/common/concurrency";
 import type { ExpectedVersion } from "@/common/concurrency";
 import type { UsersStore } from "./ports";
@@ -206,6 +208,48 @@ export function describeUsersStoreContract(name: string, createStore: () => User
         );
 
         await expect(store.getPreferences(created.id)).resolves.toEqual(written.preferences);
+      });
+
+      it("hands out preferences the caller cannot mutate", async () => {
+        // Not a dev-only guarantee, and not one either store implements on
+        // purpose: it falls out of `DEFAULT_USER_PREFERENCES` being frozen at
+        // module load and every merge going through a helper that preserves
+        // frozen-ness. That matters because the values are *shared* — a patch
+        // that changes nothing returns its input, and a user who has never set
+        // a preference is handed the defaults object itself. Were it writable,
+        // one caller normalising "its own copy" in place would change the
+        // defaults for every user in the process.
+        const created = await store.create({ email: "ada@example.test" });
+        const written = await store.setPreferences(created.id, { theme: "dark" }, UNCONDITIONAL);
+        const read = await store.getPreferences(created.id);
+
+        expect(isDeeplyFrozen(written.preferences)).toBe(true);
+        expect(isDeeplyFrozen(read)).toBe(true);
+        expect(isDeeplyFrozen(await store.getPreferences("missing"))).toBe(true);
+
+        expect(() => {
+          (read as UserPreferences).theme = "light";
+        }).toThrow(TypeError);
+        // The store's own state is intact, which is the property being bought.
+        await expect(store.getPreferences(created.id)).resolves.toMatchObject({ theme: "dark" });
+      });
+
+      it("hands every user with nothing stored the same defaults object", async () => {
+        // Identity, not equality — and the reason the freeze above is not
+        // optional. Two different users who have never touched a preference are
+        // handed *the same object*, because merging an empty patch returns its
+        // input. This is the sharing structural sharing is named for, observed
+        // through the store rather than asserted on the helper.
+        //
+        // Note what is deliberately not claimed: that two reads of the *same*
+        // stored preferences are identical. Each read re-derives the value from
+        // the stored partial, so that would be a caching property, not this one.
+        const one = await store.create({ email: "one@example.test" });
+        const two = await store.create({ email: "two@example.test" });
+
+        expect(await store.getPreferences(one.id)).toBe(DEFAULT_USER_PREFERENCES);
+        expect(await store.getPreferences(two.id)).toBe(DEFAULT_USER_PREFERENCES);
+        expect(await store.getPreferences("missing")).toBe(DEFAULT_USER_PREFERENCES);
       });
 
       it("ignores keys explicitly set to undefined rather than erasing them", async () => {

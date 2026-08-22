@@ -10,7 +10,7 @@ export class CursorPaginationDto {
   })
   @IsOptional()
   @IsString()
-  cursor?: string;
+  readonly cursor?: string;
 
   @ApiPropertyOptional({
     description: "Number of items to return (1–100)",
@@ -24,5 +24,5 @@ export class CursorPaginationDto {
   @Min(1)
   @Max(100)
   @Type(() => Number)
-  limit: number = 20;
+  readonly limit: number = 20;
 }

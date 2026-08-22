@@ -10,5 +10,5 @@ export class ListUsersQueryDto extends CursorPaginationDto {
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  search?: string;
+  readonly search?: string;
 }

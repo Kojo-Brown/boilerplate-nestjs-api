@@ -1,12 +1,12 @@
 import { Prisma } from "@prisma/client";
 import { DEFAULT_USER_PREFERENCES, mergePreferences } from "@/users/types/user-preferences";
-import type { UserPreferences } from "@/users/types/user-preferences";
+import type { ReadonlyUserPreferences, UserPreferences } from "@/users/types/user-preferences";
 
 export const preferencesExtension = Prisma.defineExtension({
   name: "user-preferences",
   model: {
     user: {
-      async getPreferences(id: string): Promise<UserPreferences> {
+      async getPreferences(id: string): Promise<ReadonlyUserPreferences> {
         const ctx = Prisma.getExtensionContext(this);
         const user = await ctx.findUnique({
           where: { id },
@@ -33,7 +33,7 @@ export const preferencesExtension = Prisma.defineExtension({
         id: string,
         patch: Partial<UserPreferences>,
         versionFilter: Prisma.IntFilter | undefined = undefined,
-      ): Promise<{ preferences: UserPreferences; version: number }> {
+      ): Promise<{ preferences: ReadonlyUserPreferences; version: number }> {
         const ctx = Prisma.getExtensionContext(this);
         const user = await ctx.findUnique({
           where: { id },

@@ -8,7 +8,7 @@ export class RequestPresignedGetUrlDto {
   })
   @IsString()
   @IsNotEmpty()
-  key!: string;
+  readonly key!: string;
 
   @ApiPropertyOptional({
     example: 3600,
@@ -18,5 +18,5 @@ export class RequestPresignedGetUrlDto {
   @IsInt()
   @Min(60)
   @Max(604800)
-  expiresIn?: number;
+  readonly expiresIn?: number;
 }

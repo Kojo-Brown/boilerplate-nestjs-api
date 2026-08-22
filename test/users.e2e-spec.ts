@@ -2,11 +2,18 @@ import type { INestApplication } from "@nestjs/common";
 import { Role } from "@prisma/client";
 import request from "supertest";
 import { createTestApp, type TestApp } from "./helpers/create-test-app";
+import { UsersService } from "@/users/users.service";
+import { isDeeplyFrozen } from "@/common/immutable";
+import type { UpdateUserPreferencesDto } from "@/users/dto/update-user-preferences.dto";
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
 
 describe("Users (e2e)", () => {
   let app: INestApplication;
   let prisma: InMemoryPrismaService;
+
+  // Captured before any spy replaces it, so the spy can still perform the
+  // real write and the request goes through end to end.
+  const updatePreferences = UsersService.prototype.updatePreferences;
 
   let userToken: string;
   let adminToken: string;
@@ -283,6 +290,42 @@ describe("Users (e2e)", () => {
         .expect(200);
 
       expect(reread.body.data.smsNotifications).toBe(true);
+    });
+
+    it("hands the handler a frozen DTO, through the real pipe chain", async () => {
+      // Without this, nothing fails if `DeepFreezePipe` is dropped from the
+      // global pipes: no handler in the codebase mutates its own payload today,
+      // so the guard would silently become inert and only stop catching things.
+      // Spying on the service the controller already holds is what makes this
+      // an assertion about the *wiring* — the DTO has been through
+      // `ValidationPipe`, `class-transformer` and the freeze by the time it
+      // arrives here.
+      const users = app.get(UsersService);
+      const received: unknown[] = [];
+      const spy = jest
+        .spyOn(users, "updatePreferences")
+        .mockImplementation(async (requester, id, dto, expected) => {
+          received.push(dto);
+          return updatePreferences.call(users, requester, id, dto, expected);
+        });
+
+      try {
+        await request(app.getHttpServer())
+          .patch(`/v1/users/${userId}/preferences`)
+          .set("Authorization", `Bearer ${userToken}`)
+          .set("If-Match", await currentEtag(`/v1/users/${userId}/preferences`, userToken))
+          .send({ pushNotifications: true })
+          .expect(200);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(received).toHaveLength(1);
+      const dto = received[0] as UpdateUserPreferencesDto;
+      expect(isDeeplyFrozen(dto)).toBe(true);
+      expect(() => {
+        (dto as { pushNotifications?: boolean }).pushNotifications = false;
+      }).toThrow(TypeError);
     });
 
     it("rejects a preference key the DTO does not declare", async () => {

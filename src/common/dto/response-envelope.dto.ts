@@ -3,20 +3,20 @@ import type { Type } from "@nestjs/common";
 
 export class ResponseMetaDto {
   @ApiProperty({ example: "2024-01-01T00:00:00.000Z", description: "ISO 8601 response timestamp" })
-  timestamp!: string;
+  readonly timestamp!: string;
 
   @ApiProperty({ example: "v1", description: "API version that served this response" })
-  version!: string;
+  readonly version!: string;
 }
 
 export class ResponseEnvelopeDto<T> {
   @ApiProperty({ example: true })
-  success!: true;
+  readonly success!: true;
 
-  data!: T;
+  readonly data!: T;
 
   @ApiProperty({ type: ResponseMetaDto })
-  meta!: ResponseMetaDto;
+  readonly meta!: ResponseMetaDto;
 }
 
 /**

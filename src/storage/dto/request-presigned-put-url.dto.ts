@@ -8,12 +8,12 @@ export class RequestPresignedPutUrlDto {
   })
   @IsString()
   @IsNotEmpty()
-  key!: string;
+  readonly key!: string;
 
   @ApiProperty({ example: "image/jpeg", description: "MIME type of the file to be uploaded" })
   @IsString()
   @IsNotEmpty()
-  contentType!: string;
+  readonly contentType!: string;
 
   @ApiPropertyOptional({
     example: 3600,
@@ -23,5 +23,5 @@ export class RequestPresignedPutUrlDto {
   @IsInt()
   @Min(60)
   @Max(604800)
-  expiresIn?: number;
+  readonly expiresIn?: number;
 }

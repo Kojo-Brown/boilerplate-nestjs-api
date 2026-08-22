@@ -1,4 +1,4 @@
-import type { UserPreferences } from "@/users/types/user-preferences";
+import type { ReadonlyUserPreferences, UserPreferences } from "@/users/types/user-preferences";
 import type { ExpectedVersion } from "@/common/concurrency";
 
 /**
@@ -18,8 +18,11 @@ export interface UserPreferencesStore {
    * absent row and an unset column are the same "nothing stored yet" to this
    * port. Callers that need a 404 must check existence themselves, which is
    * what `UsersService` does before calling.
+   *
+   * The result is read-only because it may be the store's own value: with no
+   * preferences stored this resolves with `DEFAULT_USER_PREFERENCES` itself.
    */
-  getPreferences(id: string): Promise<UserPreferences>;
+  getPreferences(id: string): Promise<ReadonlyUserPreferences>;
 
   /**
    * Merges `patch` into the stored preferences. Rejects when no user has this
@@ -45,7 +48,7 @@ export interface UserPreferencesStore {
 }
 
 export interface PreferencesWriteResult {
-  readonly preferences: UserPreferences;
+  readonly preferences: ReadonlyUserPreferences;
   /** The user row's version *after* the write. */
   readonly version: number;
 }

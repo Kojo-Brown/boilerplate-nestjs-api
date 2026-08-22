@@ -2,20 +2,20 @@ import { ApiProperty } from "@nestjs/swagger";
 
 export class UserPreferencesDto {
   @ApiProperty({ enum: ["light", "dark", "system"], example: "system" })
-  theme!: "light" | "dark" | "system";
+  readonly theme!: "light" | "dark" | "system";
 
   @ApiProperty({ example: "en", description: "BCP-47 language tag" })
-  language!: string;
+  readonly language!: string;
 
   @ApiProperty({ example: true })
-  emailNotifications!: boolean;
+  readonly emailNotifications!: boolean;
 
   @ApiProperty({ example: false })
-  smsNotifications!: boolean;
+  readonly smsNotifications!: boolean;
 
   @ApiProperty({ example: false })
-  pushNotifications!: boolean;
+  readonly pushNotifications!: boolean;
 
   @ApiProperty({ example: "UTC", description: "IANA timezone identifier" })
-  timezone!: string;
+  readonly timezone!: string;
 }

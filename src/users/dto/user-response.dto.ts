@@ -4,36 +4,36 @@ import { UserPreferencesDto } from "./user-preferences.dto";
 
 export class UserResponseDto {
   @ApiProperty({ example: "clxxxxxxxxxxxxxxxx" })
-  id!: string;
+  readonly id!: string;
 
   @ApiProperty({ example: "jane@example.com" })
-  email!: string;
+  readonly email!: string;
 
   @ApiPropertyOptional({ example: "Jane Doe", nullable: true })
-  name!: string | null;
+  readonly name!: string | null;
 
   @ApiProperty({ enum: Role, example: Role.USER })
-  role!: Role;
+  readonly role!: Role;
 
   @ApiPropertyOptional({ example: "google", nullable: true })
-  provider!: string | null;
+  readonly provider!: string | null;
 
   @ApiPropertyOptional({ example: "avatars/user-1/1234567890.jpg", nullable: true })
-  avatarUrl!: string | null;
+  readonly avatarUrl!: string | null;
 
   @ApiPropertyOptional({ type: UserPreferencesDto, nullable: true })
-  preferences!: UserPreferencesDto | null;
+  readonly preferences!: UserPreferencesDto | null;
 
   @ApiProperty({ example: "2024-01-01T00:00:00.000Z" })
-  createdAt!: Date;
+  readonly createdAt!: Date;
 
   @ApiProperty({ example: "2024-01-01T00:00:00.000Z" })
-  updatedAt!: Date;
+  readonly updatedAt!: Date;
 
   @ApiProperty({
     example: 3,
     description:
       "Optimistic-concurrency version. Also returned as the `ETag` header, which is the form to send back in `If-Match`.",
   })
-  version!: number;
+  readonly version!: number;
 }

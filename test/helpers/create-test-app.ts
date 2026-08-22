@@ -12,6 +12,7 @@ import { ResponseEnvelopeInterceptor } from "@/common/interceptors/response-enve
 import { LoggingInterceptor } from "@/common/interceptors/logging.interceptor";
 import { IdempotencyInterceptor } from "@/common/idempotency";
 import { EntityTagInterceptor } from "@/common/concurrency";
+import { DeepFreezePipe, freezingEnabledFor } from "@/common/immutable";
 import { REFRESH_TOKEN_STORE } from "@/auth/ports";
 import { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
 import { InMemoryPrismaService } from "./in-memory-prisma";
@@ -111,6 +112,10 @@ export async function createTestApp(): Promise<TestApp> {
       transform: true,
       transformOptions: { enableImplicitConversion: true },
     }),
+    // NODE_ENV is "test" here, so freezing is on: the e2e suite is where a
+    // handler or interceptor that mutates its own request payload in place
+    // should be caught, not production.
+    new DeepFreezePipe(freezingEnabledFor(process.env["NODE_ENV"])),
   );
 
   const reflector = app.get(Reflector);

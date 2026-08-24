@@ -112,6 +112,65 @@ export const envSchema = z
      */
     WORKER_POOL_TASK_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
+    /**
+     * Whether this process runs the outbox relay.
+     *
+     * On by default, because an outbox nobody drains is a queue that only grows
+     * and a set of events nobody receives. Turning it off is for the two
+     * deployments where that is the right answer: a test that drives
+     * `runOnce()` itself and wants no timer, and a topology that relays from a
+     * dedicated worker rather than from every API replica.
+     *
+     * Running it on several replicas at once is supported and is the default
+     * shape — the claim is `FOR UPDATE SKIP LOCKED`, so replicas take disjoint
+     * batches rather than duplicating or blocking each other.
+     *
+     * Not `z.coerce.boolean()`: that is `Boolean(value)`, under which every
+     * non-empty string is true — so `OUTBOX_RELAY_ENABLED=false` would *enable*
+     * the relay, and the one setting whose whole purpose is to turn something
+     * off would be impossible to use. The union below accepts the spellings an
+     * operator actually types and rejects anything else with an error naming
+     * the variable, rather than guessing.
+     */
+    OUTBOX_RELAY_ENABLED: z
+      .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+      .default(true)
+      .transform((value) => value === true || value === "true" || value === "1"),
+    /**
+     * How long an event may sit staged before the relay looks at it.
+     *
+     * This is added latency on every event, and lowering it is not free: each
+     * tick is a query per replica whether or not anything is due. A second is a
+     * deliberate middle — the events in the catalogue are welcome emails and
+     * cleanup, none of which a user is watching a spinner for.
+     */
+    OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
+    /**
+     * Rows claimed per pass. The batch is held under row locks for the whole
+     * pass, so this is really "how many events one relay may make invisible to
+     * the others at once" — large enough to drain a backlog, small enough that
+     * a slow broker does not park a hundred events behind one bad publish.
+     */
+    OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().default(50),
+    /**
+     * How long one publish may take before it is treated as failed. It bounds
+     * the drain transaction: without it a broker that stops answering holds the
+     * claim, and every row in the batch with it, until the transaction times
+     * out much later.
+     */
+    OUTBOX_PUBLISH_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+    /** First retry delay, before jitter. The ladder doubles from here. */
+    OUTBOX_BACKOFF_BASE_MS: z.coerce.number().int().positive().default(500),
+    /** Ceiling on the retry delay, so the ladder plateaus rather than running away. */
+    OUTBOX_BACKOFF_MAX_MS: z.coerce.number().int().positive().default(300_000),
+    /**
+     * Attempts before an event is dead-lettered. Eight with the defaults above
+     * is a little over twenty minutes of retrying — long enough to ride out a
+     * broker restart, short enough that a genuinely poisonous event is in front
+     * of a human the same morning.
+     */
+    OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
+
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default("us-east-1"),
     S3_BUCKET: z.string().optional(),

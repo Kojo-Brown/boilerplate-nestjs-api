@@ -3,12 +3,20 @@ import request from "supertest";
 import { createTestApp, type RecordingEmailQueue, type TestApp } from "./helpers/create-test-app";
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
 import type { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
+import type { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
+import { OutboxRelayService } from "@/outbox";
 
 describe("Auth (e2e)", () => {
   let app: INestApplication;
   let prisma: InMemoryPrismaService;
   let emails: RecordingEmailQueue;
   let refreshTokens: InMemoryRefreshTokenStore;
+  let outbox: InMemoryOutboxStore;
+  let drainOutbox: TestApp["drainOutbox"];
+  let relay: OutboxRelayService;
+
+  /** One relay pass on a clock past a scheduled retry, rather than a sleep. */
+  const relayRunAt = (moment: Date) => relay.runOnce(new Date(moment.getTime() + 1));
 
   beforeAll(async () => {
     const fixture: TestApp = await createTestApp();
@@ -16,6 +24,9 @@ describe("Auth (e2e)", () => {
     prisma = fixture.prisma;
     emails = fixture.emails;
     refreshTokens = fixture.refreshTokens;
+    outbox = fixture.outbox;
+    drainOutbox = fixture.drainOutbox;
+    relay = app.get(OutboxRelayService);
   });
 
   afterAll(async () => {
@@ -26,6 +37,7 @@ describe("Auth (e2e)", () => {
     prisma.reset();
     emails.reset();
     refreshTokens.reset();
+    outbox.reset();
   });
 
   const TEST_EMAIL = "e2e@example.com";
@@ -50,16 +62,33 @@ describe("Auth (e2e)", () => {
       });
     });
 
-    it("queues a welcome email through the domain event bus", async () => {
+    it("stages user.registered in the outbox rather than emitting it", async () => {
       await request(app.getHttpServer())
         .post("/v1/auth/register")
         .send({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME })
         .expect(201);
 
-      // Nothing in the request path calls the queue. `AuthService` published
-      // `user.registered`, the subscriber loader had wired `WelcomeEmailListener`
-      // to it at bootstrap, and the listener enqueued this — the whole chain,
-      // asserted from outside.
+      // Durable before anyone reacts, and — because nothing has drained yet —
+      // demonstrably not delivered on the request's own stack.
+      expect(outbox.all()).toEqual([
+        expect.objectContaining({ name: "user.registered", status: "PENDING" }),
+      ]);
+      expect(emails.enqueued).toEqual([]);
+    });
+
+    it("queues a welcome email once the relay delivers the event", async () => {
+      await request(app.getHttpServer())
+        .post("/v1/auth/register")
+        .send({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME })
+        .expect(201);
+
+      await drainOutbox();
+
+      // Nothing in the request path calls the queue. `AuthService` staged
+      // `user.registered` inside the transaction that created the row, the relay
+      // published it to the bus, the subscriber loader had wired
+      // `WelcomeEmailListener` to that event at bootstrap, and the listener
+      // enqueued this — the whole chain, asserted from outside.
       expect(emails.enqueued).toContainEqual({
         job: "send-welcome",
         data: { to: TEST_EMAIL, name: TEST_NAME },
@@ -73,8 +102,52 @@ describe("Auth (e2e)", () => {
         .post("/v1/auth/register")
         .send({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME })
         .expect(201);
+      await drainOutbox();
 
       expect(prisma._users.size).toBe(1);
+    });
+
+    /**
+     * The reason the outbox exists, asserted end to end.
+     *
+     * A subscriber that failed used to be the end of the story: the emitter
+     * contained the error and the welcome email was simply gone. The event is
+     * now a row, so the failure leaves it pending and the next pass delivers it.
+     */
+    it("re-delivers an event whose subscriber failed, instead of losing it", async () => {
+      jest.spyOn(emails, "sendWelcomeEmail").mockRejectedValueOnce(new Error("redis down"));
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/register")
+        .send({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME })
+        .expect(201);
+
+      const failed = await drainOutbox();
+      expect(failed.outcomes).toEqual([expect.objectContaining({ disposition: "retry" })]);
+      expect(emails.enqueued).toEqual([]);
+
+      // The backoff put it in the future, so the retry runs on a clock past it.
+      const retried = await relayRunAt(failed.outcomes[0]!.nextAttemptAt!);
+
+      expect(retried.outcomes).toEqual([expect.objectContaining({ disposition: "published" })]);
+      expect(emails.enqueued).toContainEqual({
+        job: "send-welcome",
+        data: { to: TEST_EMAIL, name: TEST_NAME },
+      });
+    });
+
+    it("keeps the same event id across a redelivery, so a consumer can dedupe", async () => {
+      jest.spyOn(emails, "sendWelcomeEmail").mockRejectedValueOnce(new Error("redis down"));
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/register")
+        .send({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME })
+        .expect(201);
+
+      const failed = await drainOutbox();
+      const retried = await relayRunAt(failed.outcomes[0]!.nextAttemptAt!);
+
+      expect(retried.outcomes[0]?.eventId).toBe(failed.outcomes[0]?.eventId);
     });
 
     it("returns 409 when email is already registered", async () => {

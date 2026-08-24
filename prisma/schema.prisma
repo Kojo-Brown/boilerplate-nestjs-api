@@ -43,6 +43,61 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+/// One domain event, written in the same transaction as the data it describes
+/// and relayed to the broker afterwards. See docs/outbox.md.
+model OutboxEvent {
+  id String @id @default(cuid())
+
+  /// The `DomainEvent.id` the event is published under, minted when the row is
+  /// staged rather than when it is relayed. Delivery is at-least-once, so this
+  /// is what a subscriber deduplicates on: a redelivery has to be recognisable
+  /// as the same event, which it would not be if the relay minted a fresh id.
+  eventId String @unique
+
+  /// A key of `DomainEventPayloads`. Stored as text, because the database has
+  /// no reason to care and a deploy that removes an event from the catalogue
+  /// must not be blocked by rows already queued under it.
+  name          String
+  payload       Json
+  correlationId String?
+
+  /// When the event happened — the moment its transaction staged it — not when
+  /// it was relayed. The relay publishes this as `DomainEvent.occurredAt`.
+  occurredAt DateTime @default(now())
+
+  status      OutboxStatus @default(PENDING)
+  /// Set when the broker accepted the event. Null for everything else.
+  publishedAt DateTime?
+
+  /// Deliveries attempted so far. Drives the backoff and the dead-letter cut-off.
+  attempts Int @default(0)
+  /// The earliest the relay may try again. `now()` on a fresh row, so a staged
+  /// event is eligible for the very next poll.
+  nextAttemptAt DateTime @default(now())
+  /// Why the last attempt failed, kept for the operator triaging a dead letter.
+  lastError String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// The relay's claim query is `WHERE status = 'PENDING' AND next_attempt_at
+  /// <= now() ORDER BY occurred_at, id`, so the index carries all three: an
+  /// unindexed claim would be a sequential scan that takes a row lock on every
+  /// row it examines, which is a table lock wearing a row lock's clothes.
+  @@index([status, nextAttemptAt, occurredAt])
+  @@map("outbox_events")
+}
+
+enum OutboxStatus {
+  /// Awaiting delivery, or awaiting a retry after a failed one.
+  PENDING
+  /// The broker accepted it. Terminal.
+  PUBLISHED
+  /// Attempts are exhausted; a human has to look. Terminal until someone
+  /// resets it.
+  DEAD
+}
+
 enum Role {
   USER
   ADMIN

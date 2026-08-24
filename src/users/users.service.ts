@@ -7,7 +7,9 @@ import {
   requireConditional,
 } from "@/common/concurrency";
 import type { ExpectedVersion } from "@/common/concurrency";
-import { DomainEventBus } from "@/events";
+import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
+import type { TransactionContext, TransactionRunner } from "@/common/prisma/transaction.port";
+import { TransactionalOutbox } from "@/outbox";
 import { buildCursorPage, decodeCursor } from "@/common/pagination";
 import type { CursorPage } from "@/common/pagination";
 import type { User } from "@prisma/client";
@@ -46,7 +48,8 @@ export class UsersService {
     @Inject(USER_PREFERENCES_STORE) private readonly preferences: UserPreferencesStore,
     private readonly cache: CacheService,
     private readonly policy: UserAccessPolicy,
-    private readonly events: DomainEventBus,
+    @Inject(TRANSACTION_RUNNER) private readonly transactions: TransactionRunner,
+    private readonly outbox: TransactionalOutbox,
   ) {}
 
   async findById(id: string): Promise<User> {
@@ -73,8 +76,13 @@ export class UsersService {
     return buildCursorPage(rows, query.limit);
   }
 
-  create(data: CreateUserData): Promise<User> {
-    return this.writer.create(data);
+  /**
+   * `tx` enrols the insert in a unit of work the caller already opened — which
+   * is what `AuthService` needs in order to commit the row and the
+   * `user.registered` event together.
+   */
+  create(data: CreateUserData, tx?: TransactionContext): Promise<User> {
+    return this.writer.create(data, tx);
   }
 
   /**
@@ -109,14 +117,31 @@ export class UsersService {
     return this.update(id, { avatarUrl }, expected);
   }
 
+  /**
+   * Deletes the row and announces it, atomically.
+   *
+   * The event is staged in the same transaction as the delete rather than
+   * published after it, so the two outcomes a bare emitter allows are gone: a
+   * user deleted with nobody told, and a `user.deleted` describing a row that
+   * is still there because the delete rolled back.
+   *
+   * The cache is invalidated *inside* the unit of work, which is not where it
+   * belongs on first reading. It is deliberate: the relay may publish the
+   * moment the transaction commits, and a subscriber reading back through this
+   * service must not find the deleted row still cached. Invalidating early is
+   * safe in the other direction — a transaction that then rolls back leaves the
+   * cache merely cold, and the next read repopulates it from a row that does
+   * still exist.
+   */
   async remove(id: string, expected: ExpectedVersion): Promise<void> {
     const user = await this.assertPrecondition(id, expected);
-    await this.conditionally(() => this.writer.delete(id, expected));
-    await this.invalidateUserCache(id);
-    // After the delete and the cache invalidation, so a subscriber that reads
-    // back through this service cannot see the row it was told is gone. The
-    // address travels on the event because nothing can look it up any more.
-    this.events.publish("user.deleted", { userId: id, email: user.email });
+    await this.transactions.run(async (tx) => {
+      await this.conditionally(() => this.writer.delete(id, expected, tx));
+      await this.invalidateUserCache(id);
+      // The address travels on the event because nothing can look it up once
+      // this commits.
+      await this.outbox.stage(tx, "user.deleted", { userId: id, email: user.email });
+    });
   }
 
   /**

@@ -6,7 +6,10 @@ import { Role } from "@prisma/client";
 import { AuthService } from "./auth.service";
 import { UsersService } from "@/users/users.service";
 import { REFRESH_TOKEN_STORE } from "./ports";
-import { DomainEventBus } from "@/events";
+import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
+import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
+import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
+import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { UNCONDITIONAL } from "@/common/concurrency";
 import type { User } from "@prisma/client";
 
@@ -45,13 +48,18 @@ const mockJwtService = {
 };
 
 /**
- * A double rather than a real bus: what matters here is that registration
- * announces itself with the right payload, not what any subscriber does with
- * it. `src/events` covers delivery.
+ * The real `TransactionalOutbox` over an in-memory store, rather than a spy.
+ *
+ * What matters here is that registration announces itself with the right
+ * payload *and* that the announcement is part of the same unit of work as the
+ * insert — and the second half is not something a spy on a bus can show. The
+ * store leaves rows behind, so the assertion is what was written; `src/outbox`
+ * covers delivery from there.
  */
-const mockEvents = {
-  publish: jest.fn(),
-};
+let outboxStore: InMemoryOutboxStore;
+let transactions: InMemoryTransactionRunner;
+
+const staged = () => outboxStore.all().map((row) => ({ name: row.name, payload: row.payload }));
 
 const mockConfigService = {
   get: jest.fn(),
@@ -81,14 +89,19 @@ describe("AuthService", () => {
     mockConfigService.get.mockReturnValue("7d");
     mockConfigService.getOrThrow.mockReturnValue("test-secret");
 
+    outboxStore = new InMemoryOutboxStore();
+    transactions = new InMemoryTransactionRunner();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
+        TransactionalOutbox,
         { provide: UsersService, useValue: mockUsersService },
         { provide: JwtService, useValue: mockJwtService },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: REFRESH_TOKEN_STORE, useValue: mockRefreshTokens },
-        { provide: DomainEventBus, useValue: mockEvents },
+        { provide: OUTBOX_STORE, useValue: outboxStore },
+        { provide: TRANSACTION_RUNNER, useValue: transactions },
       ],
     }).compile();
 
@@ -117,6 +130,9 @@ describe("AuthService", () => {
       expect(argon2.hash).toHaveBeenCalledWith("password123");
       expect(mockUsersService.create).toHaveBeenCalledWith(
         expect.objectContaining({ email: "test@example.com", password: "hashed-password" }),
+        // The unit of work the event is staged in. Asserted properly in
+        // "writes the row and the event in one unit of work" below.
+        expect.anything(),
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
       expect(typeof result.refreshToken).toBe("string");
@@ -130,22 +146,81 @@ describe("AuthService", () => {
 
       await service.register({ email: "test@example.com", password: "password123" });
 
-      expect(mockEvents.publish).toHaveBeenCalledWith("user.registered", {
-        userId: mockUser.id,
-        email: mockUser.email,
-        name: mockUser.name,
-        provider: null,
-      });
+      expect(staged()).toEqual([
+        {
+          name: "user.registered",
+          payload: {
+            userId: mockUser.id,
+            email: mockUser.email,
+            name: mockUser.name,
+            provider: null,
+          },
+        },
+      ]);
     });
 
-    it("announces nothing when the email is already taken", async () => {
+    it("writes the row and the event in one unit of work", async () => {
+      mockUsersService.findByEmail.mockResolvedValue(null);
+      argon2.hash.mockResolvedValue("hashed-password");
+      mockUsersService.create.mockResolvedValue(mockUser);
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
+
+      await service.register({ email: "test@example.com", password: "password123" });
+
+      expect(transactions.started).toBe(1);
+      expect(transactions.committed).toBe(1);
+      // The insert is enrolled in it — a `create` called without the handle
+      // would run on its own connection and commit independently of the event.
+      expect(mockUsersService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ email: "test@example.com" }),
+        expect.objectContaining({ backend: "in-memory" }),
+      );
+    });
+
+    it("hashes the password outside the transaction", async () => {
+      const order: string[] = [];
+      mockUsersService.findByEmail.mockResolvedValue(null);
+      argon2.hash.mockImplementation(() => {
+        order.push("hash");
+        return Promise.resolve("hashed-password");
+      });
+      mockUsersService.create.mockImplementation(() => {
+        order.push("create");
+        return Promise.resolve(mockUser);
+      });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
+
+      await service.register({ email: "test@example.com", password: "password123" });
+
+      // argon2 is deliberately slow. Holding a connection and the transaction's
+      // locks for the length of a KDF would make every registration a
+      // multi-hundred-millisecond writer.
+      expect(order).toEqual(["hash", "create"]);
+      expect(transactions.started).toBe(1);
+    });
+
+    it("stages nothing, and opens no transaction, when the email is already taken", async () => {
       mockUsersService.findByEmail.mockResolvedValue(mockUser);
 
       await expect(
         service.register({ email: "test@example.com", password: "password123" }),
       ).rejects.toThrow(ConflictException);
 
-      expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(staged()).toEqual([]);
+      expect(transactions.started).toBe(0);
+    });
+
+    it("discards the event when the unit of work fails", async () => {
+      mockUsersService.findByEmail.mockResolvedValue(null);
+      argon2.hash.mockResolvedValue("hashed-password");
+      mockUsersService.create.mockRejectedValue(new Error("unique violation"));
+
+      await expect(
+        service.register({ email: "test@example.com", password: "password123" }),
+      ).rejects.toThrow("unique violation");
+
+      expect(staged()).toEqual([]);
+      expect(transactions.rolledBack).toBe(1);
     });
   });
 
@@ -270,12 +345,15 @@ describe("AuthService", () => {
           provider: "google",
           providerAccountId: "g-123",
         }),
+        expect.anything(),
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
-      expect(mockEvents.publish).toHaveBeenCalledWith(
-        "user.registered",
-        expect.objectContaining({ email: googleProfile.email, provider: "google" }),
-      );
+      expect(staged()).toEqual([
+        {
+          name: "user.registered",
+          payload: expect.objectContaining({ email: googleProfile.email, provider: "google" }),
+        },
+      ]);
     });
 
     it("links Google account to an existing user found by email", async () => {
@@ -299,7 +377,7 @@ describe("AuthService", () => {
       );
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
       // Linking is not a registration: this account has been welcomed already.
-      expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(staged()).toEqual([]);
     });
 
     it("returns tokens for an existing user matched by Google provider account ID", async () => {
@@ -312,7 +390,7 @@ describe("AuthService", () => {
       expect(mockUsersService.findByEmail).not.toHaveBeenCalled();
       expect(mockUsersService.create).not.toHaveBeenCalled();
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
-      expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(staged()).toEqual([]);
     });
   });
 });

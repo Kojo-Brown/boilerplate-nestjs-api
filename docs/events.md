@@ -120,15 +120,26 @@ Delivery is in-process and in-memory:
 - a handler mid-flight when the process dies is gone, with no retry and no
   record that it was ever running;
 - nothing reaches another replica — only the instance that published sees it;
-- events are published inside service methods, so one emitted before a later
-  statement throws describes something that did not finally happen.
+- an event emitted before a later statement throws describes something that did
+  not finally happen.
 
-These are the known limits of an event emitter, and they are why `SPEC.md`
-carries a transactional-outbox item. The fix is to write the event to the
-database inside the same transaction as the data and have a relay publish it
-afterwards, at which point this bus becomes the relay's delivery mechanism
-rather than the source of truth. Until then: nothing whose loss would be a
-correctness bug goes on the bus.
+The first and third are why `SPEC.md` carried a transactional-outbox item, and
+they are closed for anything that goes through it: see
+[outbox.md](./outbox.md). The event is a row committed with the data, and this
+bus is the relay's _delivery mechanism_ rather than the source of truth. The
+second is not closed — the relay publishes to this bus, so a subscriber still
+only runs on the replica that won the row.
+
+So the rule for a direct `bus.publish` is unchanged: **nothing whose loss would
+be a correctness bug**. Anything that matters is staged through
+`TransactionalOutbox` instead, which is what both `user.registered` call sites
+and `user.deleted` now do.
+
+One consequence worth stating: a relayed event reaches its subscribers on the
+relay's next poll, not on the publisher's stack. Tests that assert on a
+subscriber's effect have to drain the relay first (`TestApp.drainOutbox()`), and
+delivery is at-least-once, so subscribers must be idempotent — `DomainEvent.id`
+is stable across redeliveries for exactly that.
 
 ## Subscribing from a request-scoped provider
 

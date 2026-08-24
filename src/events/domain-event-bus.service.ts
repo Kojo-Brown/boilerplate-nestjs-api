@@ -13,6 +13,25 @@ import { isHandlerOutcome } from "./on-domain-event";
 export interface PublishContext {
   /** The `x-correlation-id` of the request that caused this, when available. */
   readonly correlationId?: string | null;
+  /**
+   * The identity to publish under, instead of a fresh one.
+   *
+   * Only a *re*-publisher supplies this, and today that means the outbox relay.
+   * The id is what a subscriber deduplicates on, and outbox delivery is
+   * at-least-once — so a redelivery that minted a new id would be
+   * indistinguishable from a second event, which is precisely what the id
+   * exists to rule out. Ordinary publishers leave it unset and get a fresh
+   * `randomUUID()`.
+   */
+  readonly eventId?: string;
+  /**
+   * When the thing happened, instead of when it was published.
+   *
+   * Same reason: a relayed event happened when its row was written inside the
+   * transaction, not when the poller got round to it. For a direct publish the
+   * two are the same moment and this stays unset.
+   */
+  readonly occurredAt?: Date;
 }
 
 /** Every subscriber's result for one emission. */
@@ -110,9 +129,9 @@ export class DomainEventBus {
     context: PublishContext,
   ): DomainEvent<K> {
     return {
-      id: randomUUID(),
+      id: context.eventId ?? randomUUID(),
       name,
-      occurredAt: new Date().toISOString(),
+      occurredAt: (context.occurredAt ?? new Date()).toISOString(),
       correlationId: context.correlationId ?? null,
       payload,
     };

@@ -2,6 +2,7 @@ export { DomainEventBus } from "./domain-event-bus.service";
 export type { PublishContext, PublishReport } from "./domain-event-bus.service";
 export { EventsModule } from "./events.module";
 export { OnDomainEvent, isHandlerOutcome } from "./on-domain-event";
+export { DOMAIN_EVENT_NAMES, isDomainEventName } from "./domain-event";
 
 export type {
   DomainEvent,
@@ -9,6 +10,7 @@ export type {
   DomainEventName,
   DomainEventPayloads,
   HandlerOutcome,
+  StoredDomainEvent,
   UserDeletedPayload,
   UserRegisteredPayload,
 } from "./domain-event";

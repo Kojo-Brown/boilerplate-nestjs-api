@@ -9,6 +9,12 @@ process.env["JWT_REFRESH_EXPIRY"] = "7d";
 process.env["ALLOWED_ORIGINS"] = "*";
 process.env["PORT"] = "0";
 
+// The outbox relay is driven explicitly by `TestApp.drainOutbox()` rather than
+// by a timer. A one-second poll in a suite that finishes in milliseconds would
+// make "did the welcome email go out?" a race, and a spec that passed by
+// waiting long enough is a spec that will fail on a slower machine.
+process.env["OUTBOX_RELAY_ENABLED"] = "false";
+
 // Test-only credentials — not real secrets, used exclusively in e2e test suites.
 process.env["E2E_TEST_PASSWORD"] = "e2e-suite-placeholder-pw-1";
 process.env["E2E_WRONG_PASSWORD"] = "wrong-password-e2e-xyz";

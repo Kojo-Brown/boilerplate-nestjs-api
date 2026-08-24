@@ -135,13 +135,19 @@ docker-compose up        # postgres + redis + api
   acquisition carries a monotonic fencing token and how one is drawn from a
   quorum, how a lock that could not be renewed is reported rather than hidden,
   and when a Postgres row lock is the better answer.
+- [docs/outbox.md](./docs/outbox.md) — the transactional outbox: why an event
+  has to be staged inside the caller's transaction rather than emitted beside
+  it, why the relay holds its transaction across the broker call instead of
+  taking a lease, what `FOR UPDATE SKIP LOCKED` buys when several replicas relay
+  at once, why delivery is at-least-once and what that requires of a subscriber,
+  and the ordering the claim does _not_ give you.
 
 ## Testing
 
 ```bash
 pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
-pnpm test:db       # row-locking suites — needs Postgres and DATABASE_URL
+pnpm test:db       # row-locking and outbox suites — needs Postgres and DATABASE_URL
 
 # The Redlock legs of `pnpm test` need independent Redis nodes. Without
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as

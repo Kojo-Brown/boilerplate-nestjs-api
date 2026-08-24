@@ -3,7 +3,9 @@ import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import * as argon2 from "argon2";
 import { UsersService } from "@/users/users.service";
-import { DomainEventBus } from "@/events";
+import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
+import type { TransactionContext, TransactionRunner } from "@/common/prisma/transaction.port";
+import { TransactionalOutbox } from "@/outbox";
 import { UNCONDITIONAL } from "@/common/concurrency";
 import { REFRESH_TOKEN_STORE } from "./ports";
 import type { RefreshTokenStore } from "./ports";
@@ -19,15 +21,26 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshTokens: RefreshTokenStore,
-    private readonly events: DomainEventBus,
+    @Inject(TRANSACTION_RUNNER) private readonly transactions: TransactionRunner,
+    private readonly outbox: TransactionalOutbox,
   ) {}
 
   async register(dto: RegisterDto) {
     const exists = await this.users.findByEmail(dto.email);
     if (exists) throw new ConflictException("Email already in use");
     const hash = await argon2.hash(dto.password);
-    const user = await this.users.create({ email: dto.email, password: hash, name: dto.name });
-    this.publishRegistered(user);
+    // The row and the event commit together or not at all. Hashing stays
+    // outside: argon2 is deliberately slow, and holding a database connection
+    // and the transaction's locks for the duration of a KDF is exactly the kind
+    // of work a transaction should never contain.
+    const user = await this.transactions.run(async (tx) => {
+      const created = await this.users.create(
+        { email: dto.email, password: hash, name: dto.name },
+        tx,
+      );
+      await this.stageRegistered(tx, created);
+      return created;
+    });
     return this.issueTokens(user.id, user.email, user.role);
   }
 
@@ -88,31 +101,45 @@ export class AuthService {
           UNCONDITIONAL,
         );
       } else {
-        user = await this.users.create({
-          email: profile.email,
-          name: profile.name,
-          provider: "google",
-          providerAccountId: profile.googleId,
-        });
         // Only this branch is a registration. The one above links Google to an
         // account that already exists and has already been welcomed, and the
         // outer `if` is an ordinary sign-in.
-        this.publishRegistered(user);
+        user = await this.transactions.run(async (tx) => {
+          const created = await this.users.create(
+            {
+              email: profile.email,
+              name: profile.name,
+              provider: "google",
+              providerAccountId: profile.googleId,
+            },
+            tx,
+          );
+          await this.stageRegistered(tx, created);
+          return created;
+        });
       }
     }
     return this.issueTokens(user.id, user.email, user.role);
   }
 
   /**
-   * Announces a new account.
+   * Announces a new account, durably.
    *
-   * Published after the row is committed and before tokens are issued, so a
-   * subscriber never reacts to a user that does not exist. It is deliberately
-   * not awaited: `publish` returns once every subscriber has started, so a
-   * welcome email that cannot be queued delays nothing and fails nothing here.
+   * Staged inside the transaction that creates the row rather than published
+   * after it. The two failures that removes are the ones a bare emitter cannot
+   * avoid: a registration that succeeds while the welcome is lost to a crash
+   * between the insert and the emit, and — the other way round — a
+   * `user.registered` for an insert that went on to roll back. Neither is
+   * survivable by ordering the two statements more carefully; only one commit
+   * carrying both is.
+   *
+   * What the caller gives up is immediacy. The subscriber runs on the relay's
+   * next poll rather than on this stack, which is a change a test can see (the
+   * e2e suite drains the relay explicitly) and which `docs/outbox.md` states as
+   * the cost of the trade.
    */
-  private publishRegistered(user: User): void {
-    this.events.publish("user.registered", {
+  private async stageRegistered(tx: TransactionContext, user: User): Promise<void> {
+    await this.outbox.stage(tx, "user.registered", {
       userId: user.id,
       email: user.email,
       name: user.name,

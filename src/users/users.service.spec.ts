@@ -7,7 +7,10 @@ import { USER_PREFERENCES_STORE, USER_READER, USER_WRITER } from "./ports";
 import { CacheService } from "@/common/cache";
 import { PreconditionRequiredException, UNCONDITIONAL } from "@/common/concurrency";
 import type { ExpectedVersion } from "@/common/concurrency";
-import { DomainEventBus } from "@/events";
+import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
+import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
+import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
+import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { InMemoryUsersRepository } from "@/test-utils/in-memory-users.repository";
 import { DEFAULT_USER_PREFERENCES } from "./types/user-preferences";
 import type { RequesterIdentity } from "./users.access-policy";
@@ -27,8 +30,19 @@ const mockCache = {
   reset: jest.fn(),
 };
 
-/** Publishing is a side effect with nothing observable, so this one is a spy. */
-const mockEvents = { publish: jest.fn() };
+/**
+ * Announcing is no longer a spy.
+ *
+ * `remove` stages `user.deleted` in the outbox rather than emitting it, and the
+ * outbox leaves a row behind — so the assertion can be what was written, which
+ * a spy on `publish` could never be. It also means these specs exercise the
+ * real `TransactionalOutbox` and the real rollback path: a delete that is
+ * refused now has to leave *no* row, not merely make no call.
+ */
+let outboxStore: InMemoryOutboxStore;
+let transactions: InMemoryTransactionRunner;
+
+const staged = () => outboxStore.all().map((row) => ({ name: row.name, payload: row.payload }));
 
 const asUser = (id: string): RequesterIdentity => ({ id, role: Role.USER });
 const asAdmin = (id: string): RequesterIdentity => ({ id, role: Role.ADMIN });
@@ -42,16 +56,20 @@ describe("UsersService", () => {
     mockCache.del.mockResolvedValue(undefined);
     mockCache.delMany.mockResolvedValue(undefined);
     store = new InMemoryUsersRepository();
+    outboxStore = new InMemoryOutboxStore();
+    transactions = new InMemoryTransactionRunner();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UsersService,
         UserAccessPolicy,
+        TransactionalOutbox,
         { provide: USER_READER, useValue: store },
         { provide: USER_WRITER, useValue: store },
         { provide: USER_PREFERENCES_STORE, useValue: store },
         { provide: CacheService, useValue: mockCache },
-        { provide: DomainEventBus, useValue: mockEvents },
+        { provide: OUTBOX_STORE, useValue: outboxStore },
+        { provide: TRANSACTION_RUNNER, useValue: transactions },
       ],
     }).compile();
 
@@ -244,21 +262,47 @@ describe("UsersService", () => {
       await expect(service.remove("missing", UNCONDITIONAL)).rejects.toThrow(NotFoundException);
     });
 
-    it("announces user.deleted with the address, which nothing can look up afterwards", async () => {
+    it("stages user.deleted with the address, which nothing can look up afterwards", async () => {
       store.seed({ id: "user-1", email: "test@example.com" });
 
       await service.remove("user-1", ifMatch(0));
 
-      expect(mockEvents.publish).toHaveBeenCalledWith("user.deleted", {
-        userId: "user-1",
-        email: "test@example.com",
-      });
+      expect(staged()).toEqual([
+        { name: "user.deleted", payload: { userId: "user-1", email: "test@example.com" } },
+      ]);
     });
 
-    it("announces nothing when the user does not exist", async () => {
+    it("stages the event inside the transaction that deletes the row", async () => {
+      store.seed({ id: "user-1", email: "test@example.com" });
+
+      await service.remove("user-1", ifMatch(0));
+
+      // One unit of work, committed once. A second `run` would mean the delete
+      // and the event were separately abandonable, which is the failure the
+      // outbox exists to remove.
+      expect(transactions.started).toBe(1);
+      expect(transactions.committed).toBe(1);
+    });
+
+    it("keeps the row and the event together when the unit of work fails", async () => {
+      store.seed({ id: "user-1", email: "test@example.com" });
+      // Fails *after* the delete and before the event is staged, which is the
+      // window the whole pattern is about: without one transaction over both,
+      // this is a user who is gone with nobody ever told.
+      mockCache.delMany.mockRejectedValueOnce(new Error("redis down"));
+
+      await expect(service.remove("user-1", ifMatch(0))).rejects.toThrow("redis down");
+
+      expect(transactions.rolledBack).toBe(1);
+      expect(staged()).toEqual([]);
+      await expect(service.findById("user-1")).resolves.toMatchObject({ id: "user-1" });
+    });
+
+    it("stages nothing when the user does not exist", async () => {
       await expect(service.remove("missing", UNCONDITIONAL)).rejects.toThrow(NotFoundException);
 
-      expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(staged()).toEqual([]);
+      expect(transactions.started).toBe(0);
     });
   });
 
@@ -378,13 +422,13 @@ describe("UsersService", () => {
       await expect(service.findById("user-1")).resolves.toBeDefined();
     });
 
-    it("publishes nothing when a conditional delete is refused", async () => {
+    it("leaves no staged event when a conditional delete is refused", async () => {
       await service.update("user-1", { name: "First" }, UNCONDITIONAL);
-      mockEvents.publish.mockClear();
+      outboxStore.reset();
 
       await expect(service.remove("user-1", ifMatch(0))).rejects.toThrow();
 
-      expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(staged()).toEqual([]);
     });
 
     it("answers 412 on a stale preference write", async () => {

@@ -190,6 +190,26 @@ export class InMemoryPrismaService {
     };
   }
 
+  /**
+   * Runs the callback with this same fake as the "transaction client".
+   *
+   * Enough for what the suite needs: `PrismaTransactionRunner` hands the
+   * callback a handle, the adapters narrow it back with
+   * `requirePrismaTransaction`, and the writes land in the same maps as
+   * everything else. That keeps `PrismaUsersRepository` — rather than a
+   * substitute for it — running in the e2e suite once the outbox gave it a
+   * transaction to join.
+   *
+   * What it deliberately does not do is roll its own maps back. Compensations
+   * registered through `tx.onRollback` still run, which is what the in-memory
+   * outbox uses to discard a staged event, but a `user.create` that this fake
+   * has already applied stays applied. Atomicity is a property of Postgres and
+   * is asserted against a real one in `test/outbox-store.db-spec.ts`; claiming
+   * it here would be a fake reporting that the database behaves correctly
+   * while never having asked it.
+   */
+  $transaction = <T>(work: (client: InMemoryPrismaService) => Promise<T>): Promise<T> => work(this);
+
   $connect = () => Promise.resolve();
   $disconnect = () => Promise.resolve();
 

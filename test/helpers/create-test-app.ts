@@ -14,7 +14,10 @@ import { IdempotencyInterceptor } from "@/common/idempotency";
 import { EntityTagInterceptor } from "@/common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "@/common/immutable";
 import { REFRESH_TOKEN_STORE } from "@/auth/ports";
+import { OUTBOX_STORE, OutboxRelayService } from "@/outbox";
+import type { DrainReport } from "@/outbox";
 import { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
+import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryPrismaService } from "./in-memory-prisma";
 
 /**
@@ -65,6 +68,18 @@ export interface TestApp {
   emails: RecordingEmailQueue;
   /** The refresh-token store the app actually resolved. */
   refreshTokens: InMemoryRefreshTokenStore;
+  /** The outbox rows the app has staged, for asserting on what was announced. */
+  outbox: InMemoryOutboxStore;
+  /**
+   * Runs one relay pass and reports it.
+   *
+   * Staged events reach their subscribers only when the relay delivers them, so
+   * a spec asserting on a background effect — a welcome email, say — has to
+   * drain first. That is not test scaffolding hiding a problem: it is the
+   * latency the outbox trades for durability, made explicit instead of slept
+   * through.
+   */
+  drainOutbox: () => Promise<DrainReport>;
 }
 
 export async function createTestApp(): Promise<TestApp> {
@@ -75,6 +90,17 @@ export async function createTestApp(): Promise<TestApp> {
   // underneath it. Owners are read from the same map the rest of the fake uses,
   // so the join the real adapter performs stays accurate here.
   const refreshTokens = new InMemoryRefreshTokenStore((userId) => prisma._users.get(userId));
+  // `PrismaOutboxStore` claims rows with `SELECT … FOR UPDATE SKIP LOCKED` in an
+  // interactive transaction, which `InMemoryPrismaService` has no way to fake —
+  // so the port is substituted rather than the client underneath it, exactly as
+  // the refresh-token store is. Both doubles are held to the same behavioural
+  // contracts as the adapters they replace.
+  // `TRANSACTION_RUNNER` is deliberately *not* substituted. The real
+  // `PrismaTransactionRunner` runs against `InMemoryPrismaService.$transaction`,
+  // which keeps `PrismaUsersRepository` — the adapter this suite is here to
+  // exercise — writing through a handle it recognises, and keeps the
+  // `onRollback` hook the in-memory outbox depends on.
+  const outbox = new InMemoryOutboxStore();
 
   const moduleFixture = await Test.createTestingModule({
     imports: [AppModule],
@@ -85,6 +111,8 @@ export async function createTestApp(): Promise<TestApp> {
     .useValue(prisma)
     .overrideProvider(REFRESH_TOKEN_STORE)
     .useValue(refreshTokens)
+    .overrideProvider(OUTBOX_STORE)
+    .useValue(outbox)
     // A whole suite makes far more auth calls per minute than any real client,
     // so the rate limiter would 429 every spec after the tenth. The guard itself
     // is registered via `{ provide: APP_GUARD, useClass }` and so cannot be
@@ -135,5 +163,14 @@ export async function createTestApp(): Promise<TestApp> {
   // app would answer requests with no subscribers attached at all.
   await app.init();
 
-  return { app, prisma, emails: app.get<RecordingEmailQueue>(EmailQueueService), refreshTokens };
+  const relay = app.get(OutboxRelayService);
+
+  return {
+    app,
+    prisma,
+    emails: app.get<RecordingEmailQueue>(EmailQueueService),
+    refreshTokens,
+    outbox,
+    drainOutbox: () => relay.runOnce(),
+  };
 }

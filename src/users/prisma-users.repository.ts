@@ -1,5 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService, ExtendedPrismaClient } from "@/common/prisma/prisma.service";
+import { requirePrismaTransaction } from "@/common/prisma/prisma-transaction.runner";
+import type { TransactionContext } from "@/common/prisma/transaction.port";
 import { Prisma } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { VersionConflictError, isSatisfiedBy } from "@/common/concurrency";
@@ -60,13 +62,18 @@ export class PrismaUsersRepository implements UserReader, UserWriter, UserPrefer
     });
   }
 
-  create(data: CreateUserData): Promise<User> {
-    return this.prisma.user.create({ data });
+  create(data: CreateUserData, tx?: TransactionContext): Promise<User> {
+    return this.writer(tx).user.create({ data });
   }
 
-  async update(id: string, data: UpdateUserData, expected: ExpectedVersion): Promise<User> {
+  async update(
+    id: string,
+    data: UpdateUserData,
+    expected: ExpectedVersion,
+    tx?: TransactionContext,
+  ): Promise<User> {
     try {
-      return await this.prisma.user.update({
+      return await this.writer(tx).user.update({
         where: { id, ...versionPredicate(expected) },
         data: { ...data, version: { increment: 1 } },
       });
@@ -75,12 +82,30 @@ export class PrismaUsersRepository implements UserReader, UserWriter, UserPrefer
     }
   }
 
-  async delete(id: string, expected: ExpectedVersion): Promise<User> {
+  async delete(id: string, expected: ExpectedVersion, tx?: TransactionContext): Promise<User> {
     try {
-      return await this.prisma.user.delete({ where: { id, ...versionPredicate(expected) } });
+      return await this.writer(tx).user.delete({ where: { id, ...versionPredicate(expected) } });
     } catch (error) {
       throw await this.explainWriteFailure(id, expected, error);
     }
+  }
+
+  /**
+   * The client a write should run on: the caller's transaction if there is one,
+   * the pooled client otherwise.
+   *
+   * `Prisma.TransactionClient` is `PrismaClient` minus `$transaction` and the
+   * other connection-level methods, and the model delegates this class uses are
+   * identical on both — so one helper covers every write without either branch
+   * duplicating the query.
+   *
+   * The read-back in `explainWriteFailure` deliberately stays on the pooled
+   * client. It runs *after* a failed write, when the caller's transaction is
+   * already doomed, and issuing another statement on an aborted transaction
+   * fails with `25P02` rather than answering the question.
+   */
+  private writer(tx?: TransactionContext): Pick<PrismaService, "user"> {
+    return tx ? requirePrismaTransaction(tx, PrismaUsersRepository.name) : this.prisma;
   }
 
   getPreferences(id: string): Promise<UserPreferences> {

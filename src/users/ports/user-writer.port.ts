@@ -1,5 +1,6 @@
 import type { User } from "@prisma/client";
 import type { ExpectedVersion } from "@/common/concurrency";
+import type { TransactionContext } from "@/common/prisma/transaction.port";
 
 /**
  * Write-side port for user persistence.
@@ -11,7 +12,16 @@ import type { ExpectedVersion } from "@/common/concurrency";
  * pretending to accept relation writes it has no way to perform.
  */
 export interface UserWriter {
-  create(data: CreateUserData): Promise<User>;
+  /**
+   * `tx` enrols the write in a unit of work the caller already opened.
+   *
+   * Optional, and every method here takes it in the same trailing position. It
+   * exists for one reason: a caller that also stages a domain event needs the
+   * row and the event to commit together, which they do not if the write runs
+   * on its own connection. Omitting it is the ordinary case and runs the write
+   * in its own implicit transaction, exactly as before.
+   */
+  create(data: CreateUserData, tx?: TransactionContext): Promise<User>;
 
   /**
    * Rejects when no user has this id, and with `VersionConflictError` when the
@@ -26,13 +36,18 @@ export interface UserWriter {
    * that could be changed without moving its validator would hand out `ETag`s
    * that outlive the state they describe.
    */
-  update(id: string, data: UpdateUserData, expected: ExpectedVersion): Promise<User>;
+  update(
+    id: string,
+    data: UpdateUserData,
+    expected: ExpectedVersion,
+    tx?: TransactionContext,
+  ): Promise<User>;
 
   /**
    * Rejects when no user has this id, and with `VersionConflictError` when the
    * row's version does not satisfy `expected`. Resolves with the deleted row.
    */
-  delete(id: string, expected: ExpectedVersion): Promise<User>;
+  delete(id: string, expected: ExpectedVersion, tx?: TransactionContext): Promise<User>;
 }
 
 export interface CreateUserData {

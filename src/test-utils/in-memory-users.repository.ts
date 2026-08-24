@@ -4,6 +4,7 @@ import { DEFAULT_USER_PREFERENCES, mergePreferences } from "@/users/types/user-p
 import type { UserPreferences } from "@/users/types/user-preferences";
 import { VersionConflictError, isSatisfiedBy } from "@/common/concurrency";
 import type { ExpectedVersion } from "@/common/concurrency";
+import type { TransactionContext } from "@/common/prisma/transaction.port";
 import type {
   CreateUserData,
   PreferencesWriteResult,
@@ -94,7 +95,15 @@ export class InMemoryUsersRepository implements UsersStore {
     return Promise.resolve(rows.slice(0, query.limit + 1));
   }
 
-  create(data: CreateUserData): Promise<User> {
+  /**
+   * `tx` is honoured the only way a `Map` can honour one: by registering a
+   * compensation that removes the row again if the unit of work fails. That is
+   * weaker than a transaction — it cannot cover a commit that fails after the
+   * callback returned — but it is enough to keep a rolled-back registration
+   * from leaving a user behind, which is what a spec exercising the outbox is
+   * actually asking about.
+   */
+  create(data: CreateUserData, tx?: TransactionContext): Promise<User> {
     const now = new Date();
     const user: User = {
       id: nextId(),
@@ -111,10 +120,18 @@ export class InMemoryUsersRepository implements UsersStore {
       version: 0,
     };
     this.users.set(user.id, user);
+    tx?.onRollback(() => {
+      this.users.delete(user.id);
+    });
     return Promise.resolve(user);
   }
 
-  update(id: string, data: UpdateUserData, expected: ExpectedVersion): Promise<User> {
+  update(
+    id: string,
+    data: UpdateUserData,
+    expected: ExpectedVersion,
+    tx?: TransactionContext,
+  ): Promise<User> {
     const existing = this.users.get(id);
     if (!existing) return Promise.reject(new Error(`User ${id} not found`));
     if (!isSatisfiedBy(expected, existing.version)) {
@@ -130,17 +147,25 @@ export class InMemoryUsersRepository implements UsersStore {
       version: existing.version + 1,
     };
     this.users.set(id, updated);
+    tx?.onRollback(() => {
+      this.users.set(id, existing);
+    });
     return Promise.resolve(updated);
   }
 
-  delete(id: string, expected: ExpectedVersion): Promise<User> {
+  delete(id: string, expected: ExpectedVersion, tx?: TransactionContext): Promise<User> {
     const existing = this.users.get(id);
     if (!existing) return Promise.reject(new Error(`User ${id} not found`));
     if (!isSatisfiedBy(expected, existing.version)) {
       return Promise.reject(new VersionConflictError(existing.version));
     }
+    const preferences = this.preferences.get(id);
     this.users.delete(id);
     this.preferences.delete(id);
+    tx?.onRollback(() => {
+      this.users.set(id, existing);
+      if (preferences) this.preferences.set(id, preferences);
+    });
     return Promise.resolve(existing);
   }
 

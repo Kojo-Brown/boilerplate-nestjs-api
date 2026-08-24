@@ -44,6 +44,47 @@ export interface UserDeletedPayload {
 export type DomainEventName = keyof DomainEventPayloads & string;
 
 /**
+ * The same catalogue as a value, because a type cannot be consulted at runtime.
+ *
+ * The outbox needs this: a row read back from `outbox_events` carries a `name`
+ * column that is just a string as far as the database is concerned, and the
+ * relay has to decide whether it is still an event this build knows how to
+ * publish. An event deleted from the catalogue in a deploy that leaves rows
+ * behind is the case — those rows are dead-lettered with a message saying so
+ * rather than crashing the relay on every tick.
+ */
+export const DOMAIN_EVENT_NAMES = ["user.registered", "user.deleted"] as const;
+
+/**
+ * Adding an event to {@link DomainEventPayloads} without adding it here is a
+ * compile error: the outbox would accept the event and then fail to recognise
+ * it on the way back out, which is a bug that would only ever appear in
+ * production, one poll after the deploy.
+ */
+type UnlistedEventName = Exclude<DomainEventName, (typeof DOMAIN_EVENT_NAMES)[number]>;
+type ListedNonEvent = Exclude<(typeof DOMAIN_EVENT_NAMES)[number], DomainEventName>;
+const _EVERY_EVENT_IS_LISTED: [UnlistedEventName, ListedNonEvent] extends [never, never]
+  ? true
+  : never = true;
+void _EVERY_EVENT_IS_LISTED;
+
+export function isDomainEventName(value: unknown): value is DomainEventName {
+  return typeof value === "string" && (DOMAIN_EVENT_NAMES as readonly string[]).includes(value);
+}
+
+/**
+ * One stored event, as a discriminated union over the catalogue.
+ *
+ * `{ name: DomainEventName; payload: DomainEventPayloads[DomainEventName] }`
+ * would allow `user.deleted` to carry a registration payload. This form does
+ * not, and it is what lets the outbox hand a record straight to
+ * `publishAndSettle` without a cast at the call site.
+ */
+export type StoredDomainEvent = {
+  [K in DomainEventName]: { readonly name: K; readonly payload: DomainEventPayloads[K] };
+}[DomainEventName];
+
+/**
  * The envelope every subscriber receives.
  *
  * Events carry identifiers and the few facts a subscriber needs — never an ORM

@@ -19,5 +19,5 @@ export type {
   OutboxRecord,
   OutboxStatus,
 } from "./outbox-record";
-export { OUTBOX_PUBLISHER, OUTBOX_STORE } from "./ports";
-export type { DrainOptions, OutboxPublisher, OutboxStore } from "./ports";
+export { OUTBOX_PUBLISHER, OUTBOX_PUBLISHER_NAMES, OUTBOX_STORE } from "./ports";
+export type { DrainOptions, OutboxPublisher, OutboxPublisherName, OutboxStore } from "./ports";

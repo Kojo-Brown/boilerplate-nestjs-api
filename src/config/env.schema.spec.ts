@@ -320,3 +320,147 @@ describe("envSchema — distributed lock", () => {
     }
   });
 });
+
+describe("envSchema — messaging", () => {
+  it("defaults to the in-process broker and the in-process relay", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    // A clean clone boots with no broker installed, the same way it boots with
+    // no S3 bucket and no Redis.
+    expect(env.MESSAGE_BROKER).toBe("memory");
+    expect(env.OUTBOX_PUBLISHER).toBe("bus");
+    expect(env.KAFKA_DOMAIN_EVENTS_TOPIC).toBe("domain-events");
+    expect(env.KAFKA_TOPIC_PARTITIONS).toBe(3);
+    expect(env.KAFKA_CONSUMER_ENABLED).toBe(true);
+  });
+
+  it("refuses Kafka with nothing to bootstrap from", () => {
+    expect(() => envSchema.parse({ ...BASE_ENV, MESSAGE_BROKER: "kafka" })).toThrow(
+      /KAFKA_BROKERS is required when MESSAGE_BROKER=kafka/,
+    );
+  });
+
+  it("accepts Kafka once the brokers are named", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      MESSAGE_BROKER: "kafka",
+      KAFKA_BROKERS: "kafka-1:9092,kafka-2:9092",
+    });
+
+    expect(env.MESSAGE_BROKER).toBe("kafka");
+    expect(env.KAFKA_BROKERS).toBe("kafka-1:9092,kafka-2:9092");
+  });
+
+  it("refuses the in-process broker in production once the relay depends on it", () => {
+    // Nothing errors under this configuration at runtime: every publish
+    // succeeds and no other replica hears any of it. That is why it has to be
+    // unable to reach production, like IDEMPOTENCY_STORE=memory.
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        NODE_ENV: "production",
+        OUTBOX_PUBLISHER: "broker",
+        MESSAGE_BROKER: "memory",
+        IDEMPOTENCY_STORE: "redis",
+        REDIS_URL: "redis://localhost:6379",
+        DISTRIBUTED_LOCK: "redlock",
+        STORAGE_ADAPTER: "local",
+      }),
+    ).toThrow(/MESSAGE_BROKER=memory keeps every message inside one process/);
+  });
+
+  it("allows the in-process broker in production while the relay does not use it", () => {
+    // An unused broker is what a service that has not adopted messaging yet
+    // has, and refusing it would break every existing deployment.
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      NODE_ENV: "production",
+      OUTBOX_PUBLISHER: "bus",
+      MESSAGE_BROKER: "memory",
+      IDEMPOTENCY_STORE: "redis",
+      REDIS_URL: "redis://localhost:6379",
+      DISTRIBUTED_LOCK: "redlock",
+      STORAGE_ADAPTER: "local",
+    });
+
+    expect(env.MESSAGE_BROKER).toBe("memory");
+  });
+
+  it("refuses a SASL mechanism with half a credential", () => {
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        MESSAGE_BROKER: "kafka",
+        KAFKA_BROKERS: "kafka-1:9092",
+        KAFKA_SSL: "true",
+        KAFKA_SASL_MECHANISM: "plain",
+        KAFKA_SASL_USERNAME: "app",
+      }),
+    ).toThrow(/KAFKA_SASL_PASSWORD is required when KAFKA_SASL_MECHANISM is set/);
+  });
+
+  it("refuses SASL/PLAIN without TLS, since it sends the password in the clear", () => {
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        MESSAGE_BROKER: "kafka",
+        KAFKA_BROKERS: "kafka-1:9092",
+        KAFKA_SASL_MECHANISM: "plain",
+        KAFKA_SASL_USERNAME: "app",
+        KAFKA_SASL_PASSWORD: "not-a-real-password",
+      }),
+    ).toThrow(/requires KAFKA_SSL=true/);
+  });
+
+  it("allows SCRAM without TLS, which does not send the password", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      MESSAGE_BROKER: "kafka",
+      KAFKA_BROKERS: "kafka-1:9092",
+      KAFKA_SASL_MECHANISM: "scram-sha-512",
+      KAFKA_SASL_USERNAME: "app",
+      KAFKA_SASL_PASSWORD: "not-a-real-password",
+    });
+
+    expect(env.KAFKA_SASL_MECHANISM).toBe("scram-sha-512");
+    expect(env.KAFKA_SSL).toBe(false);
+  });
+
+  it("refuses a heartbeat interval that guarantees eviction", () => {
+    // At or above the session timeout the coordinator gives up before the next
+    // heartbeat is due, so the group rebalances continuously and no partition
+    // is read for long.
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        KAFKA_SESSION_TIMEOUT_MS: "10000",
+        KAFKA_HEARTBEAT_INTERVAL_MS: "10000",
+      }),
+    ).toThrow(/must be well below KAFKA_SESSION_TIMEOUT_MS/);
+  });
+
+  it.each([
+    ["false", false],
+    ["0", false],
+    ["true", true],
+    ["1", true],
+  ])("reads KAFKA_CONSUMER_ENABLED=%s as %s", (raw, expected) => {
+    // `z.coerce.boolean()` is `Boolean(value)`, under which "false" is true —
+    // so the one setting whose purpose is to turn something off would be
+    // impossible to use. Same reasoning as OUTBOX_RELAY_ENABLED.
+    expect(
+      envSchema.parse({ ...BASE_ENV, KAFKA_CONSUMER_ENABLED: raw }).KAFKA_CONSUMER_ENABLED,
+    ).toBe(expected);
+  });
+
+  it("bounds a handler by default, so a hung one cannot silently leave the group", () => {
+    // A handler that never settles stops the consumer heartbeating, and the
+    // coordinator evicts the member — the service then stops consuming with a
+    // healthy /health and nothing in the log. The default has to be finite.
+    expect(envSchema.parse(BASE_ENV).KAFKA_HANDLER_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it("rejects a publisher with no implementation", () => {
+    expect(() => envSchema.parse({ ...BASE_ENV, OUTBOX_PUBLISHER: "rabbitmq" })).toThrow();
+  });
+});

@@ -159,15 +159,21 @@ catalogue, is what would close it.
 
 ## What this is still not
 
-- **Not fan-out.** `DomainEventBusPublisher` delivers to the in-process bus, so
-  subscribers run on the replica whose relay won the row. This buys durability
-  and retries, not delivery to another service. Phase 10's Kafka producer binds
-  to `OUTBOX_PUBLISHER` and nothing in the relay changes when it does.
-- **Not per-handler retry.** With an in-process bus there is no broker holding
-  the message on a subscriber's behalf, so "delivered" can only mean "every
-  subscriber handled it". One failing handler retries the whole event, and the
-  handlers that already succeeded run again. That is another reason subscribers
-  have to be idempotent, and it goes away with a real broker.
+- **Not fan-out — unless `OUTBOX_PUBLISHER=broker`.** The default,
+  `DomainEventBusPublisher`, delivers to the in-process bus, so subscribers run
+  on the replica whose relay won the row: durability and retries, but no
+  delivery to another service. `BrokerOutboxPublisher` produces to Kafka
+  instead and every consumer group over the topic gets a copy. It binds to
+  `OUTBOX_PUBLISHER` and nothing in the relay changed when it did, exactly as
+  this section predicted — see `docs/messaging.md`.
+- **Not per-handler retry.** "Delivered" means "every subscriber handled it", so
+  one failing handler retries the whole event and the handlers that already
+  succeeded run again. That is another reason subscribers have to be idempotent.
+  Producing to a broker does not fix it either: `DomainEventConsumer` publishes
+  the whole event to the bus on the far side and withholds the commit if any
+  subscriber failed, so the fan-out is across _services_, not across handlers
+  within one. Splitting handlers into their own consumer groups is what would
+  give each its own retry, and nothing does that today.
 - **Not change-data capture.** Polling costs a query per replica per tick
   whether or not anything is due, and adds up to `OUTBOX_POLL_INTERVAL_MS` of
   latency. Reading the WAL (Debezium and similar) removes both, at the cost of

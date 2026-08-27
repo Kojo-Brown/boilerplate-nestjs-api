@@ -141,6 +141,12 @@ docker-compose up        # postgres + redis + api
   taking a lease, what `FOR UPDATE SKIP LOCKED` buys when several replicas relay
   at once, why delivery is at-least-once and what that requires of a subscriber,
   and the ordering the claim does _not_ give you.
+- [docs/messaging.md](./docs/messaging.md) — the Kafka producer and consumer:
+  why the producer must acknowledge durably or the outbox is at-most-once again,
+  why a committed offset is the _next_ message rather than the last one handled,
+  what a consumer group is and what happens when every replica gets its own,
+  why the whole catalogue shares one topic keyed by the aggregate, and what a
+  poison message does when there is nowhere yet to put it.
 
 ## Testing
 
@@ -153,6 +159,12 @@ pnpm test:db       # row-locking and outbox suites — needs Postgres and DATABA
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as
 # pending rather than quietly passing.
 for port in 6379 6380 6381; do redis-server --port $port --daemonize yes; done
+
+# The Kafka leg of the message-broker contract needs a cluster. Without
+# KAFKA_BROKERS it is reported as pending rather than quietly passing; CI runs
+# a single-node KRaft broker as a service and sets it.
+docker compose up -d kafka
+KAFKA_BROKERS=localhost:29092 pnpm test
 REDLOCK_NODES=redis://127.0.0.1:6379,redis://127.0.0.1:6380,redis://127.0.0.1:6381 pnpm test
 ```
 

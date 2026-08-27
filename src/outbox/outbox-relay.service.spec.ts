@@ -82,9 +82,15 @@ describe("OutboxRelayService", () => {
     });
 
     it("schedules a failed event by the backoff ladder", async () => {
-      await stage("evt-1");
-      publisher.behaviour = () => Promise.reject(new Error("broker unreachable"));
       const now = new Date("2026-08-24T12:00:00.000Z");
+      // Staged relative to `now`, not to the wall clock. `stage`'s default is
+      // `Date.now() - 1s`, and a row is due when `nextAttemptAt <= now` — so
+      // with a pinned `now` in the past this claimed nothing from 2026-08-25
+      // onwards and the assertion below read `outcomes[0]` off an empty
+      // report. It passed for as long as it did only because the date it
+      // pinned had not yet arrived.
+      await stage("evt-1", new Date(now.getTime() - 1_000));
+      publisher.behaviour = () => Promise.reject(new Error("broker unreachable"));
 
       // First failure, `random` pinned at 0.5: half of the 1s base window.
       const report = await relay({}, () => 0.5).runOnce(now);

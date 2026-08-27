@@ -106,10 +106,48 @@ jobs:
         image: redis:8-alpine
         ports:
           - 6381:6379
+      # A real single-node KRaft broker, because three of the properties
+      # `message-broker.contract.ts` asserts are properties of Kafka rather than
+      # of the code in front of it: that a committed offset is the next one to
+      # read, that a group's members get disjoint partitions, and that a
+      # rejoining member resumes from what was committed. Against the in-memory
+      # double alone they would be properties of a `Map`.
+      #
+      # `KAFKA_BROKERS` below is what switches the contract's Kafka leg on; the
+      # spec reports it *pending* when unset rather than skipping green, so this
+      # service going missing is visible in the run rather than silent.
+      kafka:
+        image: apache/kafka:3.9.1
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          # All three default to 3, which a one-node cluster cannot satisfy —
+          # `__consumer_offsets` would fail to create and every commit with it.
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          # Otherwise every new consumer group in the contract waits 3s to be
+          # assigned anything, on a suite that creates one group per spec.
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 12
+          --health-start-period 20s
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
       REDIS_URL: redis://localhost:6379
       REDLOCK_NODES: redis://localhost:6379,redis://localhost:6380,redis://localhost:6381
+      KAFKA_BROKERS: localhost:9092
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: ${{ secrets.CI_AWS_ACCESS_KEY_ID || 'test' }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY || 'test' }}

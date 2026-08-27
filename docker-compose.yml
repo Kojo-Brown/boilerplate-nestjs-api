@@ -93,6 +93,55 @@ services:
       retries: 10
       start_period: 5s
 
+  # Single-node KRaft cluster: no ZooKeeper, and no replication to configure.
+  # One node is right for a compose file and wrong for production — `acks=all`
+  # on a single replica means "the one broker has it", so a lost disk is a lost
+  # message. A real deployment runs three or more with `min.insync.replicas=2`.
+  kafka:
+    image: apache/kafka:3.9.1
+    restart: unless-stopped
+    networks:
+      - app-network
+    ports:
+      # The HOST listener, not the internal one. `kafka:9092` is what containers
+      # on app-network use and is unresolvable outside it.
+      - "${KAFKA_PORT:-29092}:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:29092
+      # Two listeners because the container and the host reach the broker at
+      # different addresses, and a client is redirected to whatever the broker
+      # advertises: `kafka:9092` is unresolvable from the host, and
+      # `localhost:9092` is the wrong machine from inside the network.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:${KAFKA_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # All three default to 3 and would leave the internal topics unable to
+      # create themselves on a one-node cluster.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Kafka waits this long before the first rebalance of a new group, to
+      # avoid one per member as a deployment rolls out. Useful in production,
+      # three seconds of dead time per group locally.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-5L6g3nShT-eMCtK--X86sw}
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
   api:
     build:
       context: .
@@ -110,6 +159,8 @@ services:
         condition: service_healthy
       redis3:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-4000}
@@ -126,6 +177,11 @@ services:
       IDEMPOTENCY_STORE: ${IDEMPOTENCY_STORE:-redis}
       DISTRIBUTED_LOCK: ${DISTRIBUTED_LOCK:-redlock}
       REDLOCK_NODES: ${REDLOCK_NODES:-redis://redis:6379,redis://redis2:6379,redis://redis3:6379}
+      # Same rule for the broker: MESSAGE_BROKER=memory is refused in production
+      # once OUTBOX_PUBLISHER=broker depends on it, so both have to be named.
+      OUTBOX_PUBLISHER: ${OUTBOX_PUBLISHER:-broker}
+      MESSAGE_BROKER: ${MESSAGE_BROKER:-kafka}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       # JWT — override JWT_SECRET in production; default is only for local dev
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-min-32-chars!!}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
@@ -158,3 +214,4 @@ volumes:
   redisdata:
   redis2data:
   redis3data:
+  kafkadata:

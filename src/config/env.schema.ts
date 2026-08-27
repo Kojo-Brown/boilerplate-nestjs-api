@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { IDEMPOTENCY_STORE_NAMES } from "@/common/idempotency/ports";
 import { DISTRIBUTED_LOCK_NAMES } from "@/common/locking/ports";
+import { MESSAGE_BROKER_NAMES } from "@/messaging/ports";
+import { OUTBOX_PUBLISHER_NAMES } from "@/outbox/ports";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
 import { WORKER_POOL_NAMES } from "@/workers/ports";
@@ -171,6 +173,150 @@ export const envSchema = z
      */
     OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
 
+    /**
+     * Where the relay delivers a claimed event.
+     *
+     * `bus` hands it to this process's `DomainEventBus`, which is durable and
+     * retried but reaches no other replica — the limitation `docs/outbox.md`
+     * has carried since the outbox landed. `broker` produces it to
+     * `KAFKA_DOMAIN_EVENTS_TOPIC`, from which every consumer group over that
+     * topic gets a copy, in this service and in any other.
+     *
+     * Still `bus` by default, and deliberately: a clean clone boots with no
+     * broker configured, exactly as it boots with no S3 bucket and no Redis.
+     * Switching it is one variable and no code, because the relay talks to a
+     * port.
+     */
+    OUTBOX_PUBLISHER: z.enum(OUTBOX_PUBLISHER_NAMES).default("bus"),
+
+    /**
+     * Which `MessageBroker` backs the producer and the consumer.
+     *
+     * `memory` is a working in-process broker — partitions, consumer groups,
+     * committed offsets and all — which makes it the right backend for tests
+     * and for a development run with nothing installed. It is refused below in
+     * production the moment anything real depends on it, for the sharpest
+     * version of the reason `STORAGE_ADAPTER=memory` and
+     * `IDEMPOTENCY_STORE=memory` are: a broker inside the process reaches no
+     * other process, which is the entire reason to have a broker.
+     */
+    MESSAGE_BROKER: z.enum(MESSAGE_BROKER_NAMES).default("memory"),
+    /** Comma-separated `host:port` bootstrap brokers — `kafka-1:9092,kafka-2:9092`. */
+    KAFKA_BROKERS: z.string().optional(),
+    /**
+     * Identifies this application to the cluster. It shows up in broker logs,
+     * in quota configuration and in `kafka-consumer-groups --describe`, so it
+     * is worth being the service name rather than a default nobody can trace.
+     */
+    KAFKA_CLIENT_ID: z.string().default("boilerplate-nestjs-api"),
+    /**
+     * The one topic every domain event travels on. One rather than one per
+     * event name, because Kafka orders within a partition and a partition
+     * belongs to a topic — see `docs/messaging.md`.
+     */
+    KAFKA_DOMAIN_EVENTS_TOPIC: z.string().default("domain-events"),
+    /**
+     * Partitions for that topic when this service creates it.
+     *
+     * The ceiling on consumer parallelism: a group can usefully run one member
+     * per partition and any beyond that idle. Three is a starting point for a
+     * service with a handful of replicas; raising it later is possible, lowering
+     * it is not, and raising it re-hashes keys to different partitions — which
+     * breaks per-key ordering for every key that moves.
+     */
+    KAFKA_TOPIC_PARTITIONS: z.coerce.number().int().positive().default(3),
+    /**
+     * Whether this service creates the topic at boot if it is missing.
+     *
+     * True by default so a development cluster needs no setup. Production
+     * deployments usually manage topics with their own tooling and give the
+     * application no create permission at all, in which case this is `false`
+     * and a missing topic is an error rather than a topic with the wrong
+     * partition count created by whichever replica booted first.
+     */
+    KAFKA_ENSURE_TOPICS: z
+      .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+      .default(true)
+      .transform((value) => value === true || value === "true" || value === "1"),
+
+    /**
+     * Whether this process reads the domain-event topic.
+     *
+     * Off for a replica that only produces, and for a test that drives the
+     * consumer itself. Not `z.coerce.boolean()`, for the reason spelled out
+     * against `OUTBOX_RELAY_ENABLED`: under it, `=false` would mean true.
+     */
+    KAFKA_CONSUMER_ENABLED: z
+      .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+      .default(true)
+      .transform((value) => value === true || value === "true" || value === "1"),
+    /**
+     * The consumer group every replica of *this* service joins.
+     *
+     * One value for the whole deployment, which is what makes the replicas
+     * split the partitions and handle each event once. Deriving it from a
+     * hostname or a pod id is the mistake that turns a scaled deployment into
+     * fan-out and sends every welcome email once per replica.
+     */
+    KAFKA_CONSUMER_GROUP_ID: z.string().default("boilerplate-nestjs-api"),
+    /**
+     * How long the coordinator waits for a heartbeat before evicting a member
+     * and moving its partitions. Must sit between the broker's
+     * `group.min.session.timeout.ms` and `group.max.session.timeout.ms`
+     * (6s–30min by default).
+     */
+    KAFKA_SESSION_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+    /**
+     * Kafka's own guidance is no more than a third of the session timeout, so a
+     * member survives losing two heartbeats to a network blip.
+     */
+    KAFKA_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(3_000),
+    /**
+     * How long a partition is paused after a handler rejected a message, before
+     * that message is read again. Without a pause the partition is re-fetched
+     * immediately and a handler failing on something slow to recover becomes a
+     * hot loop against it.
+     */
+    KAFKA_REDELIVERY_DELAY_MS: z.coerce.number().int().positive().default(1_000),
+    /** How long `subscribe` waits to join the group before failing the boot. */
+    KAFKA_SUBSCRIBE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+    /**
+     * How long one subscriber may take before the message is treated as failed
+     * and redelivered.
+     *
+     * The bound exists because a handler that never settles is worse than one
+     * that throws: the consumer sits inside `eachMessage`, stops heartbeating,
+     * and is evicted from its group after `KAFKA_SESSION_TIMEOUT_MS` — so the
+     * service stops consuming while `/health` stays green and nothing is logged.
+     * This was not theoretical; it is what the application did the first time it
+     * was run against a real cluster with Redis down.
+     *
+     * A minute is generously above any handler in the catalogue and far below
+     * the point at which a hang is worth waiting out.
+     */
+    KAFKA_HANDLER_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+    KAFKA_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+    KAFKA_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+
+    /** TLS to the brokers. Off by default because a local cluster has none. */
+    KAFKA_SSL: z
+      .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+      .default(false)
+      .transform((value) => value === true || value === "true" || value === "1"),
+    /**
+     * SASL mechanism, if the cluster authenticates. Unset means no SASL at all,
+     * which is the only honest default: a mechanism with no credentials fails
+     * the handshake rather than connecting anonymously.
+     *
+     * `plain` sends the password in the clear and is only safe under TLS, which
+     * the refinement below enforces. The OAuth and AWS IAM mechanisms KafkaJS
+     * also supports need a callback rather than a password and are not wired
+     * here — a deployment using one constructs `KafkaBroker` itself.
+     */
+    KAFKA_SASL_MECHANISM: z.enum(["plain", "scram-sha-256", "scram-sha-512"]).optional(),
+    KAFKA_SASL_USERNAME: z.string().optional(),
+    KAFKA_SASL_PASSWORD: z.string().optional(),
+
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default("us-east-1"),
     S3_BUCKET: z.string().optional(),
@@ -319,6 +465,96 @@ export const envSchema = z
           "DISTRIBUTED_LOCK=memory excludes callers within one process only and must not be " +
           "used in production. Set DISTRIBUTED_LOCK=redlock and point REDLOCK_NODES at three " +
           "or more independent Redis masters.",
+      });
+    }
+
+    /**
+     * A Kafka client with nothing to bootstrap from. Caught here rather than at
+     * the first produce, which on a service that publishes rarely may be hours
+     * after the deployment looked healthy.
+     */
+    if (env.MESSAGE_BROKER === "kafka" && !env.KAFKA_BROKERS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["KAFKA_BROKERS"],
+        message: "KAFKA_BROKERS is required when MESSAGE_BROKER=kafka",
+      });
+    }
+
+    /**
+     * The in-process broker, refused in production the moment the relay depends
+     * on it — and only then, because `MESSAGE_BROKER=memory` with
+     * `OUTBOX_PUBLISHER=bus` is simply an unused broker, which is what a service
+     * that has not adopted messaging yet has.
+     *
+     * With `OUTBOX_PUBLISHER=broker` it is the same class of failure as
+     * `IDEMPOTENCY_STORE=memory`: nothing errors, every publish succeeds, and
+     * the events reach subscribers in one process while every other replica and
+     * every other service hears nothing. The configuration that looks like it
+     * turned on cross-service messaging would have quietly turned on a longer
+     * path to the same in-process bus.
+     */
+    if (
+      env.NODE_ENV === "production" &&
+      env.OUTBOX_PUBLISHER === "broker" &&
+      env.MESSAGE_BROKER === "memory"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["MESSAGE_BROKER"],
+        message:
+          "MESSAGE_BROKER=memory keeps every message inside one process and must not be used " +
+          "in production with OUTBOX_PUBLISHER=broker. Set MESSAGE_BROKER=kafka and point " +
+          "KAFKA_BROKERS at the cluster, or leave OUTBOX_PUBLISHER=bus.",
+      });
+    }
+
+    /**
+     * Half-configured SASL, treated like half-configured Twilio: somebody who
+     * named a mechanism meant to authenticate, so say which half is missing at
+     * boot rather than let the handshake fail against the broker later.
+     */
+    if (env.KAFKA_SASL_MECHANISM) {
+      for (const key of ["KAFKA_SASL_USERNAME", "KAFKA_SASL_PASSWORD"] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} is required when KAFKA_SASL_MECHANISM is set`,
+          });
+        }
+      }
+      /**
+       * SASL/PLAIN puts the password on the wire in cleartext. SCRAM does not
+       * and is safe without TLS in a way PLAIN is not, which is why only this
+       * one mechanism is refused.
+       */
+      if (env.KAFKA_SASL_MECHANISM === "plain" && !env.KAFKA_SSL) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["KAFKA_SSL"],
+          message:
+            "KAFKA_SASL_MECHANISM=plain sends the password in cleartext and requires " +
+            "KAFKA_SSL=true. Use scram-sha-256 or scram-sha-512 for an unencrypted connection.",
+        });
+      }
+    }
+
+    /**
+     * A heartbeat interval at or above the session timeout guarantees eviction:
+     * the coordinator gives up before the member's next heartbeat is due, so the
+     * group rebalances continuously and no partition is read for long. Kafka's
+     * own guidance is a third of the timeout; a third is a recommendation, but
+     * *below it* is arithmetic.
+     */
+    if (env.KAFKA_HEARTBEAT_INTERVAL_MS >= env.KAFKA_SESSION_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["KAFKA_HEARTBEAT_INTERVAL_MS"],
+        message:
+          `KAFKA_HEARTBEAT_INTERVAL_MS (${env.KAFKA_HEARTBEAT_INTERVAL_MS}) must be well below ` +
+          `KAFKA_SESSION_TIMEOUT_MS (${env.KAFKA_SESSION_TIMEOUT_MS}); Kafka's guidance is at ` +
+          `most a third of it, so a member survives a lost heartbeat.`,
       });
     }
 

@@ -8,6 +8,7 @@ import { IdempotencyModule } from "./common/idempotency";
 import { LockingModule } from "./common/locking";
 import { AspectsModule } from "./common/aspects";
 import { EventsModule } from "./events";
+import { MessagingModule } from "./messaging";
 import { OutboxModule } from "./outbox";
 import { DiScopesModule } from "./di-scopes";
 import { UsersModule } from "./users/users.module";
@@ -41,6 +42,10 @@ import { envSchema } from "./config/env.schema";
     // Global: any module publishes through `DomainEventBus`, and subscribers
     // are discovered wherever they are declared.
     EventsModule,
+    // Global, and after EventsModule: `DomainEventConsumer` puts what it reads
+    // off the topic onto `DomainEventBus`. Before OutboxModule, which takes
+    // `BrokerOutboxPublisher` from here when `OUTBOX_PUBLISHER=broker`.
+    MessagingModule,
     // Global, and after EventsModule: the relay's default publisher delivers
     // through `DomainEventBus`. Any module that writes something worth
     // announcing stages it here.

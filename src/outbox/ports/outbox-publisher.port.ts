@@ -4,6 +4,21 @@ import type { OutboxRecord } from "../outbox-record";
 export const OUTBOX_PUBLISHER = Symbol("OUTBOX_PUBLISHER");
 
 /**
+ * Which implementation the relay delivers through.
+ *
+ * `bus` is `DomainEventBusPublisher` — this process's subscribers, durable and
+ * retried but reaching nobody else. `broker` is `BrokerOutboxPublisher`, which
+ * produces to `KAFKA_DOMAIN_EVENTS_TOPIC` and is read by every consumer group
+ * over it.
+ *
+ * Declared here rather than in `config/env.schema.ts` so the module owns its own
+ * vocabulary, matching `MESSAGE_BROKER_NAMES` and `WORKER_POOL_NAMES`.
+ */
+export const OUTBOX_PUBLISHER_NAMES = ["bus", "broker"] as const;
+
+export type OutboxPublisherName = (typeof OUTBOX_PUBLISHER_NAMES)[number];
+
+/**
  * The broker seam.
  *
  * This is the one interface between the relay and whatever actually carries
@@ -11,14 +26,17 @@ export const OUTBOX_PUBLISHER = Symbol("OUTBOX_PUBLISHER");
  * claims rows, calls `publish`, and treats a rejection as "not delivered, try
  * again later".
  *
- * One implementation ships today — `DomainEventBusPublisher`, which hands the
- * event to the in-process bus. That is deliberately the *default* rather than
- * the *design*: it makes the outbox useful immediately (events now survive a
- * crash and are retried, which they were not) while leaving the property it
+ * Two implementations ship, selected by `OUTBOX_PUBLISHER`.
+ * `DomainEventBusPublisher` hands the event to the in-process bus and is the
+ * default: it makes the outbox useful with nothing installed (events survive a
+ * crash and are retried, which they did not) while leaving the property it
  * cannot provide plainly stated — an in-process bus does not reach another
  * replica, so a subscriber only ever runs on the machine whose relay won the
- * row. The Kafka producer in `SPEC.md` Phase 10 binds to this token, and
- * nothing in `outbox-relay.service.ts` changes when it does.
+ * row. `BrokerOutboxPublisher` produces to Kafka and does reach them.
+ *
+ * The prediction this comment used to make came true unmodified: the Kafka
+ * producer binds to this token and nothing in `outbox-relay.service.ts`
+ * changed when it did.
  */
 export interface OutboxPublisher {
   /**

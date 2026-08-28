@@ -85,3 +85,52 @@ export class BrokerClosedError extends Error {
     this.name = "BrokerClosedError";
   }
 }
+
+/**
+ * A retry ladder was interrupted by shutdown rather than finishing.
+ *
+ * Distinct from an exhausted ladder, and the distinction decides what happens to
+ * the message. An exhausted ladder has proven the message cannot be handled and
+ * sends it to the dead-letter topic. An aborted one has proven nothing: the
+ * process is stopping, so the offset stays uncommitted and whichever member
+ * takes the partition next reads the message again with a full budget.
+ *
+ * Dead-lettering on shutdown instead would mean that restarting a deployment
+ * during a downstream outage quietly moved every in-flight event to the
+ * dead-letter topic — a rolling restart turning a recoverable failure into a
+ * pile of manual redrives.
+ */
+export class LadderAbortedError extends Error {
+  constructor() {
+    super("Retry ladder aborted; the consumer is shutting down.");
+    this.name = "LadderAbortedError";
+  }
+}
+
+/**
+ * A message could not be written to the dead-letter topic.
+ *
+ * Raised so the caller does *not* commit. Committing past a message whose dead
+ * letter failed to produce would delete it: the consumer has given up on
+ * handling it and the copy that was supposed to preserve it does not exist. The
+ * message is redelivered instead, which retries the whole ladder — wasteful, and
+ * the right kind of wasteful, because the alternative is silent loss on exactly
+ * the path that exists to prevent it.
+ */
+export class DeadLetterPublishError extends Error {
+  constructor(
+    readonly topic: string,
+    cause: unknown,
+  ) {
+    super(
+      `Could not publish to the dead-letter topic "${topic}": ` +
+        `${cause instanceof Error ? cause.message : String(cause)}. ` +
+        `The message was not committed and will be redelivered.`,
+      // `Error.cause` rather than a property of our own, which would need an
+      // `override` and would shadow the standard one anything reading a chain of
+      // errors already looks at.
+      { cause },
+    );
+    this.name = "DeadLetterPublishError";
+  }
+}

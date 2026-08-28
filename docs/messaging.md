@@ -119,14 +119,17 @@ never alters an existing one, warning instead when the counts disagree.
 
 ## What a failure does
 
-| Failure                      | What happens                                                                                                          |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Broker unreachable at boot   | `connect()` fails and the deployment fails with it, rather than 500ing on the first publish                           |
-| Broker rejects a produce     | `publish` rejects, the relay leaves the row `PENDING` and retries by its own ladder                                   |
-| A subscriber throws          | No commit; the partition is paused, seeked back, and the whole event is redelivered — successful subscribers included |
-| A message cannot be decoded  | Logged at error with its topic/partition/offset, and committed past                                                   |
-| The process dies mid-handler | The offset was never committed, so the next member of the group reads it again                                        |
-| A handler never settles      | Bounded by `KAFKA_HANDLER_TIMEOUT_MS`, reported, not committed, and redelivered                                       |
+| Failure                            | What happens                                                                                                   |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Broker unreachable at boot         | `connect()` fails and the deployment fails with it, rather than 500ing on the first publish                    |
+| Broker rejects a produce           | `publish` rejects, the relay leaves the row `PENDING` and retries by its own ladder                            |
+| A subscriber throws                | Retried in place on the ladder; the whole event is re-run, successful subscribers included                     |
+| The ladder runs out                | Copied to the dead-letter topic with its failure recorded in headers, then committed past                      |
+| A message cannot be decoded        | Straight to the dead-letter topic — the ladder is skipped, because reading it again cannot help                |
+| The process dies mid-handler       | The offset was never committed, so the next member of the group reads it again                                 |
+| A handler never settles            | Bounded by `KAFKA_HANDLER_TIMEOUT_MS`, reported, not committed, and redelivered                                |
+| The dead letter cannot be produced | No commit. The message is redelivered rather than committed with no copy of it anywhere                        |
+| Shutdown lands mid-ladder          | The sleep is aborted, nothing is committed, and the next member of the group reads it again with a full budget |
 
 The redelivery interval is `max(KAFKA_REDELIVERY_DELAY_MS, maxWaitTimeInMs)` —
 about five seconds with KafkaJS's default fetch settings, because resuming a
@@ -165,9 +168,137 @@ The undecodable case is the one failure that is _not_ retried, and it is
 deliberate rather than an oversight: bytes that are not a domain event this
 build recognises will not become one by being read again, so retrying blocks the
 partition forever over a message no version of this code can handle — and takes
-every well-formed event behind it down with it. Committing past it drops the
-message, which is a real loss, which is why it is logged with the coordinates
-needed to read the record back off the topic by hand.
+every well-formed event behind it down with it. It goes straight to the
+dead-letter topic instead, on its first and only attempt.
+
+## The retry ladder and the dead-letter topic
+
+Before these existed, a consumer's only two moves on a failure were to keep
+retrying — blocking the partition, and every well-formed event behind the bad
+one — or to commit past and lose the message. It took the first for handler
+failures and the second for undecodable ones, and neither is a decision anybody
+would make deliberately.
+
+A message now gets `KAFKA_RETRY_MAX_ATTEMPTS` attempts, spaced by full-jitter
+exponential backoff, and then goes to `<KAFKA_DOMAIN_EVENTS_TOPIC>.dlt` and is
+committed past. The partition continues; the message still exists.
+
+### The count lives in this process, because Kafka has nowhere to put it
+
+A Kafka record carries no delivery count. A consumer that declines to commit gets
+the message again, and again, with nothing anywhere recording how many times —
+which is why redelivery alone cannot become "try four times, then give up". The
+count has to be held by whoever is counting, and the only place that can be is
+the process handling the message.
+
+What that costs: the count does not survive a crash. A message that has burned
+three of four attempts when the pod dies comes back to its replacement with a
+fresh four, so the real bound is attempts-per-delivery rather than
+attempts-per-message. The alternative is a row keyed by partition and offset,
+written on the path of every failure, so that a poison message reaches the
+dead-letter topic slightly sooner after an unrelated restart. That is not worth a
+database write per failure.
+
+### Retrying in place blocks the partition, and that is the trade being made
+
+The usual alternative is a chain of retry topics: a failed message is
+republished to `…retry-1s`, `…retry-30s` and so on, so the main partition can
+move on immediately. It is the wrong trade _here_, and the reason is the decision
+under **One topic, keyed by the aggregate** above. This stream is ordered per
+user. A `user.registered` diverted onto a retry topic while the `user.deleted`
+behind it sails through the main one arrives after the deletion it preceded, and
+a subscriber is told an account was removed before it hears it existed.
+
+Ordering within an aggregate is worth more than head-of-line latency on a
+partition that is failing anyway — and the head-of-line cost is now _bounded_,
+which is the actual change. Before the ladder it was unbounded, because there was
+no way to give up.
+
+### The ladder has to fit inside the handler bound
+
+The ladder runs inside one `handle()` call, and `handle()` is bounded by
+`KAFKA_HANDLER_TIMEOUT_MS`. A ladder whose sleeps alone outlast that bound can
+never reach its last attempt: the handler is cut off mid-ladder, the message is
+redelivered by the broker with a fresh budget, and it never reaches the
+dead-letter topic. The result is a poison message blocking its partition forever
+under a configuration that reads as though it had been given four tries and a way
+out — which is worse than not having configured a ladder at all.
+
+`env.schema.ts` refuses that combination at boot, using `worstCaseLadderMs` (the
+sum of the un-jittered ceilings) against the handler bound with room left for the
+attempts themselves. It is the necessary condition, not the sufficient one: how
+long an attempt takes is up to the handler.
+
+### What lands on the dead-letter topic
+
+The original message, byte for byte, under its original key — so the dead-letter
+topic partitions by aggregate exactly as the source topic does, and (both topics
+being created with the same partition count) a record lands on the same partition
+number on both. Reading partition 2 of the dead-letter topic is reading the
+failures from partition 2 of the source.
+
+The producer's headers are preserved, and these are added:
+
+| Header                 | What it is                                                      |
+| ---------------------- | --------------------------------------------------------------- |
+| `dlt-reason`           | `undecodable` or `handler-failed` — a different fix each        |
+| `dlt-error`            | The last error's message, truncated to 500 characters           |
+| `dlt-error-type`       | Its constructor name, which is stable enough to route on        |
+| `dlt-attempts`         | How many were made. `1` for a message that was never retryable  |
+| `dlt-consumer-group`   | Which group gave up; two groups can dead-letter the same record |
+| `dlt-origin-topic`     | Where the original is                                           |
+| `dlt-origin-partition` | …                                                               |
+| `dlt-origin-offset`    | …as a string, since offsets pass `Number.MAX_SAFE_INTEGER`      |
+| `dlt-failed-at`        | When this process gave up                                       |
+
+The origin coordinates are what `kafka-console-consumer --partition --offset`
+takes, so the original record can be read back off the source topic and compared
+against the copy.
+
+`dlt-error` is truncated because Kafka counts headers against
+`message.max.bytes`: an unbounded stack trace, or a driver error quoting a whole
+statement, could make the record that _reports_ a failure fail to produce — which
+would lose the message the topic exists to keep.
+
+### Nothing consumes it
+
+Deliberately. A dead-letter topic that is drained back into the main topic
+automatically is a retry loop with extra steps, and the failure it produces —
+events cycling between two topics forever — is harder to see than the poison
+message it was meant to solve. Redriving is a human decision made once the cause
+is fixed, which is what the origin headers are for.
+
+Two operational pieces this repository cannot provide: a retention on the
+dead-letter topic long enough that a message is still there when somebody looks,
+and an alert on its rate. A dead-letter topic nobody is watching is a slower way
+of dropping messages.
+
+### Failing to dead-letter does not commit
+
+If the produce to the dead-letter topic fails, `DeadLetterQueue.send` throws and
+the offset is not committed — so the message is redelivered and the whole ladder
+runs again. Wasteful, and the right kind of wasteful: the alternative is
+committing past a message the consumer has given up on and failed to copy
+anywhere, which is silent loss on exactly the path that exists to prevent it.
+
+The same rule covers `KAFKA_DEAD_LETTER_ENABLED=false`: an exhausted ladder
+rethrows and the partition stalls, loudly, rather than dropping anything. That is
+the pre-item behaviour, kept as a switch because a stream where a gap is worse
+than a stop is a real thing to have — but it is not the default, because an
+unattended service that has silently stopped consuming is the failure the topic
+exists to end.
+
+### Shutdown does not dead-letter in-flight work
+
+`stop()` aborts the ladder before waiting for the subscription, so a consumer
+sleeping between attempts unwinds in milliseconds rather than being waited out
+per partition. The message is left uncommitted and whichever member takes the
+partition next reads it again with a full budget.
+
+Dead-lettering on abort instead would mean a rolling restart during a downstream
+outage quietly moved every in-flight event onto the dead-letter topic — turning a
+recoverable failure into a pile of manual redrives. An aborted ladder has proven
+nothing about the message; only an exhausted one has.
 
 ## Configuration
 
@@ -186,6 +317,11 @@ needed to read the record back off the topic by hand.
 | `KAFKA_HEARTBEAT_INTERVAL_MS` | `3000`                   | At most a third of the session timeout               |
 | `KAFKA_REDELIVERY_DELAY_MS`   | `1000`                   | Floor, not the interval — see above                  |
 | `KAFKA_HANDLER_TIMEOUT_MS`    | `60000`                  | A hung handler becomes a redelivery, not an eviction |
+| `KAFKA_DEAD_LETTER_ENABLED`   | `true`                   | `false` stalls the partition instead of giving up    |
+| `KAFKA_DEAD_LETTER_TOPIC`     | `<events topic>.dlt`     | Derived, so renaming the events topic moves it       |
+| `KAFKA_RETRY_MAX_ATTEMPTS`    | `4`                      | The first attempt included; `1` disables retrying    |
+| `KAFKA_RETRY_BASE_MS`         | `250`                    | Before jitter                                        |
+| `KAFKA_RETRY_MAX_DELAY_MS`    | `5000`                   | Ceiling per rung, before jitter                      |
 | `KAFKA_SSL` / `KAFKA_SASL_*`  | off                      | `plain` is refused without TLS; SCRAM is not         |
 
 `MESSAGE_BROKER=memory` is refused in production when `OUTBOX_PUBLISHER=broker`,
@@ -201,7 +337,10 @@ simply an unused broker and is allowed.
 | `…contract.spec.ts` (memory leg)        | …against the double the unit and e2e suites run on                             |
 | `…contract.spec.ts` (Kafka leg)         | …against a real cluster: real groups, real commits, real rebalances            |
 | `domain-event-codec.spec.ts`            | The wire format, the partition keys, and every way a message can be unreadable |
-| `domain-event-consumer.service.spec.ts` | Redelivery on a subscriber failure; skipping an undecodable message            |
+| `domain-event-consumer.service.spec.ts` | The ladder, both routes to the dead-letter topic, and what shutdown does       |
+| `retry-ladder.spec.ts`                  | The ladder in isolation: its budget, its sleeps, and its abort                 |
+| `dead-letter.spec.ts`                   | What a dead letter preserves and what it records                               |
+| `dead-letter-queue.service.spec.ts`     | That a failed dead letter is reported rather than swallowed                    |
 | `test/messaging.e2e-spec.ts`            | That the stages are connected, through the real wiring                         |
 
 The split matters. Three of the properties the contract asserts are properties
@@ -216,11 +355,18 @@ turn it off.
 
 ## What this is not
 
-- **Not a dead-letter topic.** A message whose handler always fails blocks its
-  partition indefinitely. That is the honest behaviour of at-least-once with
-  manual commits and nowhere to put a poison message; `SPEC.md` Phase 10 item 2
-  is what changes it, and it is also what will give an undecodable message
-  somewhere to go other than the log.
+- **Not a redrive tool.** Producing a dead letter back to its origin topic is
+  three lines against `MessageBroker` and a decision nobody should make from a
+  script that runs unattended, so the headers carry what a redrive needs and the
+  redrive itself is left to whoever is fixing the cause.
+- **Not alerted.** Nothing here watches the dead-letter topic's rate or its
+  retention, and both are what turn it from a place messages are kept into a
+  slower way of dropping them.
+- **Not a per-subscriber ladder.** A retry re-runs the whole event, so a
+  subscriber that succeeded runs again while the one next to it is retried. The
+  outbox relay makes the same trade with the same bus (`docs/outbox.md`, _Not
+  per-handler retry_), and it is why `@OnDomainEvent` handlers have to be
+  idempotent.
 - **Not schema-validated.** `event-name` is checked against the catalogue, but
   the payload is trusted — the same position `PrismaOutboxStore` takes, and for
   the same reason: there is no runtime schema for these payloads anywhere in the

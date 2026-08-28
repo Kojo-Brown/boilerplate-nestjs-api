@@ -464,3 +464,109 @@ describe("envSchema — messaging", () => {
     expect(() => envSchema.parse({ ...BASE_ENV, OUTBOX_PUBLISHER: "rabbitmq" })).toThrow();
   });
 });
+
+describe("envSchema — dead-letter topic", () => {
+  it("dead-letters by default, because an unattended stall is the worse failure", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.KAFKA_DEAD_LETTER_ENABLED).toBe(true);
+    expect(env.KAFKA_RETRY_MAX_ATTEMPTS).toBe(4);
+    // Unset, so `MessagingModule` derives it from the events topic. A literal
+    // default would keep saying `domain-events.dlt` after somebody renamed the
+    // events topic, and the dead letters would go somewhere nothing watches.
+    expect(env.KAFKA_DEAD_LETTER_TOPIC).toBeUndefined();
+  });
+
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("reads KAFKA_DEAD_LETTER_ENABLED=%s as %s", (raw, expected) => {
+    // Not `z.coerce.boolean()`, under which every non-empty string is true and
+    // `=false` would enable it.
+    expect(
+      envSchema.parse({ ...BASE_ENV, KAFKA_DEAD_LETTER_ENABLED: raw }).KAFKA_DEAD_LETTER_ENABLED,
+    ).toBe(expected);
+  });
+
+  it("refuses a ladder that cannot finish inside the handler bound", () => {
+    // The ladder runs inside one `handle()` call, which
+    // `KAFKA_HANDLER_TIMEOUT_MS` bounds. Sleeps of 30s + 60s + 60s against a
+    // 60s bound means the handler is cut off mid-ladder every time, the message
+    // is redelivered with a fresh budget, and it never reaches the dead-letter
+    // topic — a poison message blocking its partition forever, under a
+    // configuration that reads as though it had been given a way out.
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        KAFKA_RETRY_MAX_ATTEMPTS: "4",
+        KAFKA_RETRY_BASE_MS: "30000",
+        KAFKA_RETRY_MAX_DELAY_MS: "60000",
+      }),
+    ).toThrow(/never reaches the dead-letter topic/);
+  });
+
+  it("accepts the same ladder once the handler bound has room for it", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      KAFKA_RETRY_MAX_ATTEMPTS: "4",
+      KAFKA_RETRY_BASE_MS: "30000",
+      KAFKA_RETRY_MAX_DELAY_MS: "60000",
+      KAFKA_HANDLER_TIMEOUT_MS: "600000",
+    });
+
+    expect(env.KAFKA_RETRY_BASE_MS).toBe(30_000);
+  });
+
+  it("leaves the default ladder comfortably inside the default bound", () => {
+    // 250 + 500 + 1000 = 1.75s of sleeping against a 60s handler bound. The
+    // check exists for the configuration that walks past this, not for this.
+    expect(() => envSchema.parse(BASE_ENV)).not.toThrow();
+  });
+
+  it('reads a blank KAFKA_DEAD_LETTER_TOPIC as unset rather than as a topic named ""', () => {
+    // `.env` spells "I have not chosen a value" as `KEY=`, and dotenv hands that
+    // through as an empty string. A `.min(1)` here would make a `.env` copied
+    // straight from `.env.example` fail to boot on a variable nobody touched.
+    expect(
+      envSchema.parse({ ...BASE_ENV, KAFKA_DEAD_LETTER_TOPIC: "" }).KAFKA_DEAD_LETTER_TOPIC,
+    ).toBeUndefined();
+    expect(
+      envSchema.parse({ ...BASE_ENV, KAFKA_DEAD_LETTER_TOPIC: "  " }).KAFKA_DEAD_LETTER_TOPIC,
+    ).toBeUndefined();
+  });
+
+  it("trims a configured topic, since a trailing space is not part of a topic name", () => {
+    expect(
+      envSchema.parse({ ...BASE_ENV, KAFKA_DEAD_LETTER_TOPIC: " acme.dlt " })
+        .KAFKA_DEAD_LETTER_TOPIC,
+    ).toBe("acme.dlt");
+  });
+
+  it("refuses a dead-letter topic that is the topic it reads from", () => {
+    // The consumer would read back every message it gave up on, fail on it
+    // again, and republish it — an unbounded loop nothing else would report.
+    expect(() =>
+      envSchema.parse({ ...BASE_ENV, KAFKA_DEAD_LETTER_TOPIC: "domain-events" }),
+    ).toThrow(/must not be KAFKA_DOMAIN_EVENTS_TOPIC/);
+  });
+
+  it("allows the collision once dead-lettering is off, since nothing is produced", () => {
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        KAFKA_DEAD_LETTER_ENABLED: "false",
+        KAFKA_DEAD_LETTER_TOPIC: "domain-events",
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts a dead-letter topic named separately from the events topic", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      KAFKA_DOMAIN_EVENTS_TOPIC: "acme.events",
+      KAFKA_DEAD_LETTER_TOPIC: "acme.events.parking-lot",
+    });
+
+    expect(env.KAFKA_DEAD_LETTER_TOPIC).toBe("acme.events.parking-lot");
+  });
+});

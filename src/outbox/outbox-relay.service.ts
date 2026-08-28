@@ -9,7 +9,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import type { DrainReport, OutboxRecord } from "./outbox-record";
 import { OUTBOX_PUBLISHER, OUTBOX_STORE, type OutboxPublisher, type OutboxStore } from "./ports";
-import { nextAttemptAt, type BackoffPolicy } from "./outbox-backoff";
+import { nextAttemptAt, type BackoffPolicy } from "@/common/backoff";
 import { PublishTimeoutError } from "./outbox.errors";
 
 /** Optional DI token for the relay's jitter source. See the constructor. */

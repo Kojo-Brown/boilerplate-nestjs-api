@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { worstCaseLadderMs } from "@/common/backoff";
 import { IDEMPOTENCY_STORE_NAMES } from "@/common/idempotency/ports";
 import { DISTRIBUTED_LOCK_NAMES } from "@/common/locking/ports";
 import { MESSAGE_BROKER_NAMES } from "@/messaging/ports";
@@ -295,6 +296,61 @@ export const envSchema = z
      * the point at which a hang is worth waiting out.
      */
     KAFKA_HANDLER_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+    /**
+     * Whether a message the consumer has given up on is copied to the
+     * dead-letter topic and committed past.
+     *
+     * `false` is the behaviour from before there was one: an exhausted ladder
+     * withholds the commit and the message is redelivered indefinitely, blocking
+     * its partition. That is a defensible choice for a stream where a gap is
+     * worse than a stall, and it is the reason this is a switch rather than
+     * something hardcoded on — but it is not the default, because an unattended
+     * service that stops consuming is the failure the topic exists to end.
+     *
+     * Spelled against the enum rather than `z.coerce.boolean()` for the reason
+     * `OUTBOX_RELAY_ENABLED` is: coercion makes every non-empty string true, so
+     * `KAFKA_DEAD_LETTER_ENABLED=false` would *enable* it.
+     */
+    KAFKA_DEAD_LETTER_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((value) => value === "true"),
+    /**
+     * The dead-letter topic. Defaults to `<KAFKA_DOMAIN_EVENTS_TOPIC>.dlt`.
+     *
+     * Optional rather than a literal default, because a literal would keep
+     * saying `domain-events.dlt` after somebody renamed the events topic, and
+     * the resulting dead letters would go somewhere nothing is watching. The
+     * derivation lives in `defaultDeadLetterTopic` next to the code that would
+     * otherwise have to guess.
+     */
+    KAFKA_DEAD_LETTER_TOPIC: z
+      .string()
+      .optional()
+      // Blank means unset, not a topic named "". `.env` files spell "I have not
+      // chosen a value" as `KEY=`, and dotenv hands that through as an empty
+      // string — so a bare `.min(1)` here would make a `.env` copied from
+      // `.env.example` fail to boot, on a variable the operator never touched.
+      .transform((value) => {
+        const trimmed = value?.trim() ?? "";
+        return trimmed === "" ? undefined : trimmed;
+      }),
+    /**
+     * Attempts one message gets before it is dead-lettered, the first included.
+     *
+     * Four rather than a larger number because the ladder blocks its partition
+     * while it runs, and because what it is waiting out is a dependency
+     * flapping, not a dependency down: an outage longer than a couple of seconds
+     * is better served by the message going to the dead-letter topic and the
+     * partition continuing than by every consumer in the group holding its
+     * partitions until the outage ends. `1` disables retrying without disabling
+     * the dead-letter topic.
+     */
+    KAFKA_RETRY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(4),
+    /** Delay before the second attempt, before jitter. */
+    KAFKA_RETRY_BASE_MS: z.coerce.number().int().positive().default(250),
+    /** Ceiling on the un-jittered delay, so the ladder plateaus instead of running away. */
+    KAFKA_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(5_000),
     KAFKA_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
     KAFKA_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
@@ -555,6 +611,59 @@ export const envSchema = z
           `KAFKA_HEARTBEAT_INTERVAL_MS (${env.KAFKA_HEARTBEAT_INTERVAL_MS}) must be well below ` +
           `KAFKA_SESSION_TIMEOUT_MS (${env.KAFKA_SESSION_TIMEOUT_MS}); Kafka's guidance is at ` +
           `most a third of it, so a member survives a lost heartbeat.`,
+      });
+    }
+
+    /**
+     * The retry ladder runs *inside* one `handle()` call, and `handle()` is
+     * bounded by `KAFKA_HANDLER_TIMEOUT_MS`. A ladder whose sleeps alone outlast
+     * that bound can therefore never reach its last attempt: the handler is cut
+     * off mid-ladder, the message is redelivered by the broker with a fresh
+     * budget, and it never reaches the dead-letter topic — a poison message
+     * blocking its partition forever, under a configuration that reads as though
+     * it had been given five tries and a way out.
+     *
+     * `worstCaseLadderMs` is the sum of the un-jittered ceilings, so this is the
+     * necessary condition rather than the sufficient one: the attempts
+     * themselves also take time, and how much is up to the handler. Checked with
+     * room to spare rather than at equality for that reason.
+     */
+    const ladderMs = worstCaseLadderMs({
+      maxAttempts: env.KAFKA_RETRY_MAX_ATTEMPTS,
+      baseMs: env.KAFKA_RETRY_BASE_MS,
+      maxMs: env.KAFKA_RETRY_MAX_DELAY_MS,
+    });
+    if (ladderMs * 2 >= env.KAFKA_HANDLER_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["KAFKA_RETRY_MAX_ATTEMPTS"],
+        message:
+          `The retry ladder can sleep for up to ${ladderMs}ms, which leaves too little of ` +
+          `KAFKA_HANDLER_TIMEOUT_MS (${env.KAFKA_HANDLER_TIMEOUT_MS}ms) for the attempts ` +
+          `themselves. The ladder runs inside one handler call, so a handler cut off ` +
+          `mid-ladder is redelivered with a fresh budget and never reaches the dead-letter ` +
+          `topic. Lower KAFKA_RETRY_MAX_ATTEMPTS or KAFKA_RETRY_MAX_DELAY_MS, or raise ` +
+          `KAFKA_HANDLER_TIMEOUT_MS to more than ${ladderMs * 2}ms.`,
+      });
+    }
+
+    /**
+     * A dead-letter topic that is also the source topic is an infinite loop: the
+     * consumer reads its own dead letters, fails on them again, and republishes
+     * them, growing the topic without bound. Nothing else in the pipeline would
+     * report it as an error.
+     */
+    if (
+      env.KAFKA_DEAD_LETTER_ENABLED &&
+      env.KAFKA_DEAD_LETTER_TOPIC === env.KAFKA_DOMAIN_EVENTS_TOPIC
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["KAFKA_DEAD_LETTER_TOPIC"],
+        message:
+          `KAFKA_DEAD_LETTER_TOPIC must not be KAFKA_DOMAIN_EVENTS_TOPIC ` +
+          `("${env.KAFKA_DOMAIN_EVENTS_TOPIC}"): the consumer would read back every message ` +
+          `it gave up on, fail on it again, and republish it forever.`,
       });
     }
 

@@ -145,8 +145,9 @@ docker-compose up        # postgres + redis + api
   why the producer must acknowledge durably or the outbox is at-most-once again,
   why a committed offset is the _next_ message rather than the last one handled,
   what a consumer group is and what happens when every replica gets its own,
-  why the whole catalogue shares one topic keyed by the aggregate, and what a
-  poison message does when there is nowhere yet to put it.
+  why the whole catalogue shares one topic keyed by the aggregate, why the
+  retry ladder holds its partition instead of hopping onto retry topics, and
+  what a poison message carries with it to the dead-letter topic.
 
 ## Testing
 

@@ -1,4 +1,9 @@
-import { nextAttemptAt, nextAttemptDelayMs, type BackoffPolicy } from "./outbox-backoff";
+import {
+  nextAttemptAt,
+  nextAttemptDelayMs,
+  worstCaseLadderMs,
+  type BackoffPolicy,
+} from "./backoff";
 
 const POLICY: BackoffPolicy = { baseMs: 500, maxMs: 300_000, maxAttempts: 8 };
 
@@ -76,5 +81,37 @@ describe("nextAttemptAt", () => {
 
   it("passes the dead-letter signal straight through", () => {
     expect(nextAttemptAt(now, POLICY.maxAttempts, POLICY, () => 0.5)).toBeNull();
+  });
+});
+
+describe("worstCaseLadderMs", () => {
+  it("sums the ceilings of every sleep the ladder can take", () => {
+    // Three sleeps for four attempts, at 250, 500 and 1000 — the ladder's own
+    // shape, spelled out, so a change to `nextAttemptDelayMs` that this function
+    // did not follow fails here rather than in a boot-time refine nobody reads.
+    expect(worstCaseLadderMs({ baseMs: 250, maxMs: 5_000, maxAttempts: 4 })).toBe(1_750);
+  });
+
+  it("is zero when there is nothing to retry", () => {
+    expect(worstCaseLadderMs({ baseMs: 250, maxMs: 5_000, maxAttempts: 1 })).toBe(0);
+  });
+
+  it("plateaus at the cap rather than doubling forever", () => {
+    // 500, 1000, 2000, then 4000 four times over — a ladder whose ceiling is
+    // reached is linear in its attempts, which is what makes a large
+    // `maxAttempts` affordable and a large `maxMs` not.
+    expect(worstCaseLadderMs({ baseMs: 500, maxMs: 4_000, maxAttempts: 8 })).toBe(
+      500 + 1_000 + 2_000 + 4_000 * 4,
+    );
+  });
+
+  it("bounds every delay the policy can actually produce", () => {
+    const policy: BackoffPolicy = { baseMs: 500, maxMs: 300_000, maxAttempts: 8 };
+    let drawn = 0;
+    for (let attempts = 1; attempts < policy.maxAttempts; attempts += 1) {
+      // The largest draw full jitter can make on each rung.
+      drawn += nextAttemptDelayMs(attempts, policy, () => 0.999_999) ?? 0;
+    }
+    expect(drawn).toBeLessThanOrEqual(worstCaseLadderMs(policy));
   });
 });

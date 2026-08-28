@@ -11,11 +11,13 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import type { SASLOptions } from "kafkajs";
 import type { Env } from "@/config/env.schema";
 import { MESSAGE_BROKER, type MessageBroker } from "./ports";
-import { DOMAIN_EVENTS_TOPIC } from "./messaging.tokens";
+import { DEAD_LETTER_TOPIC, DOMAIN_EVENTS_TOPIC } from "./messaging.tokens";
 import { InMemoryBroker } from "./in-memory-broker";
 import { KafkaBroker } from "./kafka-broker.service";
 import { BrokerOutboxPublisher } from "./broker-outbox.publisher";
+import { DeadLetterQueue } from "./dead-letter-queue.service";
 import { DomainEventConsumer } from "./domain-event-consumer.service";
+import { defaultDeadLetterTopic } from "./dead-letter";
 
 /**
  * Owns the order in which messaging starts and stops.
@@ -42,6 +44,7 @@ class MessagingLifecycle implements OnApplicationBootstrap, OnApplicationShutdow
   constructor(
     @Inject(MESSAGE_BROKER) private readonly broker: MessageBroker,
     @Inject(DOMAIN_EVENTS_TOPIC) private readonly topic: string,
+    @Inject(DEAD_LETTER_TOPIC) private readonly deadLetterTopic: string | null,
     private readonly consumer: DomainEventConsumer,
     private readonly config: ConfigService<Env, true>,
   ) {}
@@ -50,7 +53,16 @@ class MessagingLifecycle implements OnApplicationBootstrap, OnApplicationShutdow
     await this.broker.connect();
     if (this.config.get("KAFKA_ENSURE_TOPICS", { infer: true })) {
       const partitions = this.config.get("KAFKA_TOPIC_PARTITIONS", { infer: true });
-      await this.broker.ensureTopics([{ topic: this.topic, partitions }]);
+      // The dead-letter topic gets the *same* partition count, which is not
+      // cosmetic: partition is a function of the key and the count, and the dead
+      // letter keeps the original key. Matching counts mean a message lands on
+      // the same partition number on both topics, so an operator reading
+      // partition 2 of the dead-letter topic is reading the failures from
+      // partition 2 of the source, and a redrive puts a key back where its own
+      // history already is.
+      const specs = [{ topic: this.topic, partitions }];
+      if (this.deadLetterTopic !== null) specs.push({ topic: this.deadLetterTopic, partitions });
+      await this.broker.ensureTopics(specs);
     } else {
       this.logger.log(`KAFKA_ENSURE_TOPICS=false; expecting "${this.topic}" to exist already.`);
     }
@@ -121,11 +133,29 @@ class MessagingLifecycle implements OnApplicationBootstrap, OnApplicationShutdow
       },
       inject: [ConfigService],
     },
+    {
+      // `null` when disabled rather than an absent provider: every injection
+      // site then resolves in both configurations, and "off" is a value
+      // `DeadLetterQueue.enabled` reports instead of a boot failure in one of
+      // them. The name is derived from the events topic when it is not set, so
+      // renaming the events topic cannot leave dead letters going to a topic
+      // named after the old one.
+      provide: DEAD_LETTER_TOPIC,
+      useFactory: (config: ConfigService<Env, true>): string | null => {
+        if (!config.get("KAFKA_DEAD_LETTER_ENABLED", { infer: true })) return null;
+        return (
+          config.get("KAFKA_DEAD_LETTER_TOPIC", { infer: true }) ??
+          defaultDeadLetterTopic(config.get("KAFKA_DOMAIN_EVENTS_TOPIC", { infer: true }))
+        );
+      },
+      inject: [ConfigService],
+    },
     BrokerOutboxPublisher,
+    DeadLetterQueue,
     DomainEventConsumer,
     MessagingLifecycle,
   ],
-  exports: [MESSAGE_BROKER, DOMAIN_EVENTS_TOPIC, BrokerOutboxPublisher],
+  exports: [MESSAGE_BROKER, DOMAIN_EVENTS_TOPIC, DEAD_LETTER_TOPIC, BrokerOutboxPublisher],
 })
 export class MessagingModule {}
 

@@ -1,8 +1,15 @@
 import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { createTestApp, type RecordingEmailQueue, type TestApp } from "./helpers/create-test-app";
-import { InMemoryBroker, MESSAGE_BROKER, encodeDomainEvent } from "@/messaging";
-import type { MessageBroker } from "@/messaging";
+import {
+  DEAD_LETTER_HEADERS,
+  DEAD_LETTER_TOPIC,
+  EVENT_HEADERS,
+  InMemoryBroker,
+  MESSAGE_BROKER,
+  encodeDomainEvent,
+} from "@/messaging";
+import type { IncomingMessage, MessageBroker } from "@/messaging";
 
 /**
  * The whole pipeline, through the wiring a deployment actually runs.
@@ -106,6 +113,62 @@ describe("Messaging (e2e)", () => {
     expect(emails.enqueued.find((entry) => entry.job === "send-welcome")?.data).toMatchObject({
       to: "direct@example.test",
     });
+  });
+
+  it("dead-letters a message it cannot handle and keeps reading the partition", async () => {
+    const topic = process.env["KAFKA_DOMAIN_EVENTS_TOPIC"] ?? "domain-events";
+    // Resolved from the container, not rebuilt here: this asserts the topic the
+    // application actually derived and created at bootstrap, which is the half a
+    // unit test cannot reach.
+    const deadLetterTopic = app.get<string | null>(DEAD_LETTER_TOPIC);
+    expect(deadLetterTopic).toBe(`${topic}.dlt`);
+
+    const dead: IncomingMessage[] = [];
+    const reader = await broker.subscribe({
+      groupId: "e2e-dlt-reader",
+      topics: [deadLetterTopic!],
+      fromBeginning: true,
+      handle: async (message) => {
+        dead.push(message);
+      },
+    });
+
+    const good = encodeDomainEvent(topic, {
+      name: "user.registered",
+      payload: {
+        userId: "poison-1",
+        email: "behind-the-poison@example.test",
+        name: "Behind",
+        provider: null,
+      },
+      eventId: "77777777-7777-4777-8777-777777777777",
+      occurredAt: new Date(),
+      correlationId: null,
+    });
+
+    await broker.produce([
+      // An event name no build of this service knows. Same key as the message
+      // behind it, so both land on the same partition and the second cannot be
+      // handled until the first is dealt with — which, before there was a
+      // dead-letter topic, meant dropping the first outright.
+      { ...good, headers: { ...good.headers, [EVENT_HEADERS.name]: "user.renamed" } },
+      good,
+    ]);
+
+    await waitFor(() => dead.length === 1);
+    expect(dead[0]!.headers[DEAD_LETTER_HEADERS.reason]).toBe("undecodable");
+    expect(dead[0]!.headers[DEAD_LETTER_HEADERS.originTopic]).toBe(topic);
+    expect(dead[0]!.headers[DEAD_LETTER_HEADERS.errorType]).toBe("UndecodableMessageError");
+
+    // And the partition moved on: the well-formed event behind the poison one
+    // reached its subscriber.
+    await waitFor(() =>
+      emails.enqueued.some(
+        (entry) => (entry.data as { to?: string }).to === "behind-the-poison@example.test",
+      ),
+    );
+
+    await reader.stop();
   });
 
   it("uses the in-memory broker the environment selected", () => {

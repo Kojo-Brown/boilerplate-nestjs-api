@@ -8,10 +8,12 @@ import { DomainEventConsumer } from "./domain-event-consumer.service";
 import { DEAD_LETTER_HEADERS } from "./dead-letter";
 import { encodeDomainEvent, type EncodedDomainEvent } from "./domain-event-codec";
 import { EVENT_HEADERS } from "./domain-event-codec";
+import { realEventContract } from "@/test-utils/event-contract";
 import type { IncomingMessage, MessageBroker } from "./ports";
 
 const TOPIC = "domain-events";
 const DLT = "domain-events.dlt";
+const contract = realEventContract();
 
 const event: EncodedDomainEvent = {
   name: "user.registered",
@@ -92,6 +94,7 @@ describe("DomainEventConsumer", () => {
       TOPIC,
       bus,
       options.deadLetters ?? new DeadLetterQueue(broker, DLT),
+      contract,
       options.config ?? configWith(),
       options.random ?? ((): number => 0),
     );
@@ -120,7 +123,7 @@ describe("DomainEventConsumer", () => {
     const { bus, settled } = busThat(() => []);
     const consumer = await start(bus);
 
-    await broker.produce([encodeDomainEvent(TOPIC, event)]);
+    await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
     await waitFor(() => settled.length === 1);
 
     expect(settled[0]!.name).toBe("user.registered");
@@ -146,7 +149,7 @@ describe("DomainEventConsumer", () => {
     );
     const consumer = await start(bus);
 
-    await broker.produce([encodeDomainEvent(TOPIC, event)]);
+    await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
     await waitFor(() => settled.length >= 2);
 
     // The same event again, from the ladder rather than from a redelivery — and
@@ -177,8 +180,12 @@ describe("DomainEventConsumer", () => {
     const consumer = await start(bus);
 
     await broker.produce([
-      encodeDomainEvent(TOPIC, event),
-      encodeDomainEvent(TOPIC, { ...event, eventId: "55555555-5555-4555-8555-555555555555" }),
+      encodeDomainEvent(TOPIC, event, contract),
+      encodeDomainEvent(
+        TOPIC,
+        { ...event, eventId: "55555555-5555-4555-8555-555555555555" },
+        contract,
+      ),
     ]);
 
     await waitFor(() => dlt.received.length === 1);
@@ -208,12 +215,16 @@ describe("DomainEventConsumer", () => {
     const dlt = await readDeadLetters();
     const consumer = await start(bus);
 
-    const undecodable = encodeDomainEvent(TOPIC, event);
+    const undecodable = encodeDomainEvent(TOPIC, event, contract);
     const headers = { ...undecodable.headers, [EVENT_HEADERS.name]: "user.renamed" };
     await broker.produce([
       { ...undecodable, headers },
       // Behind it on the same partition, since both carry the same key.
-      encodeDomainEvent(TOPIC, { ...event, eventId: "55555555-5555-4555-8555-555555555555" }),
+      encodeDomainEvent(
+        TOPIC,
+        { ...event, eventId: "55555555-5555-4555-8555-555555555555" },
+        contract,
+      ),
     ]);
 
     await waitFor(() => dlt.received.length === 1);
@@ -235,6 +246,43 @@ describe("DomainEventConsumer", () => {
     await dlt.stop();
   });
 
+  it("dead-letters a schema violation under its own reason, ladder skipped", async () => {
+    const errors = jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    const { bus, settled } = busThat(() => []);
+    const dlt = await readDeadLetters();
+    const consumer = await start(bus);
+
+    // Our headers, our event name, a payload missing a required field: a
+    // producer of this event emitting the wrong shape, which is a different
+    // problem with a different owner from a foreign producer's bytes.
+    const valid = encodeDomainEvent(TOPIC, event, contract);
+    await broker.produce([
+      { ...valid, value: Buffer.from(JSON.stringify({ userId: "user-1" }), "utf8") },
+      encodeDomainEvent(
+        TOPIC,
+        { ...event, eventId: "66666666-6666-4666-8666-666666666666" },
+        contract,
+      ),
+    ]);
+
+    await waitFor(() => dlt.received.length === 1);
+    const dead = dlt.received[0]!;
+    expect(dead.headers[DEAD_LETTER_HEADERS.reason]).toBe("schema-invalid");
+    expect(dead.headers[DEAD_LETTER_HEADERS.errorType]).toBe("SchemaContractViolationError");
+    // One attempt, for the same reason an undecodable message gets one: a
+    // payload that violates the contract does not start conforming on a reread.
+    expect(dead.headers[DEAD_LETTER_HEADERS.attempts]).toBe("1");
+    // Enough to act on without opening the payload.
+    expect(dead.headers[DEAD_LETTER_HEADERS.error]).toMatch(/written by v1, rejected by v1/);
+    // The event behind it on the same partition is not held up.
+    await waitFor(() => settled.length === 1);
+    expect(settled[0]!.context.eventId).toBe("66666666-6666-4666-8666-666666666666");
+    expect(errors).toHaveBeenCalled();
+
+    await consumer.stop();
+    await dlt.stop();
+  });
+
   it("does not commit when the dead letter could not be produced", async () => {
     jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
     jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
@@ -246,7 +294,7 @@ describe("DomainEventConsumer", () => {
     } as unknown as MessageBroker;
     const consumer = await start(bus, { deadLetters: new DeadLetterQueue(unreachable, DLT) });
 
-    await broker.produce([encodeDomainEvent(TOPIC, event)]);
+    await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
 
     // Past one whole ladder: the message is redelivered and the ladder runs
     // again. Committing here would delete a message the consumer had given up
@@ -266,7 +314,7 @@ describe("DomainEventConsumer", () => {
     // gap is worse than a stall.
     const consumer = await start(bus, { deadLetters: new DeadLetterQueue(broker) });
 
-    await broker.produce([encodeDomainEvent(TOPIC, event)]);
+    await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
     await waitFor(() => settled.length > 3);
 
     expect(errors).toHaveBeenCalledWith(expect.stringContaining("KAFKA_DEAD_LETTER_ENABLED=false"));
@@ -285,7 +333,7 @@ describe("DomainEventConsumer", () => {
       random: () => 0.999_999,
     });
 
-    await broker.produce([encodeDomainEvent(TOPIC, event)]);
+    await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
     await waitFor(() => settled.length === 1);
 
     const started = Date.now();
@@ -297,7 +345,7 @@ describe("DomainEventConsumer", () => {
     const { bus, settled } = busThat(() => []);
     const consumer = await start(bus, { config: configWith({ KAFKA_CONSUMER_ENABLED: false }) });
 
-    await broker.produce([encodeDomainEvent(TOPIC, event)]);
+    await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(settled).toHaveLength(0);

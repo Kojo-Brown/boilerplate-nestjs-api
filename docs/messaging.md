@@ -367,11 +367,11 @@ turn it off.
   outbox relay makes the same trade with the same bus (`docs/outbox.md`, _Not
   per-handler retry_), and it is why `@OnDomainEvent` handlers have to be
   idempotent.
-- **Not schema-validated.** `event-name` is checked against the catalogue, but
-  the payload is trusted — the same position `PrismaOutboxStore` takes, and for
-  the same reason: there is no runtime schema for these payloads anywhere in the
-  repository, and inventing one here would be a second source of truth that can
-  drift from the first. Phase 10 item 3 closes it against a registry.
+- ~~**Not schema-validated.**~~ Closed. `event-name` is checked against the
+  catalogue and the payload against the JSON Schema registered for it, on the way
+  in and on the way out. A payload that does not conform is a `schema-invalid`
+  dead letter, ladder skipped, with the writer's and the reader's schema versions
+  in `dlt-error`. See `docs/schema-registry.md`.
 - **Not exactly-once.** Both halves of the pipeline deliver at least once and
   neither can be configured out of it. Kafka's transactional producer plus
   `read_committed` would give exactly-once _within_ Kafka; it would not make a

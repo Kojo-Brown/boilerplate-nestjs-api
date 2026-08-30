@@ -1,5 +1,7 @@
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
+import { SchemaValidationError } from "@/schema-registry";
+import { realEventContract } from "@/test-utils/event-contract";
 import { TransactionalOutbox } from "./transactional-outbox.service";
 
 describe("TransactionalOutbox", () => {
@@ -10,7 +12,7 @@ describe("TransactionalOutbox", () => {
   beforeEach(() => {
     store = new InMemoryOutboxStore();
     transactions = new InMemoryTransactionRunner();
-    outbox = new TransactionalOutbox(store);
+    outbox = new TransactionalOutbox(store, realEventContract());
   });
 
   const stage = (correlationId?: string) =>
@@ -69,6 +71,41 @@ describe("TransactionalOutbox", () => {
     expect(staged.occurredAt.getTime()).toBeLessThanOrEqual(after);
   });
 
+  describe("the schema contract", () => {
+    it("refuses a payload the event's schema does not accept", async () => {
+      // TypeScript has already had its say about this payload; it says nothing
+      // about a field that is `undefined` at runtime because a nullable column
+      // came back empty. Left to the relay, this is durable garbage — a row
+      // that fails to publish, retries, and dead-letters minutes later in a
+      // background poller, nowhere near the code that produced it.
+      await expect(
+        transactions.run((tx) =>
+          outbox.stage(tx, "user.registered", {
+            userId: "user-1",
+            email: "staged@example.test",
+            name: undefined as unknown as string,
+            provider: null,
+          }),
+        ),
+      ).rejects.toThrow(SchemaValidationError);
+    });
+
+    it("leaves no row behind when the payload is refused", async () => {
+      await expect(
+        transactions.run((tx) =>
+          outbox.stage(tx, "user.deleted", { userId: "user-1" } as unknown as {
+            userId: string;
+            email: string;
+          }),
+        ),
+      ).rejects.toThrow(SchemaValidationError);
+
+      // Thrown before the insert, so the caller's transaction fails and the
+      // operation the event would have announced rolls back with it.
+      expect(store.all()).toEqual([]);
+    });
+  });
+
   it("stages into the caller's unit of work rather than opening its own", async () => {
     const seen: string[] = [];
     const spy = {
@@ -79,7 +116,7 @@ describe("TransactionalOutbox", () => {
     };
 
     await transactions.run((tx) =>
-      new TransactionalOutbox(spy as never).stage(tx, "user.deleted", {
+      new TransactionalOutbox(spy as never, realEventContract()).stage(tx, "user.deleted", {
         userId: "user-1",
         email: "gone@example.test",
       }),

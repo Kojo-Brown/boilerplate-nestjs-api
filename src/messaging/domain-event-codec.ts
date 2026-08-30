@@ -4,8 +4,9 @@ import {
   type DomainEventPayloads,
   type StoredDomainEvent,
 } from "@/events";
+import { SchemaValidationError, type PayloadContract } from "@/schema-registry";
 import type { IncomingMessage, OutgoingMessage } from "./ports";
-import { UndecodableMessageError } from "./messaging.errors";
+import { SchemaContractViolationError, UndecodableMessageError } from "./messaging.errors";
 
 /**
  * What one domain event looks like on the wire, both directions.
@@ -20,6 +21,26 @@ export type EncodedDomainEvent = StoredDomainEvent & {
   readonly eventId: string;
   readonly occurredAt: Date;
   readonly correlationId: string | null;
+};
+
+/**
+ * What comes back off the wire: an event, plus the schema version the *writer*
+ * validated it against.
+ *
+ * `null` when the message carries no `event-schema-version` header, which is not
+ * an error and must not be: during the deploy that introduces schema validation,
+ * every message already in the topic was written by a producer that had no
+ * version to stamp. Rejecting those would dead-letter the entire retained log on
+ * upgrade — the schema registry's first act would be to destroy the history it
+ * exists to keep readable.
+ *
+ * The field is for diagnosis rather than dispatch. Nothing branches on it; the
+ * reader always validates against its own latest schema (see `EventContract`),
+ * and this is what turns a rejection into "written by v4, rejected by v2" in a
+ * dead letter instead of a mystery.
+ */
+export type DecodedDomainEvent = EncodedDomainEvent & {
+  readonly writerSchemaVersion: number | null;
 };
 
 /**
@@ -48,6 +69,20 @@ export const EVENT_HEADERS = {
   correlationId: "correlation-id",
   /** So a future encoding is a new value here rather than a guess at the far end. */
   contentType: "content-type",
+  /**
+   * Which version of the event's schema the producer validated against.
+   *
+   * A header rather than a prefix on `value`, which is where Confluent's clients
+   * put the schema id (a magic byte and four bytes of id). The wire format here
+   * is plain JSON on purpose — `kafka-console-consumer` prints it, `jq` reads
+   * it — and prefixing the body with binary would end that for the sake of five
+   * bytes. The cost is that a Confluent deserialiser cannot read this topic
+   * without being told where to look, which `docs/schema-registry.md` says.
+   *
+   * Absent on messages written before this header existed. See
+   * {@link DecodedDomainEvent.writerSchemaVersion} for why that is tolerated.
+   */
+  schemaVersion: "event-schema-version",
 } as const;
 
 export const EVENT_CONTENT_TYPE = "application/json";
@@ -102,12 +137,24 @@ export function partitionKeyFor(event: StoredDomainEvent): string {
  * which point that one moves to its own topic and gives up cross-type ordering
  * knowingly.
  */
-export function encodeDomainEvent(topic: string, event: EncodedDomainEvent): OutgoingMessage {
+export function encodeDomainEvent(
+  topic: string,
+  event: EncodedDomainEvent,
+  contract: PayloadContract,
+): OutgoingMessage {
+  // Throws `SchemaValidationError`, which is not caught here and should not be:
+  // a payload that does not match its own contract is this service's bug, and
+  // the caller is the outbox relay, which will leave the row unpublished and
+  // retry it. That is the right outcome — a producer must not be able to put
+  // bytes on a topic that its own consumers are obliged to dead-letter.
+  const schemaVersion = contract.validate(event.name, event.payload);
+
   const headers: Record<string, string> = {
     [EVENT_HEADERS.name]: event.name,
     [EVENT_HEADERS.id]: event.eventId,
     [EVENT_HEADERS.occurredAt]: event.occurredAt.toISOString(),
     [EVENT_HEADERS.contentType]: EVENT_CONTENT_TYPE,
+    [EVENT_HEADERS.schemaVersion]: schemaVersion.toString(),
   };
   // Omitted rather than sent empty: an absent header and a header whose value is
   // the empty string are different things on the wire, and `null` has no
@@ -130,14 +177,27 @@ export function encodeDomainEvent(topic: string, event: EncodedDomainEvent): Out
  * `name` is validated against the catalogue because a topic is not a type: the
  * header is a string somebody else wrote, and a build that has removed an event
  * — or a producer from another system writing to the same topic — must not be
- * able to push an unknown name onto the bus. `payload` is *not* validated, which
- * is the same position `PrismaOutboxStore` takes for the same reason: there is
- * no runtime schema for these payloads anywhere in the repository, and inventing
- * one here would be a second source of truth that can drift from the catalogue.
- * `SPEC.md` Phase 10 item 3 is where that gap closes, against a registry rather
- * than against a hand-written guess.
+ * able to push an unknown name onto the bus.
+ *
+ * `payload` is validated too, against the schema the registry holds for that
+ * name. It did not used to be, and the comment that stood here said why: there
+ * was no runtime schema anywhere in the repository, and a hand-written guess at
+ * one would have been a second source of truth free to drift from the catalogue.
+ * The registry is that missing source of truth, and it does not drift because
+ * `catalogue.spec.ts` fails when it does.
+ *
+ * The two failures are kept apart because they mean different things to whoever
+ * reads the dead-letter topic. `UndecodableMessageError` says the bytes are not
+ * a domain event at all — a foreign producer, a truncated value, a name from
+ * another system. {@link SchemaContractViolationError} says they are plainly one
+ * of ours and the payload has the wrong shape, which is a contract broken by a
+ * service that shares this topic. Both skip the retry ladder: neither becomes
+ * correct by being read again.
  */
-export function decodeDomainEvent(message: IncomingMessage): EncodedDomainEvent {
+export function decodeDomainEvent(
+  message: IncomingMessage,
+  contract: PayloadContract,
+): DecodedDomainEvent {
   function reject(reason: string): UndecodableMessageError {
     return new UndecodableMessageError(message.topic, message.partition, message.offset, reason);
   }
@@ -171,11 +231,49 @@ export function decodeDomainEvent(message: IncomingMessage): EncodedDomainEvent 
   }
 
   const correlationId = message.headers[EVENT_HEADERS.correlationId] ?? null;
+  const writerSchemaVersion = readWriterVersion(message, reject);
 
-  // The one cast in the module, and it is the honest one: `name` has been
-  // checked against the catalogue, but nothing has checked that the bytes
-  // alongside it are the payload that name implies — JSON carries no types and
-  // this repository has no runtime schema to check them against. See the note
-  // above; Phase 10 item 3 is what removes it.
-  return { name, payload, eventId, occurredAt, correlationId } as EncodedDomainEvent;
+  try {
+    contract.validate(name, payload);
+  } catch (caught: unknown) {
+    if (!(caught instanceof SchemaValidationError)) throw caught;
+    throw new SchemaContractViolationError(message, name, writerSchemaVersion, caught);
+  }
+
+  // The cast that used to be the honest hole in this module is now merely a
+  // limit of the type system: `name` has been checked against the catalogue and
+  // `payload` has been checked against that name's schema, but TypeScript cannot
+  // see that the two checks were about the same union member, so it will not
+  // collapse `name`/`payload` into one branch of `StoredDomainEvent` by itself.
+  return {
+    name,
+    payload,
+    eventId,
+    occurredAt,
+    correlationId,
+    writerSchemaVersion,
+  } as DecodedDomainEvent;
+}
+
+/**
+ * The producer's schema version, or `null` when it did not send one.
+ *
+ * A header that is present and *not* a version is a different matter from one
+ * that is absent: absent means "written before this existed", where `v2` or an
+ * empty string means a producer is writing something this format does not
+ * define, and guessing what it meant is how a decoder ends up trusting a number
+ * it invented.
+ */
+function readWriterVersion(
+  message: IncomingMessage,
+  reject: (reason: string) => UndecodableMessageError,
+): number | null {
+  const raw = message.headers[EVENT_HEADERS.schemaVersion];
+  if (raw === undefined) return null;
+
+  const version = Number(raw);
+  if (!Number.isInteger(version) || version < 1) {
+    throw reject(`"${EVENT_HEADERS.schemaVersion}" is not a version number: ${raw}`);
+  }
+  return version;
 }

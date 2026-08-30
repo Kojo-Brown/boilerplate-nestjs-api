@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import type { OutboxPublisher, OutboxRecord } from "@/outbox";
+import { EventContract } from "@/schema-registry";
 import { MESSAGE_BROKER, type MessageBroker } from "./ports";
 import { DOMAIN_EVENTS_TOPIC } from "./messaging.tokens";
 import { encodeDomainEvent } from "./domain-event-codec";
@@ -36,6 +37,7 @@ export class BrokerOutboxPublisher implements OutboxPublisher {
   constructor(
     @Inject(MESSAGE_BROKER) private readonly broker: MessageBroker,
     @Inject(DOMAIN_EVENTS_TOPIC) private readonly topic: string,
+    private readonly contract: EventContract,
   ) {
     // Named for the backend, not the class: this string ends up in the relay's
     // startup line and in dead-letter rows, where "broker" would leave an
@@ -49,7 +51,13 @@ export class BrokerOutboxPublisher implements OutboxPublisher {
     // batch send would make one broker rejection fail rows that were written.
     // The per-message cost is a round trip the relay is already paying inside
     // the transaction it holds.
-    await this.broker.produce([encodeDomainEvent(this.topic, record)]);
+    // `encodeDomainEvent` validates the payload against its contract before it
+    // writes a byte, and throws if it does not conform. The relay treats that
+    // exactly as it treats a broker rejection — the row stays unpublished and is
+    // retried — which is the right shape for a failure that a deploy fixes and a
+    // retry does not: the row is still there afterwards, rather than having been
+    // put on a topic every consumer is obliged to dead-letter.
+    await this.broker.produce([encodeDomainEvent(this.topic, record, this.contract)]);
     this.logger.debug(`Published ${record.name} (${record.eventId}) to ${this.topic}`);
   }
 }

@@ -10,6 +10,7 @@ import {
   encodeDomainEvent,
 } from "@/messaging";
 import type { IncomingMessage, MessageBroker } from "@/messaging";
+import { EventContract } from "@/schema-registry";
 
 /**
  * The whole pipeline, through the wiring a deployment actually runs.
@@ -32,6 +33,12 @@ describe("Messaging (e2e)", () => {
   let emails: RecordingEmailQueue;
   let drainOutbox: TestApp["drainOutbox"];
   let broker: MessageBroker;
+  /**
+   * Taken from the container rather than built here, so these produce calls go
+   * through the very contract the application validates with — a registry the
+   * app failed to wire would fail this suite rather than being papered over.
+   */
+  let contract: EventContract;
 
   const previous = {
     publisher: process.env["OUTBOX_PUBLISHER"],
@@ -50,6 +57,7 @@ describe("Messaging (e2e)", () => {
     emails = fixture.emails;
     drainOutbox = fixture.drainOutbox;
     broker = app.get<MessageBroker>(MESSAGE_BROKER);
+    contract = app.get(EventContract);
   });
 
   afterAll(async () => {
@@ -95,18 +103,22 @@ describe("Messaging (e2e)", () => {
     // subscribed to the topic — a `DomainEventConsumer` that had quietly been
     // wired to the in-process bus would not see this at all.
     await broker.produce([
-      encodeDomainEvent(process.env["KAFKA_DOMAIN_EVENTS_TOPIC"] ?? "domain-events", {
-        name: "user.registered",
-        payload: {
-          userId: "direct-1",
-          email: "direct@example.test",
-          name: "Direct",
-          provider: null,
+      encodeDomainEvent(
+        process.env["KAFKA_DOMAIN_EVENTS_TOPIC"] ?? "domain-events",
+        {
+          name: "user.registered",
+          payload: {
+            userId: "direct-1",
+            email: "direct@example.test",
+            name: "Direct",
+            provider: null,
+          },
+          eventId: "66666666-6666-4666-8666-666666666666",
+          occurredAt: new Date(),
+          correlationId: null,
         },
-        eventId: "66666666-6666-4666-8666-666666666666",
-        occurredAt: new Date(),
-        correlationId: null,
-      }),
+        contract,
+      ),
     ]);
 
     await waitFor(() => emails.enqueued.some((entry) => entry.job === "send-welcome"));
@@ -133,18 +145,22 @@ describe("Messaging (e2e)", () => {
       },
     });
 
-    const good = encodeDomainEvent(topic, {
-      name: "user.registered",
-      payload: {
-        userId: "poison-1",
-        email: "behind-the-poison@example.test",
-        name: "Behind",
-        provider: null,
+    const good = encodeDomainEvent(
+      topic,
+      {
+        name: "user.registered",
+        payload: {
+          userId: "poison-1",
+          email: "behind-the-poison@example.test",
+          name: "Behind",
+          provider: null,
+        },
+        eventId: "77777777-7777-4777-8777-777777777777",
+        occurredAt: new Date(),
+        correlationId: null,
       },
-      eventId: "77777777-7777-4777-8777-777777777777",
-      occurredAt: new Date(),
-      correlationId: null,
-    });
+      contract,
+    );
 
     await broker.produce([
       // An event name no build of this service knows. Same key as the message
@@ -165,6 +181,71 @@ describe("Messaging (e2e)", () => {
     await waitFor(() =>
       emails.enqueued.some(
         (entry) => (entry.data as { to?: string }).to === "behind-the-poison@example.test",
+      ),
+    );
+
+    await reader.stop();
+  });
+
+  it("dead-letters a payload that violates the schema contract, through the real wiring", async () => {
+    const topic = process.env["KAFKA_DOMAIN_EVENTS_TOPIC"] ?? "domain-events";
+    const deadLetterTopic = app.get<string | null>(DEAD_LETTER_TOPIC);
+
+    const dead: IncomingMessage[] = [];
+    const reader = await broker.subscribe({
+      groupId: "e2e-schema-dlt-reader",
+      topics: [deadLetterTopic!],
+      fromBeginning: true,
+      handle: async (message) => {
+        dead.push(message);
+      },
+    });
+
+    const wellFormed = encodeDomainEvent(
+      topic,
+      {
+        name: "user.registered",
+        payload: {
+          userId: "contract-1",
+          email: "behind-the-violation@example.test",
+          name: "Behind",
+          provider: null,
+        },
+        eventId: "88888888-8888-4888-8888-888888888888",
+        occurredAt: new Date(),
+        correlationId: null,
+      },
+      contract,
+    );
+
+    await broker.produce([
+      // Our headers and our event name, with a payload missing `email` — the
+      // shape a producer that skipped a schema version would emit. This is the
+      // half the unit suite cannot reach: that the registry the application
+      // wired at boot is the one the running consumer validates with.
+      {
+        ...wellFormed,
+        value: Buffer.from(JSON.stringify({ userId: "contract-1" }), "utf8"),
+      },
+      wellFormed,
+    ]);
+
+    // Searched rather than indexed: this reader starts from the beginning of a
+    // topic the previous spec already dead-lettered to, so position 0 is that
+    // spec's message and not this one's.
+    const violation = (): IncomingMessage | undefined =>
+      dead.find((m) => m.headers[DEAD_LETTER_HEADERS.reason] === "schema-invalid");
+    await waitFor(() => violation() !== undefined);
+    expect(violation()!.headers[DEAD_LETTER_HEADERS.errorType]).toBe(
+      "SchemaContractViolationError",
+    );
+    expect(violation()!.headers[DEAD_LETTER_HEADERS.error]).toMatch(/email/);
+    expect(violation()!.headers[DEAD_LETTER_HEADERS.originTopic]).toBe(topic);
+
+    // And the partition moved on.
+    await waitFor(() =>
+      emails.enqueued.some(
+        (entry) => (entry.data as { to?: string }).to === "behind-the-violation@example.test",
       ),
     );
 

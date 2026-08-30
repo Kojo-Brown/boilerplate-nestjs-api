@@ -9,6 +9,8 @@ import { PreconditionRequiredException, UNCONDITIONAL } from "@/common/concurren
 import type { ExpectedVersion } from "@/common/concurrency";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
+import { EventContract } from "@/schema-registry";
+import { realEventContract } from "@/test-utils/event-contract";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { InMemoryUsersRepository } from "@/test-utils/in-memory-users.repository";
@@ -64,6 +66,10 @@ describe("UsersService", () => {
         UsersService,
         UserAccessPolicy,
         TransactionalOutbox,
+        // The real contract over the real catalogue: staging now checks the
+        // payload against its schema, and a permissive stub here would stop
+        // these suites noticing an event they emit that no consumer can read.
+        { provide: EventContract, useFactory: realEventContract },
         { provide: USER_READER, useValue: store },
         { provide: USER_WRITER, useValue: store },
         { provide: USER_PREFERENCES_STORE, useValue: store },

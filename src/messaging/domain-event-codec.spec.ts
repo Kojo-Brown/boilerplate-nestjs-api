@@ -8,9 +8,14 @@ import {
   partitionKeyFor,
   type EncodedDomainEvent,
 } from "./domain-event-codec";
-import { UndecodableMessageError } from "./messaging.errors";
+import { SchemaValidationError } from "@/schema-registry";
+import { realEventContract } from "@/test-utils/event-contract";
+import { SchemaContractViolationError, UndecodableMessageError } from "./messaging.errors";
 
 const TOPIC = "domain-events";
+
+/** The real catalogue: every encode and decode below goes through its contracts. */
+const contract = realEventContract();
 
 const registered: EncodedDomainEvent = {
   name: "user.registered",
@@ -22,7 +27,7 @@ const registered: EncodedDomainEvent = {
 
 /** An `IncomingMessage` built from what `encodeDomainEvent` produced. */
 function roundTrip(event: EncodedDomainEvent, overrides: Partial<IncomingMessage> = {}) {
-  const outgoing = encodeDomainEvent(TOPIC, event);
+  const outgoing = encodeDomainEvent(TOPIC, event, contract);
   return {
     topic: outgoing.topic,
     partition: 0,
@@ -71,7 +76,7 @@ describe("partitionKeyFor", () => {
 
 describe("encodeDomainEvent", () => {
   it("puts metadata in headers and the payload in the value", () => {
-    const message = encodeDomainEvent(TOPIC, registered);
+    const message = encodeDomainEvent(TOPIC, registered, contract);
 
     expect(message.topic).toBe(TOPIC);
     expect(message.key).toBe("user-1");
@@ -81,21 +86,43 @@ describe("encodeDomainEvent", () => {
       [EVENT_HEADERS.occurredAt]: "2026-08-27T00:00:00.000Z",
       [EVENT_HEADERS.correlationId]: "req-7",
       [EVENT_HEADERS.contentType]: EVENT_CONTENT_TYPE,
+      [EVENT_HEADERS.schemaVersion]: "1",
     });
     expect(JSON.parse(message.value.toString("utf8"))).toEqual(registered.payload);
+  });
+
+  it("stamps the version of the schema that validated the payload", () => {
+    const message = encodeDomainEvent(TOPIC, registered, contract);
+    expect(message.headers[EVENT_HEADERS.schemaVersion]).toBe(
+      contract.readerVersion("user.registered").toString(),
+    );
+  });
+
+  it("refuses to encode a payload that violates its own contract", () => {
+    // A producer must not be able to put bytes on a topic that its own
+    // consumers are then obliged to dead-letter. The relay treats this like a
+    // broker rejection: the row stays unpublished and is retried, so a deploy
+    // can fix it and the event is still there.
+    expect(() =>
+      encodeDomainEvent(
+        TOPIC,
+        { ...registered, payload: { ...registered.payload, userId: 7 } } as never,
+        contract,
+      ),
+    ).toThrow(SchemaValidationError);
   });
 
   it("omits the correlation header rather than sending it empty", () => {
     // An absent header and a header whose value is "" are different things on
     // the wire, and `null` has no spelling in a bytes-to-bytes map.
-    const message = encodeDomainEvent(TOPIC, { ...registered, correlationId: null });
+    const message = encodeDomainEvent(TOPIC, { ...registered, correlationId: null }, contract);
     expect(EVENT_HEADERS.correlationId in message.headers).toBe(false);
   });
 });
 
 describe("decodeDomainEvent", () => {
   it("round-trips an encoded event", () => {
-    const decoded = decodeDomainEvent(roundTrip(registered));
+    const decoded = decodeDomainEvent(roundTrip(registered), contract);
 
     expect(decoded.name).toBe("user.registered");
     expect(decoded.payload).toEqual(registered.payload);
@@ -105,7 +132,7 @@ describe("decodeDomainEvent", () => {
   });
 
   it("reads a missing correlation header back as null", () => {
-    const decoded = decodeDomainEvent(roundTrip({ ...registered, correlationId: null }));
+    const decoded = decodeDomainEvent(roundTrip({ ...registered, correlationId: null }), contract);
     expect(decoded.correlationId).toBeNull();
   });
 
@@ -124,7 +151,9 @@ describe("decodeDomainEvent", () => {
       else headers[key] = value;
     }
 
-    expect(() => decodeDomainEvent({ ...message, headers })).toThrow(UndecodableMessageError);
+    expect(() => decodeDomainEvent({ ...message, headers }, contract)).toThrow(
+      UndecodableMessageError,
+    );
   });
 
   it.each([
@@ -134,9 +163,9 @@ describe("decodeDomainEvent", () => {
     ["is JSON null", "null"],
   ])("rejects a message whose value %s", (_description, body) => {
     const message = roundTrip(registered);
-    expect(() => decodeDomainEvent({ ...message, value: Buffer.from(body, "utf8") })).toThrow(
-      UndecodableMessageError,
-    );
+    expect(() =>
+      decodeDomainEvent({ ...message, value: Buffer.from(body, "utf8") }, contract),
+    ).toThrow(UndecodableMessageError);
   });
 
   it("names the coordinates of the message it could not read", () => {
@@ -146,6 +175,107 @@ describe("decodeDomainEvent", () => {
 
     // The message is the only handle an operator has on a record that has been
     // committed past, so the topic, partition and offset have to be in it.
-    expect(() => decodeDomainEvent({ ...message, headers })).toThrow(/t\/4@912/);
+    expect(() => decodeDomainEvent({ ...message, headers }, contract)).toThrow(/t\/4@912/);
+  });
+
+  describe("the schema contract", () => {
+    /** A message whose headers are ours and whose body is whatever is passed. */
+    function withPayload(payload: unknown): IncomingMessage {
+      const message = roundTrip(registered);
+      return { ...message, value: Buffer.from(JSON.stringify(payload), "utf8") };
+    }
+
+    it("rejects a payload that does not match the schema for its event", () => {
+      expect(() => decodeDomainEvent(withPayload({ userId: "u1" }), contract)).toThrow(
+        SchemaContractViolationError,
+      );
+    });
+
+    it("keeps a contract violation apart from an undecodable message", () => {
+      // Both skip the retry ladder and both end on the dead-letter topic, but
+      // they belong to different owners: "stop that system writing to our
+      // topic" and "that service skipped a schema version" are different pages.
+      const violation = (() => {
+        try {
+          decodeDomainEvent(withPayload({ userId: "u1" }), contract);
+        } catch (caught: unknown) {
+          return caught;
+        }
+        throw new Error("expected a rejection");
+      })();
+
+      expect(violation).toBeInstanceOf(SchemaContractViolationError);
+      expect(violation).not.toBeInstanceOf(UndecodableMessageError);
+    });
+
+    it("reports the writer's version and the reader's", () => {
+      let thrown: SchemaContractViolationError | undefined;
+      try {
+        decodeDomainEvent(withPayload({ userId: "u1" }), contract);
+      } catch (caught: unknown) {
+        thrown = caught as SchemaContractViolationError;
+      }
+
+      expect(thrown!.subject).toBe("user.registered");
+      expect(thrown!.writerVersion).toBe(1);
+      expect(thrown!.readerVersion).toBe(contract.readerVersion("user.registered"));
+      expect(thrown!.message).toMatch(/written by v1, rejected by v1/);
+    });
+
+    it("reads the writer's schema version back off the wire", () => {
+      const decoded = decodeDomainEvent(roundTrip(registered), contract);
+      expect(decoded.writerSchemaVersion).toBe(1);
+    });
+
+    it("tolerates a message written before the version header existed", () => {
+      // The deploy that introduces schema validation finds a topic full of
+      // messages no producer stamped. Rejecting those would dead-letter the
+      // entire retained log on upgrade — the registry's first act would be to
+      // destroy the history it exists to keep readable.
+      const message = roundTrip(registered);
+      const headers = { ...message.headers };
+      delete headers[EVENT_HEADERS.schemaVersion];
+
+      const decoded = decodeDomainEvent({ ...message, headers }, contract);
+      expect(decoded.writerSchemaVersion).toBeNull();
+      expect(decoded.payload).toEqual(registered.payload);
+    });
+
+    it.each(["", "v2", "0", "1.5"])(
+      "rejects a version header that is present and not a version: %p",
+      (value) => {
+        // Absent means "written before this existed". Present and unparseable
+        // means a producer is writing something this format does not define,
+        // and guessing what it meant is how a decoder trusts a number it
+        // invented.
+        const message = roundTrip(registered);
+        const headers = { ...message.headers, [EVENT_HEADERS.schemaVersion]: value };
+        expect(() => decodeDomainEvent({ ...message, headers }, contract)).toThrow(
+          UndecodableMessageError,
+        );
+      },
+    );
+
+    it("accepts a writer version newer than anything this build knows", () => {
+      // What FULL_TRANSITIVE compatibility buys: a consumer mid-rollout reads
+      // messages from producers ahead of it, and validates them against its own
+      // schema rather than fetching one it has never seen.
+      const message = roundTrip(registered);
+      const headers = { ...message.headers, [EVENT_HEADERS.schemaVersion]: "99" };
+
+      const decoded = decodeDomainEvent({ ...message, headers }, contract);
+      expect(decoded.writerSchemaVersion).toBe(99);
+      expect(decoded.payload).toEqual(registered.payload);
+    });
+
+    it("accepts a payload carrying a field this build has never heard of", () => {
+      // The open content model on the real path. A producer must be able to add
+      // an optional field and roll out ahead of its consumers.
+      const decoded = decodeDomainEvent(
+        withPayload({ ...registered.payload, locale: "en-GB" }),
+        contract,
+      );
+      expect(decoded.payload).toEqual({ ...registered.payload, locale: "en-GB" });
+    });
   });
 });

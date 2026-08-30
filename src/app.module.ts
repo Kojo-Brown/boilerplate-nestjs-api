@@ -10,6 +10,7 @@ import { AspectsModule } from "./common/aspects";
 import { EventsModule } from "./events";
 import { MessagingModule } from "./messaging";
 import { OutboxModule } from "./outbox";
+import { SchemaRegistryModule } from "./schema-registry";
 import { DiScopesModule } from "./di-scopes";
 import { UsersModule } from "./users/users.module";
 import { AuthModule } from "./auth/auth.module";
@@ -42,6 +43,11 @@ import { envSchema } from "./config/env.schema";
     // Global: any module publishes through `DomainEventBus`, and subscribers
     // are discovered wherever they are declared.
     EventsModule,
+    // Global, and before both MessagingModule and OutboxModule: each takes
+    // `EventContract` to check a payload against the schema registered for its
+    // event — the outbox before the row is written, the codec on and off the
+    // wire.
+    SchemaRegistryModule,
     // Global, and after EventsModule: `DomainEventConsumer` puts what it reads
     // off the topic onto `DomainEventBus`. Before OutboxModule, which takes
     // `BrokerOutboxPublisher` from here when `OUTBOX_PUBLISHER=broker`.

@@ -27,6 +27,57 @@ export class UndecodableMessageError extends Error {
 }
 
 /**
+ * A message is recognisably one of ours and its payload does not match the
+ * contract for that event.
+ *
+ * Deliberately *not* an `UndecodableMessageError`, even though both skip the
+ * retry ladder and both end on the dead-letter topic. An undecodable message is
+ * usually somebody else's bytes on our topic and the answer is to stop them
+ * writing to it. A contract violation is a producer of *this* event emitting the
+ * wrong shape — a service that skipped a schema version, or one that added a
+ * required field without going through the compatibility gate — and the answer
+ * is to fix that producer. An operator reading `dlt-reason` should not have to
+ * open the payload to tell those apart.
+ *
+ * The versions are what make the report actionable. `written by v4, rejected by
+ * v2` names the replica that is behind; `written by v2, rejected by v2` means
+ * the producer is emitting something its own schema forbids, which the outbox
+ * should have refused at `stage` and is a much more interesting failure.
+ */
+export class SchemaContractViolationError extends Error {
+  readonly topic: string;
+  readonly partition: number;
+  readonly offset: string;
+  /** The reader schema's version — the one that rejected the payload. */
+  readonly readerVersion: number;
+  /** Ajv's findings, one per offending field. */
+  readonly violations: readonly string[];
+
+  constructor(
+    origin: { readonly topic: string; readonly partition: number; readonly offset: string },
+    readonly subject: string,
+    readonly writerVersion: number | null,
+    // Structural rather than `SchemaValidationError`, so this module stays
+    // independent of the schema registry's classes. `describedBy` is the whole
+    // of what is needed and the concrete error satisfies it.
+    describedBy: { readonly version: number; readonly violations: readonly string[] },
+  ) {
+    super(
+      `${subject} at ${origin.topic}/${origin.partition}@${origin.offset} violates its schema ` +
+        `contract — written by ` +
+        `${writerVersion === null ? "an unversioned producer" : `v${writerVersion}`}, ` +
+        `rejected by v${describedBy.version}: ${describedBy.violations.join("; ")}`,
+    );
+    this.name = "SchemaContractViolationError";
+    this.topic = origin.topic;
+    this.partition = origin.partition;
+    this.offset = origin.offset;
+    this.readerVersion = describedBy.version;
+    this.violations = describedBy.violations;
+  }
+}
+
+/**
  * A subscription did not join its consumer group before the deadline.
  *
  * Joining is not instant — the coordinator has to receive the join request, run

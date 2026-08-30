@@ -8,6 +8,8 @@ import { UsersService } from "@/users/users.service";
 import { REFRESH_TOKEN_STORE } from "./ports";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
+import { EventContract } from "@/schema-registry";
+import { realEventContract } from "@/test-utils/event-contract";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { UNCONDITIONAL } from "@/common/concurrency";
@@ -96,6 +98,10 @@ describe("AuthService", () => {
       providers: [
         AuthService,
         TransactionalOutbox,
+        // The real contract over the real catalogue: staging now checks the
+        // payload against its schema, and a permissive stub here would stop
+        // these suites noticing an event they emit that no consumer can read.
+        { provide: EventContract, useFactory: realEventContract },
         { provide: UsersService, useValue: mockUsersService },
         { provide: JwtService, useValue: mockJwtService },
         { provide: ConfigService, useValue: mockConfigService },

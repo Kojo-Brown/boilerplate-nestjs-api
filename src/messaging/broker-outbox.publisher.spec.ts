@@ -2,9 +2,11 @@ import type { OutboxRecord } from "@/outbox";
 import { InMemoryBroker } from "./in-memory-broker";
 import { BrokerOutboxPublisher } from "./broker-outbox.publisher";
 import { EVENT_HEADERS, decodeDomainEvent } from "./domain-event-codec";
+import { realEventContract } from "@/test-utils/event-contract";
 import type { IncomingMessage } from "./ports";
 
 const TOPIC = "domain-events";
+const contract = realEventContract();
 
 const record: OutboxRecord = {
   id: "row-1",
@@ -22,7 +24,7 @@ describe("BrokerOutboxPublisher", () => {
 
   beforeEach(async () => {
     broker = new InMemoryBroker({ defaultPartitions: 1 });
-    publisher = new BrokerOutboxPublisher(broker, TOPIC);
+    publisher = new BrokerOutboxPublisher(broker, TOPIC, contract);
     await broker.connect();
   });
 
@@ -51,7 +53,7 @@ describe("BrokerOutboxPublisher", () => {
     await publisher.publish(record);
     await waitFor(() => seen.length === 1);
 
-    const decoded = decodeDomainEvent(seen[0]!);
+    const decoded = decodeDomainEvent(seen[0]!, contract);
     expect(decoded.name).toBe("user.registered");
     expect(decoded.payload).toEqual(record.payload);
     // The identity minted inside the transaction, unchanged. It is the only

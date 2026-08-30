@@ -23,12 +23,13 @@ export {
   encodeDomainEvent,
   partitionKeyFor,
 } from "./domain-event-codec";
-export type { EncodedDomainEvent } from "./domain-event-codec";
+export type { DecodedDomainEvent, EncodedDomainEvent } from "./domain-event-codec";
 export {
   BrokerClosedError,
   DeadLetterPublishError,
   HandlerTimeoutError,
   LadderAbortedError,
+  SchemaContractViolationError,
   SubscriptionTimeoutError,
   UndecodableMessageError,
 } from "./messaging.errors";

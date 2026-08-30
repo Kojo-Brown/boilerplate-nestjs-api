@@ -44,6 +44,8 @@
     "@nestjs/throttler": "^6.4.0",
     "@prisma/adapter-pg": "7.9.1",
     "@prisma/client": "^7.8.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "argon2": "^0.43.0",
     "bullmq": "^5.0.0",
     "cache-manager": "^7.2.9",

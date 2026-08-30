@@ -3,15 +3,29 @@ import type { IncomingMessage, OutgoingMessage } from "./ports";
 /**
  * Why a message was given up on.
  *
- * Two values because there are two genuinely different failures, and an operator
- * reading the dead-letter topic needs to tell them apart before deciding what to
- * do. `undecodable` means the bytes are not a domain event this build
- * recognises — nothing downstream ever ran, and redriving the message unchanged
- * will fail the same way. `handler-failed` means the event was understood and a
- * subscriber kept rejecting it — the payload is fine, something it depends on
- * was not, and redriving once that is fixed is exactly the right move.
+ * Three values because there are three genuinely different failures, and an
+ * operator reading the dead-letter topic needs to tell them apart before
+ * deciding what to do.
+ *
+ * - `undecodable` — the bytes are not a domain event this build recognises.
+ *   Nothing downstream ever ran, and redriving the message unchanged will fail
+ *   the same way. Usually a foreign producer on the topic.
+ * - `schema-invalid` — the bytes *are* one of our events and the payload does
+ *   not match the contract for it. Redriving is equally pointless, but the fix
+ *   is somewhere else entirely: a producer is emitting a shape the registry does
+ *   not describe, and `dlt-error` names the writer's schema version and the
+ *   reader's.
+ * - `handler-failed` — the event was understood and a subscriber kept rejecting
+ *   it. The payload is fine, something it depends on was not, and redriving once
+ *   that is fixed is exactly the right move.
+ *
+ * The first two are separated rather than folded together because the *owner* of
+ * the problem differs. "Stop that system writing to our topic" and "that
+ * service skipped a schema version" are different pages, and having to
+ * deserialise the payload to work out which is not a reasonable thing to ask of
+ * whoever is on call.
  */
-export type DeadLetterReason = "undecodable" | "handler-failed";
+export type DeadLetterReason = "undecodable" | "schema-invalid" | "handler-failed";
 
 /**
  * Headers added to a message on its way to the dead-letter topic.

@@ -148,6 +148,13 @@ docker-compose up        # postgres + redis + api
   why the whole catalogue shares one topic keyed by the aggregate, why the
   retry ladder holds its partition instead of hopping onto retry topics, and
   what a poison message carries with it to the dead-letter topic.
+- [docs/schema-registry.md](./docs/schema-registry.md) — event schema contracts:
+  why a TypeScript interface stops at the process boundary, why a subject is the
+  event name rather than the topic, what FULL _transitive_ compatibility rules
+  out and why a rolling deploy needs both directions, why every object is an open
+  content model, why the schema profile refuses the keywords it cannot reason
+  about, and how the JSON catalogue is kept from drifting away from the
+  TypeScript one.
 
 ## Testing
 

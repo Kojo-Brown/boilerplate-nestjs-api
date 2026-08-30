@@ -2,6 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import type { TransactionContext } from "@/common/prisma/transaction.port";
 import type { DomainEventName, DomainEventPayloads } from "@/events";
+import { EventContract } from "@/schema-registry";
 import type { NewOutboxEvent } from "./outbox-record";
 import { OUTBOX_STORE, type OutboxStore } from "./ports";
 
@@ -44,7 +45,10 @@ export interface StagedEvent {
  */
 @Injectable()
 export class TransactionalOutbox {
-  constructor(@Inject(OUTBOX_STORE) private readonly store: OutboxStore) {}
+  constructor(
+    @Inject(OUTBOX_STORE) private readonly store: OutboxStore,
+    private readonly contract: EventContract,
+  ) {}
 
   async stage<K extends DomainEventName>(
     tx: TransactionContext,
@@ -52,6 +56,18 @@ export class TransactionalOutbox {
     payload: DomainEventPayloads[K],
     context: StageContext = {},
   ): Promise<StagedEvent> {
+    // Checked here, before the row exists, and that placement is the point.
+    // TypeScript has already had its say about this payload, but it says nothing
+    // about a field that is `undefined` at runtime because a nullable column
+    // came back empty, or a value widened through an `unknown` on its way in.
+    // Left to the relay, such an event is durable garbage: a row that fails to
+    // publish, retries on its ladder, and is eventually dead-lettered — with the
+    // failure surfacing in a background poller, minutes later, nowhere near the
+    // code that produced it. Throwing here fails the caller's transaction, so
+    // the operation and the event it would have announced roll back together and
+    // the stack trace points at the bug.
+    this.contract.validate(name, payload);
+
     const event = {
       eventId: randomUUID(),
       name,

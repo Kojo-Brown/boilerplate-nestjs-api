@@ -112,7 +112,7 @@ export class InMemoryPrismaService {
         password: null,
         name: null,
         version: 0,
-        ...args.data,
+        ...provided(args.data),
       };
       this._users.set(user.id, user);
       return Promise.resolve(user);
@@ -216,4 +216,31 @@ export class InMemoryPrismaService {
   reset() {
     this._users.clear();
   }
+}
+
+/**
+ * `data` with its `undefined` values dropped.
+ *
+ * Prisma's rule, and the fake has to share it: `undefined` in a `data` object
+ * means *not provided*, so a nullable column left unset is stored as NULL and
+ * read back as `null`. Spreading the caller's object straight over the defaults
+ * instead lets an explicit `undefined` overwrite that `null` — which is not a
+ * value any Prisma client would ever return, and not a value any TypeScript
+ * signature in this repository admits either.
+ *
+ * Found by the event schema contract: `AuthService` stages `user.registered`
+ * with `name: user.name`, registration without a name produced `name:
+ * undefined` here where Postgres produces `null`, and the contract rejected a
+ * payload that is correct against a real database. The divergence was harmless
+ * only for as long as nothing looked.
+ */
+type Provided<T> = { [K in keyof T]: Exclude<T[K], undefined> };
+
+function provided<T extends object>(data: T): Provided<T> {
+  // The cast is `Object.fromEntries`'s doing — it types every result as
+  // `Record<string, unknown>` — not a claim about the filter, which only ever
+  // removes keys whose value was `undefined`.
+  return Object.fromEntries(
+    Object.entries(data).filter(([, value]) => value !== undefined),
+  ) as Provided<T>;
 }

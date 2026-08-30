@@ -3,14 +3,15 @@ import { ConfigService } from "@nestjs/config";
 import type { BackoffPolicy } from "@/common/backoff";
 import type { Env } from "@/config/env.schema";
 import { DomainEventBus } from "@/events";
+import { EventContract } from "@/schema-registry";
 import { MESSAGE_BROKER, type IncomingMessage, type MessageBroker } from "./ports";
 import { DEAD_LETTER_JITTER, DOMAIN_EVENTS_TOPIC } from "./messaging.tokens";
 import { decodeDomainEvent } from "./domain-event-codec";
-import { UndecodableMessageError } from "./messaging.errors";
+import { SchemaContractViolationError, UndecodableMessageError } from "./messaging.errors";
 import { DeadLetterQueue } from "./dead-letter-queue.service";
 import { runRetryLadder } from "./retry-ladder";
 import type { DeadLetterReason } from "./dead-letter";
-import type { EncodedDomainEvent } from "./domain-event-codec";
+import type { DecodedDomainEvent } from "./domain-event-codec";
 
 /**
  * The consumer half of Phase 10: reads the domain-event topic and puts what it
@@ -85,6 +86,7 @@ export class DomainEventConsumer {
     @Inject(DOMAIN_EVENTS_TOPIC) private readonly topic: string,
     private readonly bus: DomainEventBus,
     private readonly deadLetters: DeadLetterQueue,
+    private readonly contract: EventContract,
     config: ConfigService<Env, true>,
     @Optional() @Inject(DEAD_LETTER_JITTER) private readonly random: () => number = Math.random,
   ) {
@@ -148,10 +150,17 @@ export class DomainEventConsumer {
   }
 
   private async handle(message: IncomingMessage): Promise<void> {
-    let decoded: EncodedDomainEvent;
+    let decoded: DecodedDomainEvent;
     try {
-      decoded = decodeDomainEvent(message);
+      decoded = decodeDomainEvent(message, this.contract);
     } catch (caught: unknown) {
+      // Both skip the ladder for the same reason and are reported separately for
+      // a different one: nothing about either becomes true on a second read, but
+      // the two failures belong to different owners. See `DeadLetterReason`.
+      if (caught instanceof SchemaContractViolationError) {
+        await this.giveUp(message, "schema-invalid", 1, caught);
+        return;
+      }
       if (!(caught instanceof UndecodableMessageError)) throw caught;
       // Straight to the dead-letter topic, ladder skipped. One "attempt" is
       // recorded because one was made: the decode itself.

@@ -570,3 +570,49 @@ describe("envSchema — dead-letter topic", () => {
     expect(env.KAFKA_DEAD_LETTER_TOPIC).toBe("acme.events.parking-lot");
   });
 });
+
+describe("envSchema — server-sent events", () => {
+  it("defaults every SSE setting to the documented value", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.SSE_HEARTBEAT_INTERVAL_MS).toBe(15_000);
+    expect(env.SSE_REPLAY_BUFFER_SIZE).toBe(1_024);
+    expect(env.SSE_MAX_CONNECTIONS).toBe(1_000);
+    expect(env.SSE_RETRY_HINT_MS).toBe(3_000);
+  });
+
+  it("coerces the numeric settings out of the strings an environment supplies", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      SSE_HEARTBEAT_INTERVAL_MS: "5000",
+      SSE_REPLAY_BUFFER_SIZE: "64",
+      SSE_MAX_CONNECTIONS: "10",
+      SSE_RETRY_HINT_MS: "1000",
+    });
+
+    expect(env.SSE_HEARTBEAT_INTERVAL_MS).toBe(5_000);
+    expect(env.SSE_REPLAY_BUFFER_SIZE).toBe(64);
+    expect(env.SSE_MAX_CONNECTIONS).toBe(10);
+    expect(env.SSE_RETRY_HINT_MS).toBe(1_000);
+  });
+
+  /**
+   * `ReplayBuffer` throws a `RangeError` from its constructor on anything but a
+   * positive integer, and the hub builds one at boot — so an invalid value here
+   * would take the process down with a stack trace from a data structure rather
+   * than a message naming the variable. Catching it in the schema is the
+   * difference between "SSE_REPLAY_BUFFER_SIZE must be a positive integer" and
+   * "RangeError: ReplayBuffer capacity".
+   */
+  it.each([
+    ["SSE_HEARTBEAT_INTERVAL_MS", "0"],
+    ["SSE_REPLAY_BUFFER_SIZE", "0"],
+    ["SSE_REPLAY_BUFFER_SIZE", "-1"],
+    ["SSE_REPLAY_BUFFER_SIZE", "1.5"],
+    ["SSE_MAX_CONNECTIONS", "0"],
+    ["SSE_RETRY_HINT_MS", "-1"],
+    ["SSE_HEARTBEAT_INTERVAL_MS", "not-a-number"],
+  ])("refuses %s=%s at boot rather than at the first connection", (key, value) => {
+    expect(() => envSchema.parse({ ...BASE_ENV, [key]: value })).toThrow();
+  });
+});

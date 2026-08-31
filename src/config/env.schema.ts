@@ -417,6 +417,51 @@ export const envSchema = z
      */
     EXPO_ACCESS_TOKEN: z.string().optional(),
     EXPO_PUSH_API_BASE_URL: z.string().url().default("https://exp.host"),
+
+    /**
+     * How often an idle Server-Sent Events connection is sent a keep-alive.
+     *
+     * An idle SSE stream looks identical to a dead one from every intermediary
+     * between the client and this process, and they close it: 60s is nginx's
+     * `proxy_read_timeout` default, 60s is an AWS ALB's idle timeout, 30s is a
+     * common CDN. The default here is a quarter of the tightest of those, so a
+     * connection survives losing two keep-alives to a blip — the same
+     * reasoning, and the same ratio, as `KAFKA_HEARTBEAT_INTERVAL_MS` against
+     * the session timeout.
+     */
+    SSE_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
+    /**
+     * How many recent events are retained for a reconnecting client to be
+     * caught up from.
+     *
+     * Counted in events, not seconds, which is what makes it a bound: memory is
+     * `size × the largest payload` regardless of what the event rate does. The
+     * cost of that choice is that the window a client can miss and still resume
+     * *shrinks* as traffic rises, which is the opposite of what an operator
+     * expects — see `docs/streaming.md`, where the arithmetic for choosing this
+     * against a peak rate is written out.
+     */
+    SSE_REPLAY_BUFFER_SIZE: z.coerce.number().int().positive().default(1_024),
+    /**
+     * The most simultaneous streams this process will hold open.
+     *
+     * SSE connections are held, not served and released, so nothing else in the
+     * request path bounds them: without this the limit is the file-descriptor
+     * table, and the failure is the process refusing every connection of every
+     * kind rather than this endpoint refusing new subscribers. Over the limit
+     * is a 503, which is what a load balancer needs to shed to another replica.
+     */
+    SSE_MAX_CONNECTIONS: z.coerce.number().int().positive().default(1_000),
+    /**
+     * The `retry:` hint sent to clients, in milliseconds.
+     *
+     * `EventSource` defaults to about 3s and does not back off, so a deploy
+     * that drops N connections brings all N back 3 seconds later, together,
+     * against a process that is still warming up. Raising this is the only
+     * control the server has over that; a client that reconnects on its own
+     * terms should add jitter of its own.
+     */
+    SSE_RETRY_HINT_MS: z.coerce.number().int().positive().default(3_000),
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots

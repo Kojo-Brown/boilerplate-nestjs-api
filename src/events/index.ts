@@ -5,6 +5,7 @@ export { OnDomainEvent, isHandlerOutcome } from "./on-domain-event";
 export { DOMAIN_EVENT_NAMES, isDomainEventName } from "./domain-event";
 
 export type {
+  AnyDomainEvent,
   DomainEvent,
   DomainEventHandler,
   DomainEventName,

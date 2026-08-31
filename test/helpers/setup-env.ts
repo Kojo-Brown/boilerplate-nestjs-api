@@ -15,6 +15,18 @@ process.env["PORT"] = "0";
 // waiting long enough is a spec that will fail on a slower machine.
 process.env["OUTBOX_RELAY_ENABLED"] = "false";
 
+// The SSE endpoint's timings, shrunk so a spec can observe a heartbeat and a
+// replay eviction without waiting on the production defaults. This has to be
+// here rather than in the spec: `ConfigModule.forRoot` reads and validates the
+// environment inside the call itself, which runs when `app.module.ts` is
+// imported — anything set in a `beforeAll` lands after the config is already
+// frozen, which is the trap `test/messaging.e2e-spec.ts` documents.
+// Only the timings are shortened; the buffer keeps a realistic size so eviction
+// is exercised deliberately (by a spec that overrides the hub) rather than by
+// accident in every other suite.
+process.env["SSE_HEARTBEAT_INTERVAL_MS"] = "80";
+process.env["SSE_RETRY_HINT_MS"] = "500";
+
 // Test-only credentials — not real secrets, used exclusively in e2e test suites.
 process.env["E2E_TEST_PASSWORD"] = "e2e-suite-placeholder-pw-1";
 process.env["E2E_WRONG_PASSWORD"] = "wrong-password-e2e-xyz";

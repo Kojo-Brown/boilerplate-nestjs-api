@@ -155,6 +155,13 @@ docker-compose up        # postgres + redis + api
   content model, why the schema profile refuses the keywords it cannot reason
   about, and how the JSON catalogue is kept from drifting away from the
   TypeScript one.
+- [docs/streaming.md](./docs/streaming.md) — the Server-Sent Events endpoint:
+  why the keep-alive carries an `id` and no data and is therefore invisible to
+  clients, why a resume cursor is not just a number and what an epoch mismatch
+  saves you from, why the replay window shrinks as traffic rises, why the stream
+  is filtered per subscriber rather than broadcast, why the access token is not
+  accepted in the query string, and what a connection cap is bounding that
+  nothing else in the request path is.
 
 ## Testing
 

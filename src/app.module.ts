@@ -18,6 +18,7 @@ import { StorageModule } from "./storage/storage.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { HealthModule } from "./health/health.module";
+import { StreamingModule } from "./streaming";
 import { QueueModule } from "./queue/queue.module";
 import { WorkersModule } from "./workers/workers.module";
 import { ShutdownModule } from "./common/shutdown/shutdown.module";
@@ -63,6 +64,10 @@ import { envSchema } from "./config/env.schema";
     NotificationsModule,
     HealthModule,
     QueueModule,
+    // After EventsModule and MessagingModule: `EventStreamHub` subscribes to
+    // `DomainEventBus`, so it fans out events relayed from this instance's
+    // outbox and events `DomainEventConsumer` read off the topic alike.
+    StreamingModule,
     // Global: `WORKER_POOL` is a scarce process-scoped resource, and every
     // caller wants the one the module provides — a second pool defeats the
     // point of a bounded queue.

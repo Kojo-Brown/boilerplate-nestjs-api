@@ -116,6 +116,24 @@ export interface DomainEvent<K extends DomainEventName = DomainEventName> {
 }
 
 /**
+ * Any event on the bus, as a discriminated union over the catalogue.
+ *
+ * Not the same type as bare `DomainEvent`, and the difference is the reason
+ * this exists. `DomainEvent` defaults its parameter to the *union* of names, so
+ * it widens to `{ name: "user.registered" | "user.deleted"; payload:
+ * UserRegisteredPayload | UserDeletedPayload }` — a shape in which `name` and
+ * `payload` are independent, so narrowing on `name` tells the compiler nothing
+ * about `payload` and a `switch` over it has no exhaustive `never` branch.
+ * Distributing over `K` first pairs each name with its own payload, which is
+ * what lets a consumer that must handle every event — `isVisibleTo` in
+ * `src/streaming` is the first — be checked for having done so.
+ *
+ * Use `DomainEvent<K>` in a handler for one event; use this only where the
+ * whole catalogue is genuinely in play.
+ */
+export type AnyDomainEvent = { [K in DomainEventName]: DomainEvent<K> }[DomainEventName];
+
+/**
  * What a subscriber method looks like.
  *
  * Returns `unknown` rather than `void | Promise<void>` so that

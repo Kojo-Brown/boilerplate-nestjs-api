@@ -162,6 +162,13 @@ docker-compose up        # postgres + redis + api
   is filtered per subscriber rather than broadcast, why the access token is not
   accepted in the query string, and what a connection cap is bounding that
   nothing else in the request path is.
+- [docs/realtime.md](./docs/realtime.md) — the WebSocket gateway at
+  `/v1/realtime`: why a Nest guard cannot authenticate a handshake and what is
+  done instead, how a browser gets a token onto an upgrade without putting it in
+  a URL, why a room is an interest filter and never a permission, what happens
+  to a peer that stops reading and why dropping is safe only because it is
+  announced, why the farewell has to be sent from `beforeApplicationShutdown`,
+  and what this transport gives up against SSE.
 
 ## Testing
 

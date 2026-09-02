@@ -30,8 +30,15 @@ The stream is one-directional and carries text the client already knows how to
 parse. SSE gets reconnection, a resume protocol and proxy compatibility from the
 browser for free, over ordinary HTTP that every load balancer, WAF and CDN in the
 path already understands. A WebSocket buys full duplex, which nothing here needs,
-in exchange for owning reconnection and heartbeating yourself. `SPEC.md` carries
-a WebSocket gateway as the next item, for the case that does need it.
+in exchange for owning reconnection and heartbeating yourself.
+
+For the case that _does_ need it — a client that must change its subscription
+while connected, rather than tear the stream down and reopen it with different
+query parameters — there is now a gateway at `wss://…/v1/realtime`, written up
+in [docs/realtime.md](./realtime.md). It shares this module's payload shape and
+its visibility rule (`isVisibleTo`) exactly, so the two transports cannot
+deliver different things; what it does not share is resume, which is the price
+of the duplex channel and is stated there.
 
 ## Frames
 

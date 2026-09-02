@@ -19,6 +19,7 @@ import { PaymentsModule } from "./payments/payments.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { HealthModule } from "./health/health.module";
 import { StreamingModule } from "./streaming";
+import { RealtimeModule } from "./realtime";
 import { QueueModule } from "./queue/queue.module";
 import { WorkersModule } from "./workers/workers.module";
 import { ShutdownModule } from "./common/shutdown/shutdown.module";
@@ -68,6 +69,12 @@ import { envSchema } from "./config/env.schema";
     // `DomainEventBus`, so it fans out events relayed from this instance's
     // outbox and events `DomainEventConsumer` read off the topic alike.
     StreamingModule,
+    // After EventsModule and MessagingModule, for the same reason
+    // StreamingModule is: `RealtimeGateway` is another `@OnDomainEvent`
+    // subscriber, so it fans out locally relayed events and events read off the
+    // topic alike. Requires the `ws` adapter to be installed before `init()` —
+    // see main.ts.
+    RealtimeModule,
     // Global: `WORKER_POOL` is a scarce process-scoped resource, and every
     // caller wants the one the module provides — a second pool defeats the
     // point of a bounded queue.

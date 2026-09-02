@@ -10,6 +10,7 @@ import { EntityTagInterceptor } from "./common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "./common/immutable";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { ConfigService } from "@nestjs/config";
+import { WsAdapter } from "@nestjs/platform-ws";
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -21,6 +22,14 @@ async function bootstrap() {
   const port = config.get<number>("PORT", 4000);
 
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+
+  // Before anything that triggers `init()`. Nest's `SocketModule` picks the
+  // adapter up while connecting gateways, and its default is to `require`
+  // `@nestjs/platform-socket.io` — which this project does not install, so a
+  // missing line here is a boot failure rather than a quietly dead endpoint.
+  // `WsAdapter` shares the HTTP server above, so `/v1/realtime` upgrades on the
+  // same port as every REST route and needs no second listener.
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   // `DeepFreezePipe` is bound after `ValidationPipe`, and global pipes run in
   // the order they are registered: it must freeze the DTO instance

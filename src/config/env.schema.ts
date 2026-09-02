@@ -462,6 +462,62 @@ export const envSchema = z
      * terms should add jitter of its own.
      */
     SSE_RETRY_HINT_MS: z.coerce.number().int().positive().default(3_000),
+
+    /**
+     * The most simultaneous WebSocket connections this process will hold.
+     *
+     * Counted separately from `SSE_MAX_CONNECTIONS` rather than shared with it,
+     * because the two cost different things: an SSE stream is a response and a
+     * timer, a WebSocket is a response, a timer and a send buffer bounded by
+     * `WS_SEND_HIGH_WATER_MARK_BYTES` — so the worst-case memory of one
+     * connection differs by three orders of magnitude between them, and one
+     * number could only be right for one of them.
+     */
+    WS_MAX_CONNECTIONS: z.coerce.number().int().positive().default(1_000),
+    /**
+     * The most rooms one connection may hold.
+     *
+     * This is a memory bound, not a usability one. An administrator may
+     * subscribe to any `user:<id>` room, and room names are map keys held for
+     * the life of the connection — so without a ceiling, one authenticated
+     * client can make this process allocate a distinct key per `subscribe`
+     * frame until it runs out of heap.
+     */
+    WS_MAX_ROOMS_PER_CONNECTION: z.coerce.number().int().positive().default(64),
+    /**
+     * Bytes of unflushed send buffer past which a connection stops being sent
+     * events.
+     *
+     * `send()` on a peer that has stopped reading neither blocks nor fails — it
+     * appends to a buffer that nothing bounds. 1 MiB is roughly five hundred
+     * events at this application's payload sizes: comfortably more than any
+     * ordinary burst, and small enough that a thousand stalled connections is a
+     * gigabyte rather than the machine. See `docs/realtime.md`.
+     */
+    WS_SEND_HIGH_WATER_MARK_BYTES: z.coerce.number().int().positive().default(1_048_576),
+    /**
+     * How long a connection may stay over the high-water mark before it is
+     * closed.
+     *
+     * The gap between "a burst it will catch up from" and "a peer that is not
+     * reading". Ten seconds is long enough to cover a mobile radio handover and
+     * short enough that a wedged client is not still holding a megabyte a
+     * minute later.
+     */
+    WS_SLOW_CONSUMER_GRACE_MS: z.coerce.number().int().positive().default(10_000),
+    /**
+     * How often every connection is pinged, and the deadline for its pong.
+     *
+     * A WebSocket that has lost its peer is invisible at the application layer:
+     * no events are due, nothing is written, and the operating system may hold
+     * the TCP connection open for hours. The ping is what turns that into a
+     * disconnect. It also paces the sweep that expires connections which fell
+     * behind and then went quiet — see `docs/realtime.md`. Half the tightest
+     * proxy idle timeout the SSE settings above are sized against, because a
+     * WebSocket ping is not visible to the application and can afford to be
+     * cheap.
+     */
+    WS_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots

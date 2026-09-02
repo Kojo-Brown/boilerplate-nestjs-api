@@ -1,5 +1,6 @@
 import { type INestApplication, Module, ValidationPipe, VersioningType } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
+import { WsAdapter } from "@nestjs/platform-ws";
 import { Test } from "@nestjs/testing";
 import { ThrottlerStorage } from "@nestjs/throttler";
 import type { ThrottlerStorageRecord } from "@nestjs/throttler/dist/throttler-storage-record.interface";
@@ -131,6 +132,12 @@ export async function createTestApp(): Promise<TestApp> {
     .compile();
 
   const app = moduleFixture.createNestApplication();
+
+  // Same as main.ts, and for the same reason: `SocketModule` reads the adapter
+  // during `init()` below and falls back to `require`-ing
+  // `@nestjs/platform-socket.io`, which is not installed. Every e2e suite would
+  // fail to boot without this line, not only the one that opens a socket.
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
   app.useGlobalPipes(

@@ -61,6 +61,11 @@ export const googleStrategyProvider: Provider = {
     JwtAuthGuard,
     RolesGuard,
   ],
-  exports: [AuthService, JwtAuthGuard, RolesGuard],
+  // `JwtModule` is re-exported so `RealtimeModule` can verify a WebSocket
+  // handshake with the same `JwtService` that signed the token. Registering a
+  // second one there would be a second place the secret and the signing options
+  // are configured, and the failure when they drift is an access token this API
+  // issues that its own gateway refuses.
+  exports: [AuthService, JwtAuthGuard, RolesGuard, JwtModule],
 })
 export class AuthModule {}

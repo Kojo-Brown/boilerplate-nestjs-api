@@ -169,6 +169,14 @@ docker-compose up        # postgres + redis + api
   to a peer that stops reading and why dropping is safe only because it is
   announced, why the farewell has to be sent from `beforeApplicationShutdown`,
   and what this transport gives up against SSE.
+- [docs/cqrs.md](./docs/cqrs.md) — the users module split into commands,
+  queries and one projection: what the split actually bought (including the
+  cached admin list that never saw a new registration), why the CQRS `EventBus`
+  is fed by the domain event bus and never the other way round, what an
+  `@EventsHandler` may therefore be trusted with, why `UnhandledExceptionBus`
+  needs a subscriber before a dead projection is even visible, why eviction
+  stays synchronous while projection does not, and why `CqrsModule.forRoot()`
+  must be imported exactly once.
 
 ## Testing
 

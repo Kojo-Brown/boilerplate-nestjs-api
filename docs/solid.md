@@ -5,6 +5,14 @@ other module reaches into. Each principle below is a real before/after from the
 commit that introduced this file, not an invented example: the "before" column
 is what was on `main`, the "after" is what is in the tree now.
 
+> **Since this was written**, `UsersService` has been split into command and
+> query handlers and deleted — see [docs/cqrs.md](./cqrs.md). Everything below
+> still holds and none of it was undone: the ports, the tokens, the access
+> policy and the store contract are unchanged, and the handlers depend on
+> exactly the ports the service did. Read `UsersService` in the sections below
+> as "the users module's application layer", which is now
+> `src/users/write/*.command.ts` and `src/users/read/*.query.ts`.
+
 The users module was chosen because it is where the pressure actually is — it
 owns persistence, authorization, caching, pagination, and a JSON preferences
 column, and it is consumed by `AuthService`, the controller, and the e2e suite.

@@ -18,7 +18,7 @@ import type { NotificationChannel } from "./ports";
  *
  * Imports `UsersModule` for the preferences port and `QueueModule` for the
  * email queue. The dependency runs notifications → users and never back, so
- * `UsersService` can gain a notification without a circular import.
+ * a users command handler can gain a notification without a circular import.
  */
 @Module({
   imports: [UsersModule, QueueModule],

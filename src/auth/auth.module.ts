@@ -8,7 +8,6 @@ import { JwtStrategy } from "./strategies/jwt.strategy";
 import { GoogleStrategy } from "./strategies/google.strategy";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 import { RolesGuard } from "./guards/roles.guard";
-import { UsersModule } from "@/users/users.module";
 import { PrismaRefreshTokenStore } from "./prisma-refresh-token.store";
 import { REFRESH_TOKEN_STORE } from "./ports";
 
@@ -47,7 +46,9 @@ export const googleStrategyProvider: Provider = {
         signOptions: { expiresIn: config.get("JWT_ACCESS_EXPIRY", "15m") },
       }),
     }),
-    UsersModule,
+    // `UsersModule` is deliberately absent. `AuthService` reaches the users
+    // module by dispatching commands and queries onto the global buses, so the
+    // import edge that used to exist only to inject `UsersService` is gone.
   ],
   controllers: [AuthController],
   providers: [

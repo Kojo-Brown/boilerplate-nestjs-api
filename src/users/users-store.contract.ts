@@ -8,7 +8,8 @@ import type { UsersStore } from "./ports";
 /**
  * The behavioural contract every user store must satisfy.
  *
- * `UsersService` is typed against the ports, so any implementation may be
+ * The users module's handlers are typed against the ports, so any
+ * implementation may be
  * substituted for any other (LSP) — but the type system only checks the
  * signatures. What breaks in practice is behaviour: a double that resolves
  * with `undefined` where Prisma resolves with `null`, or that happily updates

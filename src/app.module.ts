@@ -7,6 +7,7 @@ import { AppCacheModule } from "./common/cache";
 import { IdempotencyModule } from "./common/idempotency";
 import { LockingModule } from "./common/locking";
 import { AspectsModule } from "./common/aspects";
+import { AppCqrsModule } from "./cqrs";
 import { EventsModule } from "./events";
 import { MessagingModule } from "./messaging";
 import { OutboxModule } from "./outbox";
@@ -45,6 +46,11 @@ import { envSchema } from "./config/env.schema";
     // Global: any module publishes through `DomainEventBus`, and subscribers
     // are discovered wherever they are declared.
     EventsModule,
+    // Global, and after EventsModule: `DomainEventCqrsBridge` is an
+    // `@OnDomainEvent` subscriber that forwards every domain event onto the
+    // CQRS `EventBus`. Registering `CqrsModule.forRoot()` here and only here is
+    // what makes one set of buses serve the whole container.
+    AppCqrsModule,
     // Global, and before both MessagingModule and OutboxModule: each takes
     // `EventContract` to check a payload against the schema registered for its
     // event — the outbox before the row is written, the codec on and off the

@@ -272,7 +272,7 @@ It reports and does not fail: request scope is a legitimate choice, and a boot
 that refuses to start over a design decision would be worse than a warning. To
 hold a line, assert on it — `test/di-scopes.e2e-spec.ts` pins the exact set of
 request-scoped components in this application, so injecting
-`RequestContextService` into `UsersService` turns CI red instead of quietly
+`RequestContextService` into a command handler turns CI red instead of quietly
 converting half the container.
 
 ## Deleting the demo

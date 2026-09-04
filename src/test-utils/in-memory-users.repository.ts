@@ -24,7 +24,7 @@ function nextId(): string {
  * In-memory implementation of the three user ports.
  *
  * This exists to be substituted for `PrismaUsersRepository` in tests that care
- * about `UsersService`'s behaviour rather than about SQL. It is held to the
+ * about the users module's behaviour rather than about SQL. It is held to the
  * same behavioural contract as the Prisma adapter by
  * `users-store.contract.spec.ts` — a double that quietly returned `undefined`
  * where Prisma returns `null`, or resolved where Prisma rejects, would make

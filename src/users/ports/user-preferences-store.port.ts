@@ -17,7 +17,7 @@ export interface UserPreferencesStore {
    * Resolves with the defaults for an unknown id rather than rejecting — an
    * absent row and an unset column are the same "nothing stored yet" to this
    * port. Callers that need a 404 must check existence themselves, which is
-   * what `UsersService` does before calling.
+   * what `GetUserPreferencesHandler` does before calling.
    *
    * The result is read-only because it may be the store's own value: with no
    * preferences stored this resolves with `DEFAULT_USER_PREFERENCES` itself.

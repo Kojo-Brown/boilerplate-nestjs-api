@@ -2,14 +2,14 @@ import { Injectable } from "@nestjs/common";
 import type { ExecutionContext } from "@nestjs/common";
 import type { Request } from "express";
 import { HttpCacheInterceptor } from "@/common/cache";
-import { userCacheKey } from "./users.service";
+import { userCacheKey } from "./read/users-read-model.cache";
 
 /**
- * Caches `GET /users/:id` under the key `UsersService` invalidates.
+ * Caches `GET /users/:id` under the key the read model's cache invalidates.
  *
  * The base interceptor tracks by request URL, so the entry for
  * `GET /v1/users/abc` was stored as `"/v1/users/abc"` while
- * `invalidateUserCache` deleted `"v1:users:abc"` — two keys in one store that
+ * `evictUser` deleted `"v1:users:abc"` — two keys in one store that
  * were never going to meet. Every write left the read cached, for the full 30s
  * TTL, showing the state before the update.
  *

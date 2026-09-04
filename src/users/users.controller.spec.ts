@@ -1,14 +1,15 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import {
-  BadRequestException,
-  ForbiddenException,
-  PreconditionFailedException,
-} from "@nestjs/common";
+import { BadRequestException } from "@nestjs/common";
 import { CACHE_MANAGER } from "@nestjs/cache-manager";
+import { CommandBus, QueryBus } from "@nestjs/cqrs";
 import { UsersController } from "./users.controller";
-import { UsersService } from "./users.service";
-import { UserAccessPolicy } from "./users.access-policy";
-import { StorageService } from "@/storage/storage.service";
+import { GetUserPreferencesQuery, GetUserQuery, ListUsersQuery } from "./read";
+import {
+  DeleteUserCommand,
+  UpdateUserAvatarCommand,
+  UpdateUserPreferencesCommand,
+  UpdateUserProfileCommand,
+} from "./write";
 import { versioned } from "@/common/concurrency";
 import type { ExpectedVersion } from "@/common/concurrency";
 import type { AuthenticatedUser } from "@/auth/strategies/jwt.strategy";
@@ -32,20 +33,8 @@ const mockUser: User = {
 
 const requester: AuthenticatedUser = { id: "user-1", email: "test@example.com", role: "USER" };
 
-const mockUsersService = {
-  listUsers: jest.fn(),
-  findById: jest.fn(),
-  assertPrecondition: jest.fn(),
-  updateSelf: jest.fn(),
-  updateAvatar: jest.fn(),
-  remove: jest.fn(),
-  getPreferences: jest.fn(),
-  updatePreferences: jest.fn(),
-};
-
-const mockStorageService = {
-  uploadBuffer: jest.fn(),
-};
+const mockCommandBus = { execute: jest.fn() };
+const mockQueryBus = { execute: jest.fn() };
 
 // The controller is decorated with HttpCacheInterceptor, which Nest instantiates
 // while building the testing module — so CACHE_MANAGER has to be resolvable here.
@@ -57,6 +46,18 @@ const mockCacheManager = {
   clear: jest.fn(),
 };
 
+/**
+ * What the controller is still responsible for, now that the handlers own the
+ * decisions.
+ *
+ * Every endpoint has exactly one job left: build the right request from the
+ * HTTP input and shape what comes back. So that is what these specs assert —
+ * the *command object* that was dispatched, not the effect of running it, which
+ * `users.cqrs.spec.ts` covers against the real handlers. Asserting on the
+ * dispatched request is what catches the mistake this layer can actually make:
+ * an argument in the wrong position, a requester dropped, an `If-Match` used
+ * for the pre-check and then not passed to the write.
+ */
 describe("UsersController", () => {
   let controller: UsersController;
 
@@ -65,11 +66,8 @@ describe("UsersController", () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [UsersController],
       providers: [
-        { provide: UsersService, useValue: mockUsersService },
-        // The real policy: it is pure decision logic, and stubbing it would
-        // mean the ownership rule on avatar upload was never actually asserted.
-        UserAccessPolicy,
-        { provide: StorageService, useValue: mockStorageService },
+        { provide: CommandBus, useValue: mockCommandBus },
+        { provide: QueryBus, useValue: mockQueryBus },
         { provide: CACHE_MANAGER, useValue: mockCacheManager },
       ],
     }).compile();
@@ -77,53 +75,56 @@ describe("UsersController", () => {
     controller = module.get(UsersController);
   });
 
+  /** The single request dispatched onto a bus during one endpoint call. */
+  function dispatched(bus: { execute: jest.Mock }): unknown {
+    expect(bus.execute).toHaveBeenCalledTimes(1);
+    return bus.execute.mock.calls[0]![0];
+  }
+
   it("should be defined", () => {
     expect(controller).toBeDefined();
   });
 
   describe("listUsers()", () => {
-    it("delegates to UsersService.listUsers", async () => {
-      const page = { data: [mockUser], nextCursor: null };
-      mockUsersService.listUsers.mockResolvedValue(page);
-      const query = { limit: 20 };
+    it("dispatches ListUsersQuery carrying the parsed query string", async () => {
+      const page = { items: [mockUser], hasNextPage: false, nextCursor: null };
+      mockQueryBus.execute.mockResolvedValue(page);
+      const query = { limit: 20, search: "ada" };
 
       const result = await controller.listUsers(query as never);
 
-      expect(mockUsersService.listUsers).toHaveBeenCalledWith(query);
+      expect(dispatched(mockQueryBus)).toEqual(new ListUsersQuery(query as never));
       expect(result).toBe(page);
     });
   });
 
   describe("findOne()", () => {
-    it("delegates to UsersService.findById", async () => {
-      mockUsersService.findById.mockResolvedValue(mockUser);
+    it("dispatches GetUserQuery and wraps the answer with its version", async () => {
+      mockQueryBus.execute.mockResolvedValue(mockUser);
 
       const result = await controller.findOne("user-1");
 
-      expect(mockUsersService.findById).toHaveBeenCalledWith("user-1");
+      expect(dispatched(mockQueryBus)).toEqual(new GetUserQuery("user-1"));
       expect(result).toEqual(versioned(mockUser, 0));
     });
   });
 
   describe("update()", () => {
-    it("delegates to UsersService.updateSelf with requester info", async () => {
+    it("dispatches UpdateUserProfileCommand with the requester and the precondition", async () => {
       const updated = { ...mockUser, name: "New Name" };
-      mockUsersService.updateSelf.mockResolvedValue(updated);
+      mockCommandBus.execute.mockResolvedValue(updated);
       const dto = { name: "New Name" };
 
       const result = await controller.update("user-1", dto, requester, ifMatch(0));
 
-      expect(mockUsersService.updateSelf).toHaveBeenCalledWith(
-        requester,
-        "user-1",
-        dto,
-        ifMatch(0),
+      expect(dispatched(mockCommandBus)).toEqual(
+        new UpdateUserProfileCommand(requester, "user-1", dto, ifMatch(0)),
       );
       expect(result).toEqual(versioned(updated, updated.version));
     });
 
     it("wraps the result so the response carries the version it wrote", async () => {
-      mockUsersService.updateSelf.mockResolvedValue({ ...mockUser, version: 4 });
+      mockCommandBus.execute.mockResolvedValue({ ...mockUser, version: 4 });
 
       await expect(controller.update("user-1", {}, requester, ifMatch(3))).resolves.toMatchObject({
         version: 4,
@@ -145,101 +146,43 @@ describe("UsersController", () => {
       path: "",
     };
 
-    it("uploads to storage and calls updateAvatar", async () => {
-      mockStorageService.uploadBuffer.mockResolvedValue(undefined);
-      mockUsersService.updateAvatar.mockResolvedValue({
-        ...mockUser,
-        avatarUrl: "avatars/user-1/photo.jpg",
-      });
+    it("dispatches UpdateUserAvatarCommand carrying the uploaded file", async () => {
+      mockCommandBus.execute.mockResolvedValue({ ...mockUser, avatarUrl: "avatars/user-1/1.jpg" });
 
-      const result = await controller.uploadAvatar("user-1", file, requester, ifMatch(0));
+      const result = await controller.uploadAvatar("user-1", file, requester, ifMatch(2));
 
-      expect(mockStorageService.uploadBuffer).toHaveBeenCalledWith(
-        expect.stringContaining("avatars/user-1/"),
-        file.buffer,
-        "image/jpeg",
+      // Including the `If-Match`: the handler checks the precondition before it
+      // uploads *and* passes it to the write, and a controller that dropped it
+      // here would turn every avatar upload into an unconditional write.
+      expect(dispatched(mockCommandBus)).toEqual(
+        new UpdateUserAvatarCommand(requester, "user-1", file, ifMatch(2)),
       );
-      expect(mockUsersService.updateAvatar).toHaveBeenCalled();
-      expect(result).toMatchObject({
-        body: { avatarUrl: expect.stringContaining("avatars/user-1/") },
-      });
-    });
-
-    it("checks the precondition before spending an upload on a request that cannot win", async () => {
-      mockUsersService.assertPrecondition.mockRejectedValue(
-        new PreconditionFailedException("stale"),
-      );
-
-      await expect(controller.uploadAvatar("user-1", file, requester, ifMatch(0))).rejects.toThrow(
-        PreconditionFailedException,
-      );
-
-      expect(mockStorageService.uploadBuffer).not.toHaveBeenCalled();
-      expect(mockUsersService.updateAvatar).not.toHaveBeenCalled();
-    });
-
-    it("passes the precondition through to the write, not only to the pre-check", async () => {
-      mockStorageService.uploadBuffer.mockResolvedValue(undefined);
-      mockUsersService.updateAvatar.mockResolvedValue(mockUser);
-
-      await controller.uploadAvatar("user-1", file, requester, ifMatch(2));
-
-      expect(mockUsersService.updateAvatar).toHaveBeenCalledWith(
-        "user-1",
-        expect.any(String),
-        ifMatch(2),
-      );
+      expect(result).toMatchObject({ body: { avatarUrl: "avatars/user-1/1.jpg" } });
     });
 
     it("throws BadRequestException when no file is provided", async () => {
       await expect(
         controller.uploadAvatar("user-1", undefined, requester, ifMatch(0)),
       ).rejects.toThrow(BadRequestException);
-    });
 
-    it("throws ForbiddenException when a non-admin user uploads for another user", async () => {
-      const otherRequester: AuthenticatedUser = {
-        id: "other-user",
-        email: "other@example.com",
-        role: "USER",
-      };
-
-      await expect(
-        controller.uploadAvatar("user-1", file, otherRequester, ifMatch(0)),
-      ).rejects.toThrow(ForbiddenException);
-      expect(mockStorageService.uploadBuffer).not.toHaveBeenCalled();
-    });
-
-    it("allows an ADMIN to upload avatar for another user", async () => {
-      const adminRequester: AuthenticatedUser = {
-        id: "admin-1",
-        email: "admin@example.com",
-        role: "ADMIN",
-      };
-      mockStorageService.uploadBuffer.mockResolvedValue(undefined);
-      mockUsersService.updateAvatar.mockResolvedValue({
-        ...mockUser,
-        avatarUrl: "avatars/user-1/x.jpg",
-      });
-
-      await expect(
-        controller.uploadAvatar("user-1", file, adminRequester, ifMatch(0)),
-      ).resolves.toBeDefined();
+      // Nothing is dispatched: a multipart body with no `file` part is a
+      // malformed request, not a write that fails somewhere downstream.
+      expect(mockCommandBus.execute).not.toHaveBeenCalled();
     });
   });
 
   describe("remove()", () => {
-    it("delegates to UsersService.remove", async () => {
-      mockUsersService.remove.mockResolvedValue(undefined);
+    it("dispatches DeleteUserCommand with the precondition", async () => {
+      mockCommandBus.execute.mockResolvedValue(undefined);
 
       await controller.remove("user-1", ifMatch(0));
 
-      expect(mockUsersService.remove).toHaveBeenCalledWith("user-1", ifMatch(0));
+      expect(dispatched(mockCommandBus)).toEqual(new DeleteUserCommand("user-1", ifMatch(0)));
     });
   });
 
   describe("getPreferences()", () => {
-    it("delegates to UsersService.getPreferences with requester info", async () => {
+    it("dispatches GetUserPreferencesQuery with the requester", async () => {
       const prefs = {
         theme: "dark",
         language: "en",
@@ -247,11 +190,11 @@ describe("UsersController", () => {
         pushNotifications: false,
         timezone: "UTC",
       };
-      mockUsersService.getPreferences.mockResolvedValue({ preferences: prefs, version: 2 });
+      mockQueryBus.execute.mockResolvedValue({ preferences: prefs, version: 2 });
 
       const result = await controller.getPreferences("user-1", requester);
 
-      expect(mockUsersService.getPreferences).toHaveBeenCalledWith(requester, "user-1");
+      expect(dispatched(mockQueryBus)).toEqual(new GetUserPreferencesQuery(requester, "user-1"));
       // The version comes back on the wrapper, not in the body: preferences are
       // a projection of the user row and have no version field of their own.
       expect(result).toEqual(versioned(prefs, 2));
@@ -259,7 +202,7 @@ describe("UsersController", () => {
   });
 
   describe("updatePreferences()", () => {
-    it("delegates to UsersService.updatePreferences with requester info", async () => {
+    it("dispatches UpdateUserPreferencesCommand with the requester", async () => {
       const prefs = {
         theme: "light",
         language: "fr",
@@ -267,7 +210,7 @@ describe("UsersController", () => {
         pushNotifications: true,
         timezone: "UTC",
       };
-      mockUsersService.updatePreferences.mockResolvedValue({ preferences: prefs, version: 3 });
+      mockCommandBus.execute.mockResolvedValue({ preferences: prefs, version: 3 });
       const dto = { theme: "light" as const };
 
       const result = await controller.updatePreferences(
@@ -277,11 +220,8 @@ describe("UsersController", () => {
         ifMatch(2),
       );
 
-      expect(mockUsersService.updatePreferences).toHaveBeenCalledWith(
-        requester,
-        "user-1",
-        dto,
-        ifMatch(2),
+      expect(dispatched(mockCommandBus)).toEqual(
+        new UpdateUserPreferencesCommand(requester, "user-1", dto as never, ifMatch(2)),
       );
       expect(result).toEqual(versioned(prefs, 3));
     });

@@ -4,7 +4,7 @@
  * A transactional outbox is only transactional if the event and the data it
  * describes commit together, which means some caller has to own a transaction
  * that both writes join. That caller is an application service — `AuthService`,
- * `UsersService` — and those services depend on ports, not on Prisma (DIP).
+ * `DeleteUserHandler` — and those callers depend on ports, not on Prisma (DIP).
  * This is the port that lets them open a transaction without learning what a
  * transaction is made of.
  *

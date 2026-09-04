@@ -112,7 +112,7 @@ every other request that landed on the same process. Pick it deliberately.
   tasks — `csv.encode` and `sha256.hex` — are the demo surface, exercised
   by the contract tests but not yet wired into a controller. The natural
   next call site is a `GET /v1/users/export.csv` admin endpoint that
-  paginates through `UsersService.listUsers` and hands each page to
+  paginates through `ListUsersQuery` and hands each page to
   `csv.encode`.
 - No per-task metric hook. The pool reports `stats()`, which is enough for a
   `/health` gauge; a Prometheus histogram of per-task duration belongs to

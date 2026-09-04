@@ -1,8 +1,10 @@
 import { Inject, Injectable, UnauthorizedException, ConflictException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
+import { CommandBus, QueryBus } from "@nestjs/cqrs";
 import * as argon2 from "argon2";
-import { UsersService } from "@/users/users.service";
+import { CreateUserCommand, UpdateUserCommand } from "@/users/write";
+import { FindUserByEmailQuery, FindUserByProviderAccountQuery } from "@/users/read";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import type { TransactionContext, TransactionRunner } from "@/common/prisma/transaction.port";
 import { TransactionalOutbox } from "@/outbox";
@@ -14,10 +16,23 @@ import type { RegisterDto } from "./dto/register.dto";
 import type { LoginDto } from "./dto/login.dto";
 import type { GoogleProfile } from "./strategies/google.strategy";
 
+/**
+ * Authentication, which reaches the users module only through its buses.
+ *
+ * There is no `UsersModule` import here any more and no users service to
+ * inject: this dispatches `CreateUserCommand`, `UpdateUserCommand`,
+ * `FindUserByEmailQuery` and `FindUserByProviderAccountQuery`, and the
+ * container resolves whichever handlers are registered for them. The dependency
+ * that remains is on the four request shapes rather than on a class with
+ * fourteen methods, which is the inversion CQRS buys here — the users module
+ * can split a handler in two, or move where a user row lives, without this file
+ * changing.
+ */
 @Injectable()
 export class AuthService {
   constructor(
-    private readonly users: UsersService,
+    private readonly commands: CommandBus,
+    private readonly queries: QueryBus,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshTokens: RefreshTokenStore,
@@ -26,7 +41,7 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const exists = await this.users.findByEmail(dto.email);
+    const exists = await this.queries.execute(new FindUserByEmailQuery(dto.email));
     if (exists) throw new ConflictException("Email already in use");
     const hash = await argon2.hash(dto.password);
     // The row and the event commit together or not at all. Hashing stays
@@ -34,9 +49,8 @@ export class AuthService {
     // and the transaction's locks for the duration of a KDF is exactly the kind
     // of work a transaction should never contain.
     const user = await this.transactions.run(async (tx) => {
-      const created = await this.users.create(
-        { email: dto.email, password: hash, name: dto.name },
-        tx,
+      const created = await this.commands.execute(
+        new CreateUserCommand({ email: dto.email, password: hash, name: dto.name }, tx),
       );
       await this.stageRegistered(tx, created);
       return created;
@@ -45,7 +59,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.users.findByEmail(dto.email);
+    const user = await this.queries.execute(new FindUserByEmailQuery(dto.email));
     if (!user?.password) throw new UnauthorizedException("Invalid credentials");
     const valid = await argon2.verify(user.password, dto.password);
     if (!valid) throw new UnauthorizedException("Invalid credentials");
@@ -86,33 +100,39 @@ export class AuthService {
   }
 
   async loginWithGoogle(profile: GoogleProfile) {
-    let user = await this.users.findByProviderAccount("google", profile.googleId);
+    let user = await this.queries.execute(
+      new FindUserByProviderAccountQuery("google", profile.googleId),
+    );
     if (!user) {
-      const byEmail = await this.users.findByEmail(profile.email);
+      const byEmail = await this.queries.execute(new FindUserByEmailQuery(profile.email));
       if (byEmail) {
         // Unconditional, and deliberately so: linking a Google identity to an
         // existing account is driven by the OAuth callback, not by a client
         // that read a representation and is proposing an edit to it. There is
         // no version the caller could have been holding, and refusing the link
         // because an unrelated field moved would strand the sign-in.
-        user = await this.users.update(
-          byEmail.id,
-          { provider: "google", providerAccountId: profile.googleId },
-          UNCONDITIONAL,
+        user = await this.commands.execute(
+          new UpdateUserCommand(
+            byEmail.id,
+            { provider: "google", providerAccountId: profile.googleId },
+            UNCONDITIONAL,
+          ),
         );
       } else {
         // Only this branch is a registration. The one above links Google to an
         // account that already exists and has already been welcomed, and the
         // outer `if` is an ordinary sign-in.
         user = await this.transactions.run(async (tx) => {
-          const created = await this.users.create(
-            {
-              email: profile.email,
-              name: profile.name,
-              provider: "google",
-              providerAccountId: profile.googleId,
-            },
-            tx,
+          const created = await this.commands.execute(
+            new CreateUserCommand(
+              {
+                email: profile.email,
+                name: profile.name,
+                provider: "google",
+                providerAccountId: profile.googleId,
+              },
+              tx,
+            ),
           );
           await this.stageRegistered(tx, created);
           return created;

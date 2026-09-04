@@ -153,7 +153,7 @@ request that has already lost. The predicate on the write is what settles races.
 ## Caching
 
 `GET /v1/users/:id` is cached for 30 seconds. That cache is now keyed by
-`v1:users:<id>` — the same key `UsersService.invalidateUserCache` deletes.
+`v1:users:<id>` — the same key `UsersReadModelCache.evictUser` deletes.
 
 It previously was not: the base `HttpCacheInterceptor` tracks by request URL, so
 entries went in under `/v1/users/abc` while invalidation deleted `v1:users:abc`.

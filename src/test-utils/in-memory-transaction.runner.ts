@@ -4,7 +4,7 @@ import type { TransactionContext, TransactionRunner } from "@/common/prisma/tran
  * A {@link TransactionRunner} with no database behind it.
  *
  * For unit specs of services that open a transaction — `AuthService`,
- * `UsersService` — where the collaborators inside it are already doubles and
+ * `DeleteUserHandler` — where the collaborators inside it are already doubles and
  * the point of the spec is what the service does, not what Postgres does.
  *
  * It honours the one part of the contract a double can honour: compensations

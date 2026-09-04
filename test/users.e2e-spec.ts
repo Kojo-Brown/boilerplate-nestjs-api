@@ -2,7 +2,7 @@ import type { INestApplication } from "@nestjs/common";
 import { Role } from "@prisma/client";
 import request from "supertest";
 import { createTestApp, type TestApp } from "./helpers/create-test-app";
-import { UsersService } from "@/users/users.service";
+import { UpdateUserPreferencesHandler } from "@/users/write";
 import { isDeeplyFrozen } from "@/common/immutable";
 import type { UpdateUserPreferencesDto } from "@/users/dto/update-user-preferences.dto";
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
@@ -10,10 +10,11 @@ import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
 describe("Users (e2e)", () => {
   let app: INestApplication;
   let prisma: InMemoryPrismaService;
+  let drainOutbox: TestApp["drainOutbox"];
 
   // Captured before any spy replaces it, so the spy can still perform the
   // real write and the request goes through end to end.
-  const updatePreferences = UsersService.prototype.updatePreferences;
+  const executeUpdatePreferences = UpdateUserPreferencesHandler.prototype.execute;
 
   let userToken: string;
   let adminToken: string;
@@ -24,6 +25,7 @@ describe("Users (e2e)", () => {
     const fixture: TestApp = await createTestApp();
     app = fixture.app;
     prisma = fixture.prisma;
+    drainOutbox = fixture.drainOutbox;
   });
 
   afterAll(async () => {
@@ -59,6 +61,21 @@ describe("Users (e2e)", () => {
       .send({ email: "admin@example.com", password: process.env["E2E_TEST_PASSWORD"]! });
     adminToken = adminLogin.body.data.accessToken as string;
   });
+
+  const emailsIn = (res: { body: { data: { items: { email: string }[] } } }): string[] =>
+    res.body.data.items.map((user) => user.email);
+
+  /**
+   * Yields once to the CQRS event bus.
+   *
+   * `EventBus.publish` is `subject$.next(event)` — it returns before any
+   * `@EventsHandler` has finished, by design, so `drainOutbox()` resolving
+   * means the event was *delivered*, not that every projection has run. One
+   * `setImmediate` is enough and is not a sleep: the projection's work is a
+   * chain of promises, and every pending microtask is drained before a
+   * macrotask callback runs.
+   */
+  const projectionsSettled = () => new Promise((resolve) => setImmediate(resolve));
 
   /**
    * Reads the validator a client must hold before it may write.
@@ -107,6 +124,44 @@ describe("Users (e2e)", () => {
 
     it("returns 401 without authentication", async () => {
       await request(app.getHttpServer()).get("/v1/users").expect(401);
+    });
+
+    /**
+     * The read model catching up with a write it did not make.
+     *
+     * `GET /v1/users` is cached for 60s under one key, and registration happens
+     * in `AuthService`, which knows nothing about that cache. Before
+     * `UsersReadModelProjector` nothing connected the two, so a newly
+     * registered account was absent from this list for the full TTL — not
+     * wrong, just old, which is why it was never reported. The chain under test
+     * is the whole one: the row and `user.registered` commit together, the
+     * relay publishes, the CQRS bridge forwards, and the projection evicts.
+     */
+    it("shows a newly registered user, though the list was cached before they existed", async () => {
+      // Populate the cache with a page that predates the new account.
+      const before = await request(app.getHttpServer())
+        .get("/v1/users")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .expect(200);
+      expect(emailsIn(before)).not.toContain("newcomer@example.com");
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/register")
+        .send({
+          email: "newcomer@example.com",
+          password: process.env["E2E_TEST_PASSWORD"]!,
+          name: "Newcomer",
+        })
+        .expect(201);
+      await drainOutbox();
+      await projectionsSettled();
+
+      const after = await request(app.getHttpServer())
+        .get("/v1/users")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(emailsIn(after)).toContain("newcomer@example.com");
     });
 
     it("respects the limit query parameter", async () => {
@@ -296,18 +351,16 @@ describe("Users (e2e)", () => {
       // Without this, nothing fails if `DeepFreezePipe` is dropped from the
       // global pipes: no handler in the codebase mutates its own payload today,
       // so the guard would silently become inert and only stop catching things.
-      // Spying on the service the controller already holds is what makes this
-      // an assertion about the *wiring* — the DTO has been through
+      // Spying on the handler the bus dispatches to is what makes this an
+      // assertion about the *wiring* — the DTO has been through
       // `ValidationPipe`, `class-transformer` and the freeze by the time it
       // arrives here.
-      const users = app.get(UsersService);
+      const handler = app.get(UpdateUserPreferencesHandler);
       const received: unknown[] = [];
-      const spy = jest
-        .spyOn(users, "updatePreferences")
-        .mockImplementation(async (requester, id, dto, expected) => {
-          received.push(dto);
-          return updatePreferences.call(users, requester, id, dto, expected);
-        });
+      const spy = jest.spyOn(handler, "execute").mockImplementation(async (command) => {
+        received.push(command.dto);
+        return executeUpdatePreferences.call(handler, command);
+      });
 
       try {
         await request(app.getHttpServer())

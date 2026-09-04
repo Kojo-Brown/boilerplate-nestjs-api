@@ -5,7 +5,7 @@ import { HttpException, HttpStatus } from "@nestjs/common";
  *
  * A plain `Error`, not an `HttpException`: it is raised by the storage adapter,
  * which has no business naming a status code — the same conflict reached over a
- * message consumer or a CLI is not a "412". `UsersService` translates it at the
+ * message consumer or a CLI is not a "412". `UserWriteModel` translates it at the
  * boundary. It carries the version the row was actually at so the translation
  * can say what the caller should re-read, rather than only that it lost.
  */

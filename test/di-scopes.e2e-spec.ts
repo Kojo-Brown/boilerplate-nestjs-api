@@ -95,7 +95,7 @@ describe("DI scopes (e2e)", () => {
 
   it("keeps request scope contained to the demo module", () => {
     // A regression guard for the whole application, not just this module.
-    // Injecting a request-scoped provider into, say, `UsersService` would
+    // Injecting a request-scoped provider into, say, a command handler would
     // silently convert it and everything above it; this is what would notice.
     const audit = app.get(ScopeAudit).audit();
 

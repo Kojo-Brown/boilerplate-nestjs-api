@@ -1,7 +1,7 @@
 import { Reflector } from "@nestjs/core";
 import type { ExecutionContext } from "@nestjs/common";
 import { UserResourceCacheInterceptor } from "./user-resource.cache.interceptor";
-import { userCacheKey } from "./users.service";
+import { userCacheKey } from "./read/users-read-model.cache";
 
 /**
  * `trackBy` is `protected`, which is exactly the surface a subclass exists to
@@ -34,10 +34,10 @@ describe("UserResourceCacheInterceptor", () => {
   });
 
   // The whole point of the subclass. The base interceptor tracks by request
-  // URL — `/v1/users/clx123` — while `UsersService.invalidateUserCache` deletes
+  // URL — `/v1/users/clx123` — while `UsersReadModelCache.evictUser` deletes
   // `v1:users:clx123`, so nothing a write evicted was ever what a read had
   // stored, and the stale read went on serving a stale ETag for the full TTL.
-  it("produces exactly the key UsersService invalidates", () => {
+  it("produces exactly the key the read model's cache invalidates", () => {
     expect(trackBy(contextFor({ id: "clx123" }))).toBe("v1:users:clx123");
   });
 

@@ -3,8 +3,10 @@ import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { ConflictException, UnauthorizedException } from "@nestjs/common";
 import { Role } from "@prisma/client";
+import { CommandBus, QueryBus } from "@nestjs/cqrs";
 import { AuthService } from "./auth.service";
-import { UsersService } from "@/users/users.service";
+import { CreateUserCommand, UpdateUserCommand } from "@/users/write";
+import { FindUserByEmailQuery, FindUserByProviderAccountQuery } from "@/users/read";
 import { REFRESH_TOKEN_STORE } from "./ports";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
@@ -38,12 +40,53 @@ const mockUser: User = {
   version: 0,
 };
 
-const mockUsersService = {
+/**
+ * The users module, as the four requests `AuthService` now dispatches.
+ *
+ * The buses below route by command and query class rather than stubbing
+ * `execute` once, and that is what keeps every assertion in this file an
+ * assertion about *which request was made, with what*. A single `execute` spy
+ * would flatten a registration, a link and two lookups into one call log, so
+ * "created the user with the hashed password" and "did not create one" would
+ * both read as "called execute".
+ *
+ * Routing also fails loudly on a request nothing here knows about, which is the
+ * check a bus needs most: a typo'd command class is otherwise a resolved
+ * promise of `undefined` rather than a missing handler.
+ */
+const usersModule = {
   findByEmail: jest.fn(),
   create: jest.fn(),
   update: jest.fn(),
   findByProviderAccount: jest.fn(),
 };
+
+const mockCommandBus = { execute: jest.fn() };
+const mockQueryBus = { execute: jest.fn() };
+
+/** Re-applied after `resetAllMocks`, which drops implementations as well as calls. */
+function routeBusesToUsersModule(): void {
+  mockCommandBus.execute.mockImplementation((command: unknown) => {
+    if (command instanceof CreateUserCommand) return usersModule.create(command.data, command.tx);
+    if (command instanceof UpdateUserCommand) {
+      return usersModule.update(command.id, command.data, command.expected);
+    }
+    throw new Error(`No handler for ${describeRequest(command)}`);
+  });
+  mockQueryBus.execute.mockImplementation((query: unknown) => {
+    if (query instanceof FindUserByEmailQuery) return usersModule.findByEmail(query.email);
+    if (query instanceof FindUserByProviderAccountQuery) {
+      return usersModule.findByProviderAccount(query.provider, query.providerAccountId);
+    }
+    throw new Error(`No handler for ${describeRequest(query)}`);
+  });
+}
+
+function describeRequest(request: unknown): string {
+  return typeof request === "object" && request !== null
+    ? request.constructor.name
+    : String(request);
+}
 
 const mockJwtService = {
   sign: jest.fn(),
@@ -87,6 +130,7 @@ describe("AuthService", () => {
 
   beforeEach(async () => {
     jest.resetAllMocks();
+    routeBusesToUsersModule();
     mockJwtService.sign.mockReturnValue("mock-access-token");
     mockConfigService.get.mockReturnValue("7d");
     mockConfigService.getOrThrow.mockReturnValue("test-secret");
@@ -102,7 +146,8 @@ describe("AuthService", () => {
         // payload against its schema, and a permissive stub here would stop
         // these suites noticing an event they emit that no consumer can read.
         { provide: EventContract, useFactory: realEventContract },
-        { provide: UsersService, useValue: mockUsersService },
+        { provide: CommandBus, useValue: mockCommandBus },
+        { provide: QueryBus, useValue: mockQueryBus },
         { provide: JwtService, useValue: mockJwtService },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: REFRESH_TOKEN_STORE, useValue: mockRefreshTokens },
@@ -116,25 +161,25 @@ describe("AuthService", () => {
 
   describe("register", () => {
     it("throws ConflictException when email already in use", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(mockUser);
+      usersModule.findByEmail.mockResolvedValue(mockUser);
 
       await expect(
         service.register({ email: "test@example.com", password: "password123" }),
       ).rejects.toThrow(ConflictException);
 
-      expect(mockUsersService.create).not.toHaveBeenCalled();
+      expect(usersModule.create).not.toHaveBeenCalled();
     });
 
     it("hashes password, creates user, and returns tokens", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
-      mockUsersService.create.mockResolvedValue(mockUser);
+      usersModule.create.mockResolvedValue(mockUser);
       mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       const result = await service.register({ email: "test@example.com", password: "password123" });
 
       expect(argon2.hash).toHaveBeenCalledWith("password123");
-      expect(mockUsersService.create).toHaveBeenCalledWith(
+      expect(usersModule.create).toHaveBeenCalledWith(
         expect.objectContaining({ email: "test@example.com", password: "hashed-password" }),
         // The unit of work the event is staged in. Asserted properly in
         // "writes the row and the event in one unit of work" below.
@@ -145,9 +190,9 @@ describe("AuthService", () => {
     });
 
     it("announces user.registered so subscribers need no reference to auth", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
-      mockUsersService.create.mockResolvedValue(mockUser);
+      usersModule.create.mockResolvedValue(mockUser);
       mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       await service.register({ email: "test@example.com", password: "password123" });
@@ -166,9 +211,9 @@ describe("AuthService", () => {
     });
 
     it("writes the row and the event in one unit of work", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
-      mockUsersService.create.mockResolvedValue(mockUser);
+      usersModule.create.mockResolvedValue(mockUser);
       mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       await service.register({ email: "test@example.com", password: "password123" });
@@ -177,7 +222,7 @@ describe("AuthService", () => {
       expect(transactions.committed).toBe(1);
       // The insert is enrolled in it — a `create` called without the handle
       // would run on its own connection and commit independently of the event.
-      expect(mockUsersService.create).toHaveBeenCalledWith(
+      expect(usersModule.create).toHaveBeenCalledWith(
         expect.objectContaining({ email: "test@example.com" }),
         expect.objectContaining({ backend: "in-memory" }),
       );
@@ -185,12 +230,12 @@ describe("AuthService", () => {
 
     it("hashes the password outside the transaction", async () => {
       const order: string[] = [];
-      mockUsersService.findByEmail.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockImplementation(() => {
         order.push("hash");
         return Promise.resolve("hashed-password");
       });
-      mockUsersService.create.mockImplementation(() => {
+      usersModule.create.mockImplementation(() => {
         order.push("create");
         return Promise.resolve(mockUser);
       });
@@ -206,7 +251,7 @@ describe("AuthService", () => {
     });
 
     it("stages nothing, and opens no transaction, when the email is already taken", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(mockUser);
+      usersModule.findByEmail.mockResolvedValue(mockUser);
 
       await expect(
         service.register({ email: "test@example.com", password: "password123" }),
@@ -217,9 +262,9 @@ describe("AuthService", () => {
     });
 
     it("discards the event when the unit of work fails", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
-      mockUsersService.create.mockRejectedValue(new Error("unique violation"));
+      usersModule.create.mockRejectedValue(new Error("unique violation"));
 
       await expect(
         service.register({ email: "test@example.com", password: "password123" }),
@@ -232,7 +277,7 @@ describe("AuthService", () => {
 
   describe("login", () => {
     it("throws UnauthorizedException when user not found", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(null);
 
       await expect(
         service.login({ email: "unknown@example.com", password: "password123" }),
@@ -240,7 +285,7 @@ describe("AuthService", () => {
     });
 
     it("throws UnauthorizedException when password is wrong", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(mockUser);
+      usersModule.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(false);
 
       await expect(service.login({ email: "test@example.com", password: "wrong" })).rejects.toThrow(
@@ -249,7 +294,7 @@ describe("AuthService", () => {
     });
 
     it("returns tokens on valid credentials", async () => {
-      mockUsersService.findByEmail.mockResolvedValue(mockUser);
+      usersModule.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(true);
       mockRefreshTokens.issue.mockResolvedValue(undefined);
 
@@ -334,9 +379,9 @@ describe("AuthService", () => {
     const googleProfile = { googleId: "g-123", email: "google@example.com", name: "Google User" };
 
     it("creates a new user when no account exists for the Google ID or email", async () => {
-      mockUsersService.findByProviderAccount.mockResolvedValue(null);
-      mockUsersService.findByEmail.mockResolvedValue(null);
-      mockUsersService.create.mockResolvedValue({
+      usersModule.findByProviderAccount.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(null);
+      usersModule.create.mockResolvedValue({
         ...mockUser,
         email: googleProfile.email,
         provider: "google",
@@ -345,7 +390,7 @@ describe("AuthService", () => {
 
       const result = await service.loginWithGoogle(googleProfile);
 
-      expect(mockUsersService.create).toHaveBeenCalledWith(
+      expect(usersModule.create).toHaveBeenCalledWith(
         expect.objectContaining({
           email: googleProfile.email,
           provider: "google",
@@ -363,9 +408,9 @@ describe("AuthService", () => {
     });
 
     it("links Google account to an existing user found by email", async () => {
-      mockUsersService.findByProviderAccount.mockResolvedValue(null);
-      mockUsersService.findByEmail.mockResolvedValue(mockUser);
-      mockUsersService.update.mockResolvedValue({
+      usersModule.findByProviderAccount.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(mockUser);
+      usersModule.update.mockResolvedValue({
         ...mockUser,
         provider: "google",
         providerAccountId: "g-123",
@@ -374,7 +419,7 @@ describe("AuthService", () => {
 
       const result = await service.loginWithGoogle(googleProfile);
 
-      expect(mockUsersService.update).toHaveBeenCalledWith(
+      expect(usersModule.update).toHaveBeenCalledWith(
         mockUser.id,
         expect.objectContaining({ provider: "google", providerAccountId: "g-123" }),
         // Unconditional: the OAuth callback is not a client proposing an edit
@@ -388,13 +433,13 @@ describe("AuthService", () => {
 
     it("returns tokens for an existing user matched by Google provider account ID", async () => {
       const googleUser = { ...mockUser, provider: "google", providerAccountId: "g-123" };
-      mockUsersService.findByProviderAccount.mockResolvedValue(googleUser);
+      usersModule.findByProviderAccount.mockResolvedValue(googleUser);
       mockRefreshTokens.issue.mockResolvedValue(undefined);
 
       const result = await service.loginWithGoogle(googleProfile);
 
-      expect(mockUsersService.findByEmail).not.toHaveBeenCalled();
-      expect(mockUsersService.create).not.toHaveBeenCalled();
+      expect(usersModule.findByEmail).not.toHaveBeenCalled();
+      expect(usersModule.create).not.toHaveBeenCalled();
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
       expect(staged()).toEqual([]);
     });

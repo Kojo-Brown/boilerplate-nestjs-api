@@ -14,6 +14,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
+import { CommandBus, QueryBus } from "@nestjs/cqrs";
 import {
   ApiBody,
   ApiConsumes,
@@ -33,10 +34,18 @@ import {
   type ExpectedVersion,
 } from "@/common/concurrency";
 import { UserResourceCacheInterceptor } from "./user-resource.cache.interceptor";
-import { USERS_LIST_CACHE_KEY } from "./users.service";
-import { UsersService } from "./users.service";
-import { UserAccessPolicy } from "./users.access-policy";
-import { StorageService } from "@/storage/storage.service";
+import {
+  GetUserPreferencesQuery,
+  GetUserQuery,
+  ListUsersQuery,
+  USERS_LIST_CACHE_KEY,
+} from "./read";
+import {
+  DeleteUserCommand,
+  UpdateUserAvatarCommand,
+  UpdateUserPreferencesCommand,
+  UpdateUserProfileCommand,
+} from "./write";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UserResponseDto } from "./dto/user-response.dto";
 import { UserPreferencesDto } from "./dto/user-preferences.dto";
@@ -59,15 +68,25 @@ import type { AuthenticatedUser } from "@/auth/strategies/jwt.strategy";
 const AVATAR_ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const AVATAR_MAX_SIZE_BYTES = 5 * 1024 * 1024;
 
+/**
+ * HTTP for the users resource, and nothing else.
+ *
+ * Every endpoint is a translation: parse and validate the request, dispatch one
+ * command or one query, shape the answer. There is no branching left here — the
+ * ownership checks, the preconditions, the S3 upload and the object key all
+ * moved into the handlers, because each of them was a decision about what the
+ * operation *means* rather than about how it arrives. What remains is the part
+ * that is genuinely HTTP: the multipart limits, the cache interceptors, the
+ * `ETag` written by `versioned()`, and the OpenAPI description.
+ */
 @ApiTags("users")
 @ApiJwtAuth()
 @UseGuards(JwtAuthGuard)
 @Controller("users")
 export class UsersController {
   constructor(
-    private readonly users: UsersService,
-    private readonly storage: StorageService,
-    private readonly policy: UserAccessPolicy,
+    private readonly commands: CommandBus,
+    private readonly queries: QueryBus,
   ) {}
 
   @Get()
@@ -84,7 +103,7 @@ export class UsersController {
   @ApiForbiddenRole()
   @ApiCommonErrors()
   listUsers(@Query() query: ListUsersQueryDto) {
-    return this.users.listUsers(query);
+    return this.queries.execute(new ListUsersQuery(query));
   }
 
   @Get(":id")
@@ -101,7 +120,7 @@ export class UsersController {
   @ApiNotFound("User")
   @ApiCommonErrors()
   async findOne(@Param("id") id: string) {
-    const user = await this.users.findById(id);
+    const user = await this.queries.execute(new GetUserQuery(id));
     return versioned(user, user.version);
   }
 
@@ -123,7 +142,9 @@ export class UsersController {
     @CurrentUser() requester: AuthenticatedUser,
     @IfMatch() expected: ExpectedVersion,
   ) {
-    const user = await this.users.updateSelf(requester, id, dto, expected);
+    const user = await this.commands.execute(
+      new UpdateUserProfileCommand(requester, id, dto, expected),
+    );
     return versioned(user, user.version);
   }
 
@@ -172,20 +193,13 @@ export class UsersController {
     @CurrentUser() requester: AuthenticatedUser,
     @IfMatch() expected: ExpectedVersion,
   ) {
+    // The only check left in the controller, and it belongs here: "the
+    // multipart body carried no `file` part" is a statement about the request,
+    // not about the user being changed.
     if (!file) throw new BadRequestException("No file uploaded");
-    // Checked here rather than in `updateAvatar` so a forbidden request never
-    // reaches S3 — the upload happens before the row is touched.
-    this.policy.assertCanAct(requester, id, "update:avatar");
-    // Same reasoning for the precondition: a request that already cannot win
-    // should not leave a 5 MB object in the bucket that nothing will ever
-    // reference. This does not make the write safe — the row can still move
-    // between here and the update, which is what the conditional write below
-    // is for — it just keeps the common conflict from costing an upload.
-    await this.users.assertPrecondition(id, expected);
-    const ext = (file.originalname.split(".").pop() ?? "bin").toLowerCase();
-    const key = `avatars/${id}/${Date.now()}.${ext}`;
-    await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
-    const user = await this.users.updateAvatar(id, key, expected);
+    const user = await this.commands.execute(
+      new UpdateUserAvatarCommand(requester, id, file, expected),
+    );
     return versioned(user, user.version);
   }
 
@@ -201,7 +215,7 @@ export class UsersController {
   @ApiForbiddenRole()
   @ApiCommonErrors()
   remove(@Param("id") id: string, @IfMatch() expected: ExpectedVersion) {
-    return this.users.remove(id, expected);
+    return this.commands.execute(new DeleteUserCommand(id, expected));
   }
 
   @Get(":id/preferences")
@@ -217,7 +231,9 @@ export class UsersController {
   @ApiForbiddenRole()
   @ApiCommonErrors()
   async getPreferences(@Param("id") id: string, @CurrentUser() requester: AuthenticatedUser) {
-    const { preferences, version } = await this.users.getPreferences(requester, id);
+    const { preferences, version } = await this.queries.execute(
+      new GetUserPreferencesQuery(requester, id),
+    );
     return versioned(preferences, version);
   }
 
@@ -239,11 +255,8 @@ export class UsersController {
     @CurrentUser() requester: AuthenticatedUser,
     @IfMatch() expected: ExpectedVersion,
   ) {
-    const { preferences, version } = await this.users.updatePreferences(
-      requester,
-      id,
-      dto,
-      expected,
+    const { preferences, version } = await this.commands.execute(
+      new UpdateUserPreferencesCommand(requester, id, dto, expected),
     );
     return versioned(preferences, version);
   }

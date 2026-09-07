@@ -5,7 +5,8 @@ import type { DomainEvent, DomainEventName } from "@/events";
 import { toNotification } from "./domain-event-notifications";
 
 /** The names this bridge has a method for. Kept in step with them by hand. */
-type BridgedEventName = "user.registered" | "user.deleted";
+type BridgedEventName =
+  "user.registered" | "user.deleted" | "order.placed" | "order.confirmed" | "order.cancelled";
 
 /**
  * Adding an event to the catalogue without adding a method below is a compile
@@ -63,6 +64,21 @@ export class DomainEventCqrsBridge {
 
   @OnDomainEvent("user.deleted")
   onUserDeleted(event: DomainEvent<"user.deleted">): void {
+    this.forward(event);
+  }
+
+  @OnDomainEvent("order.placed")
+  onOrderPlaced(event: DomainEvent<"order.placed">): void {
+    this.forward(event);
+  }
+
+  @OnDomainEvent("order.confirmed")
+  onOrderConfirmed(event: DomainEvent<"order.confirmed">): void {
+    this.forward(event);
+  }
+
+  @OnDomainEvent("order.cancelled")
+  onOrderCancelled(event: DomainEvent<"order.cancelled">): void {
     this.forward(event);
   }
 

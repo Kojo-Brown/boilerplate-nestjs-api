@@ -1,5 +1,8 @@
 import type { DomainEventName, DomainEventPayloads } from "@/events";
 import type { EventSchema } from "../json-schema";
+import { ORDER_CANCELLED_SCHEMAS } from "./order.cancelled";
+import { ORDER_CONFIRMED_SCHEMAS } from "./order.confirmed";
+import { ORDER_PLACED_SCHEMAS } from "./order.placed";
 import { USER_DELETED_SCHEMAS } from "./user.deleted";
 import { USER_REGISTERED_SCHEMAS } from "./user.registered";
 
@@ -18,6 +21,9 @@ export const SCHEMA_CATALOGUE: {
 } = {
   "user.registered": USER_REGISTERED_SCHEMAS,
   "user.deleted": USER_DELETED_SCHEMAS,
+  "order.placed": ORDER_PLACED_SCHEMAS,
+  "order.confirmed": ORDER_CONFIRMED_SCHEMAS,
+  "order.cancelled": ORDER_CANCELLED_SCHEMAS,
 };
 
 /**
@@ -51,6 +57,30 @@ export const REFERENCE_PAYLOADS: { readonly [K in DomainEventName]: DomainEventP
     userId: "00000000-0000-4000-8000-000000000002",
     email: "reference-deleted@example.test",
   },
+  "order.placed": {
+    orderId: "00000000-0000-4000-8000-000000000010",
+    userId: "00000000-0000-4000-8000-000000000001",
+    totalMinor: 4_999,
+    currency: "GBP",
+    lineCount: 2,
+  },
+  "order.confirmed": {
+    orderId: "00000000-0000-4000-8000-000000000010",
+    userId: "00000000-0000-4000-8000-000000000001",
+    paymentId: "pay_reference_000001",
+    shipmentId: "00000000-0000-4000-8000-000000000010:create-shipment",
+  },
+  "order.cancelled": {
+    orderId: "00000000-0000-4000-8000-000000000011",
+    userId: "00000000-0000-4000-8000-000000000001",
+    reason: 'No carrier serves "AQ"',
+  },
 };
 
-export { USER_DELETED_SCHEMAS, USER_REGISTERED_SCHEMAS };
+export {
+  ORDER_CANCELLED_SCHEMAS,
+  ORDER_CONFIRMED_SCHEMAS,
+  ORDER_PLACED_SCHEMAS,
+  USER_DELETED_SCHEMAS,
+  USER_REGISTERED_SCHEMAS,
+};

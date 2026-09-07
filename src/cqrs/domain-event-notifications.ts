@@ -39,6 +39,15 @@ export class UserRegisteredEvent extends DomainEventNotification<"user.registere
 /** An account is gone. See {@link import("@/events").UserDeletedPayload}. */
 export class UserDeletedEvent extends DomainEventNotification<"user.deleted"> {}
 
+/** A checkout has started. See {@link import("@/events").OrderPlacedPayload}. */
+export class OrderPlacedEvent extends DomainEventNotification<"order.placed"> {}
+
+/** A checkout completed. See {@link import("@/events").OrderConfirmedPayload}. */
+export class OrderConfirmedEvent extends DomainEventNotification<"order.confirmed"> {}
+
+/** A checkout was unwound. See {@link import("@/events").OrderCancelledPayload}. */
+export class OrderCancelledEvent extends DomainEventNotification<"order.cancelled"> {}
+
 /**
  * The catalogue, as constructors.
  *
@@ -53,6 +62,9 @@ export const DOMAIN_EVENT_NOTIFICATIONS: {
 } = {
   "user.registered": UserRegisteredEvent,
   "user.deleted": UserDeletedEvent,
+  "order.placed": OrderPlacedEvent,
+  "order.confirmed": OrderConfirmedEvent,
+  "order.cancelled": OrderCancelledEvent,
 };
 
 /** Wraps an envelope in the notification class registered for its name. */

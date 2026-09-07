@@ -16,13 +16,21 @@ function version(n: number, properties: Record<string, unknown>, required: reado
   } as unknown as EventSchema;
 }
 
-/** A catalogue with a chosen history for `user.deleted` and the real one elsewhere. */
+/**
+ * A catalogue with a chosen history for `user.deleted` and a trivial one for
+ * every other subject.
+ *
+ * Built from `DOMAIN_EVENT_NAMES` rather than listed by hand: the registry
+ * requires a history for every event, so a hand-written fixture goes stale the
+ * moment an event is added and fails with a `TypeError` about `undefined`
+ * rather than with anything about schemas.
+ */
 function catalogueWith(history: readonly EventSchema[]) {
   const base = version(1, { userId: { type: "string" } }, ["userId"]);
-  return {
-    "user.registered": [base],
-    "user.deleted": history,
-  } as const;
+  const catalogue: Record<string, readonly EventSchema[]> = {};
+  for (const name of DOMAIN_EVENT_NAMES) catalogue[name] = [base];
+  catalogue["user.deleted"] = history;
+  return catalogue;
 }
 
 describe("LocalSchemaRegistry", () => {

@@ -177,13 +177,21 @@ docker-compose up        # postgres + redis + api
   needs a subscriber before a dead projection is even visible, why eviction
   stays synchronous while projection does not, and why `CqrsModule.forRoot()`
   must be imported exactly once.
+- [docs/saga.md](./docs/saga.md) — the checkout saga: why there is no
+  transaction that spans a payment gateway and a database and what is bought
+  back instead, why the shipment is the pivot and payment comes after stock,
+  what at-least-once execution demands of every participant (and the two
+  different ways they satisfy it), why a saga takes a lease where the outbox
+  holds a lock, why a lease shorter than a step means charging twice, why a
+  failed compensation is `STUCK` rather than `COMPENSATED`, and why renaming a
+  step is a data migration.
 
 ## Testing
 
 ```bash
 pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
-pnpm test:db       # row-locking and outbox suites — needs Postgres and DATABASE_URL
+pnpm test:db       # row-locking, outbox and saga-store suites — needs Postgres and DATABASE_URL
 
 # The Redlock legs of `pnpm test` need independent Redis nodes. Without
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as

@@ -518,6 +518,69 @@ export const envSchema = z
      * cheap.
      */
     WS_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+
+    /**
+     * Whether this replica advances sagas that nothing is currently driving.
+     *
+     * The union rather than `z.coerce.boolean()`, for the reason
+     * `OUTBOX_RELAY_ENABLED` gives: coercion makes every non-empty string true,
+     * so `=false` would enable the very thing it is spelled to turn off.
+     *
+     * Turning it off is a real deployment — recovery on dedicated workers, API
+     * replicas doing only the in-request advance — and a dangerous one to reach
+     * by accident, which is why the service logs a warning rather than a line
+     * nobody reads when it starts up disabled. With every replica's poller off,
+     * a saga interrupted between two steps stays where it stopped: money
+     * captured and nothing shipped, indefinitely.
+     */
+    SAGA_RECOVERY_ENABLED: z
+      .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+      .default(true)
+      .transform((value) => value === true || value === "true" || value === "1"),
+    /**
+     * How long an interrupted saga may sit before a poller picks it up.
+     *
+     * This is not latency on the happy path — `PlaceOrderHandler` advances the
+     * saga in the request that created it — it is how quickly a retry or a
+     * crashed replica is noticed.
+     */
+    SAGA_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
+    /** Instances claimed per pass. Each one is a chain of remote calls; keep it small. */
+    SAGA_RECOVERY_BATCH_SIZE: z.coerce.number().int().positive().default(20),
+    /**
+     * How long a claim on a saga is good for.
+     *
+     * A lease rather than a row lock, because a step is an arbitrary remote call
+     * and holding a Postgres transaction across one parks a connection on
+     * somebody else's network. The number is a bet: too short and a runner is
+     * replaced while its step is still legitimately running, too long and a
+     * crashed replica's sagas are frozen until it expires. Thirty seconds is
+     * three times the step timeout below, which the refinement enforces.
+     */
+    SAGA_LEASE_MS: z.coerce.number().int().positive().default(30_000),
+    /**
+     * How long one step may take before the orchestrator stops waiting.
+     *
+     * It bounds the *wait*, not the step — JavaScript has no cancellation, so a
+     * call that eventually answers does so into a promise nobody is listening
+     * to while its side effect at the other service happened anyway. That is
+     * why every participant is idempotent on the step's key, and why this must
+     * stay below `SAGA_LEASE_MS`.
+     */
+    SAGA_STEP_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+    /** First retry delay for a failing step, before jitter. The ladder doubles from here. */
+    SAGA_BACKOFF_BASE_MS: z.coerce.number().int().positive().default(500),
+    /** Ceiling on the retry delay, so the ladder plateaus rather than running away. */
+    SAGA_BACKOFF_MAX_MS: z.coerce.number().int().positive().default(60_000),
+    /**
+     * Attempts a step gets before the saga gives up on it and turns around.
+     *
+     * Six with the defaults above is a little over a minute of retrying, which
+     * is shorter than the outbox's twenty because a customer is waiting on the
+     * other end of a checkout and a compensated order they can see beats a
+     * spinner they cannot.
+     */
+    SAGA_MAX_ATTEMPTS: z.coerce.number().int().positive().default(6),
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -819,6 +882,34 @@ export const envSchema = z
             "other Twilio credential is set",
         });
       }
+    }
+
+    /**
+     * A lease shorter than the step it covers is the one saga misconfiguration
+     * that produces a *correctness* failure rather than a slow one, and it does
+     * it quietly. The orchestrator stops waiting for a step at
+     * `SAGA_STEP_TIMEOUT_MS` and treats it as failed; the lease is what stops a
+     * second runner starting the same step in the meantime. Set the lease
+     * shorter and every step that runs long enough to matter is executed twice,
+     * concurrently, by two runners that both believe they hold the saga — a
+     * double charge under a configuration that reads as though it were merely
+     * impatient.
+     *
+     * Checked with a margin rather than at equality: the lease has to cover the
+     * step *and* the write that records it, and that write is a database round
+     * trip nobody has bounded here.
+     */
+    if (env.SAGA_LEASE_MS <= env.SAGA_STEP_TIMEOUT_MS * 2) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["SAGA_LEASE_MS"],
+        message:
+          `SAGA_LEASE_MS (${env.SAGA_LEASE_MS}ms) must be more than twice ` +
+          `SAGA_STEP_TIMEOUT_MS (${env.SAGA_STEP_TIMEOUT_MS}ms). A lease that can expire ` +
+          `while a step is still running lets a second runner start the same step, which ` +
+          `for a payment means charging twice. Raise SAGA_LEASE_MS above ` +
+          `${env.SAGA_STEP_TIMEOUT_MS * 2}ms, or lower SAGA_STEP_TIMEOUT_MS.`,
+      });
     }
   });
 

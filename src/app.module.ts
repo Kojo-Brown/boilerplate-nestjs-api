@@ -12,11 +12,13 @@ import { EventsModule } from "./events";
 import { MessagingModule } from "./messaging";
 import { OutboxModule } from "./outbox";
 import { SchemaRegistryModule } from "./schema-registry";
+import { SagaModule } from "./saga";
 import { DiScopesModule } from "./di-scopes";
 import { UsersModule } from "./users/users.module";
 import { AuthModule } from "./auth/auth.module";
 import { StorageModule } from "./storage/storage.module";
 import { PaymentsModule } from "./payments/payments.module";
+import { OrdersModule } from "./orders";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { HealthModule } from "./health/health.module";
 import { StreamingModule } from "./streaming";
@@ -64,10 +66,18 @@ import { envSchema } from "./config/env.schema";
     // through `DomainEventBus`. Any module that writes something worth
     // announcing stages it here.
     OutboxModule,
+    // Global, and after OutboxModule: a saga step stages events through
+    // `TransactionalOutbox`, and `SagaRecoveryService` starts polling on
+    // `onApplicationBootstrap` — after every module's `onModuleInit`, which is
+    // where a definition registers itself. See src/saga/saga.module.ts.
+    SagaModule,
     AuthModule,
     UsersModule,
     StorageModule,
     PaymentsModule,
+    // After SagaModule and PaymentsModule: `CheckoutSaga` registers the
+    // `order.checkout` definition and charges through `PaymentProviderFactory`.
+    OrdersModule,
     NotificationsModule,
     HealthModule,
     QueueModule,

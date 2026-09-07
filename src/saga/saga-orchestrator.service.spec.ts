@@ -192,8 +192,17 @@ describe("SagaOrchestrator", () => {
       expect(settled?.status).toBe("RUNNING");
       expect(settled?.cursor).toBe(1);
       expect(settled?.attempts).toBe(1);
-      // Half of the first rung — the jitter source is pinned at 0.5.
-      expect(settled?.nextAttemptAt.getTime()).toBe(now.getTime() + 500);
+      // Half of the first rung, since the jitter source is pinned at 0.5 — but
+      // measured as a floor rather than an equality. The ladder is stamped from
+      // the clock the *step* finished on, not from the `now` this advance was
+      // claimed with, which is deliberate: a multi-step advance must not
+      // schedule its third step's retry from a reading taken before its first
+      // step ran. So anything the two clocks differ by lands on top of the 500,
+      // and asserting equality makes the spec fail on a loaded machine and pass
+      // on an idle one.
+      const delay = (settled?.nextAttemptAt.getTime() ?? 0) - now.getTime();
+      expect(delay).toBeGreaterThanOrEqual(500);
+      expect(delay).toBeLessThan(1_000);
       expect(trace).toEqual(["one", "two"]);
     });
 

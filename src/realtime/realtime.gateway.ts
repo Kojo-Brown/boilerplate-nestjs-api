@@ -276,6 +276,21 @@ export class RealtimeGateway
     this.broadcast(event);
   }
 
+  @OnDomainEvent("order.placed")
+  onOrderPlaced(event: DomainEvent<"order.placed">): void {
+    this.broadcast(event);
+  }
+
+  @OnDomainEvent("order.confirmed")
+  onOrderConfirmed(event: DomainEvent<"order.confirmed">): void {
+    this.broadcast(event);
+  }
+
+  @OnDomainEvent("order.cancelled")
+  onOrderCancelled(event: DomainEvent<"order.cancelled">): void {
+    this.broadcast(event);
+  }
+
   onApplicationBootstrap(): void {
     this.sweep = setInterval(() => this.runSweep(), this.options.heartbeatIntervalMs);
     // The timer must not be what keeps the process alive. `EventStreamHub` has

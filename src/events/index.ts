@@ -12,6 +12,9 @@ export type {
   DomainEventPayloads,
   HandlerOutcome,
   StoredDomainEvent,
+  OrderCancelledPayload,
+  OrderConfirmedPayload,
+  OrderPlacedPayload,
   UserDeletedPayload,
   UserRegisteredPayload,
 } from "./domain-event";

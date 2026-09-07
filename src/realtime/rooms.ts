@@ -80,6 +80,14 @@ export function roomsFor(event: AnyDomainEvent): readonly RoomName[] {
       return [userRoom(event.payload.userId), eventRoom(event.name)];
     case "user.deleted":
       return [userRoom(event.payload.userId), eventRoom(event.name)];
+    case "order.placed":
+    case "order.confirmed":
+    case "order.cancelled":
+      // The customer's room, not an order room. A room is held for the life of
+      // a connection, and a client that had to join a room per order would have
+      // to know the id before the order exists — which is exactly the event it
+      // is waiting for.
+      return [userRoom(event.payload.userId), eventRoom(event.name)];
     default: {
       const unhandled: never = event;
       void unhandled;

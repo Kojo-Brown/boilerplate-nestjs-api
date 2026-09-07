@@ -15,6 +15,13 @@ process.env["PORT"] = "0";
 // waiting long enough is a spec that will fail on a slower machine.
 process.env["OUTBOX_RELAY_ENABLED"] = "false";
 
+// The saga recovery poller, for exactly the same reason and with exactly the
+// same replacement: `TestApp.recoverSagas()`. `PlaceOrderHandler` advances a
+// checkout inside the request that placed it, so the poller is only ever the
+// crash-recovery path — and a spec about crash recovery wants to say when the
+// recovery happens rather than sleep until it might have.
+process.env["SAGA_RECOVERY_ENABLED"] = "false";
+
 // The SSE endpoint's timings, shrunk so a spec can observe a heartbeat and a
 // replay eviction without waiting on the production defaults. This has to be
 // here rather than in the spec: `ConfigModule.forRoot` reads and validates the

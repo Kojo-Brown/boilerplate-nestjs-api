@@ -26,6 +26,7 @@ model User {
   version Int @default(0)
 
   refreshTokens RefreshToken[]
+  orders        Order[]
 
   @@map("users")
 }
@@ -96,6 +97,146 @@ enum OutboxStatus {
   /// Attempts are exhausted; a human has to look. Terminal until someone
   /// resets it.
   DEAD
+}
+
+/// One checkout attempt. The customer-facing record of what was ordered and how
+/// it ended; the steps that got it there live on the `SagaInstance` that drives
+/// it. See docs/saga.md.
+model Order {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Denormalised onto the order rather than joined from a catalogue, because
+  /// an order is a record of what was agreed at the time: a price that later
+  /// changes must not rewrite an order already placed.
+  items Json
+
+  /// Integer minor units — cents, pence, sen — the same representation
+  /// `src/payments/money.ts` uses everywhere. A `Decimal` would be
+  /// defensible; a `Float` would not.
+  totalMinor Int
+  /// Upper-case ISO 4217.
+  currency String
+  /// ISO-3166 alpha-2. The shipping service refuses destinations it has no
+  /// carrier for, which is what makes an order fail at the pivot step.
+  shippingCountry String
+
+  status OrderStatus @default(PENDING)
+
+  /// Why the order was cancelled, in the words of the step that failed. Null
+  /// for an order that has not been cancelled.
+  failureReason String?
+
+  /// The saga driving this order. One-to-one and set at creation in the same
+  /// transaction as the row, so an order can never exist with nothing to
+  /// advance it.
+  sagaId String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// `GET /v1/orders` is "this customer's orders, newest first".
+  @@index([userId, createdAt])
+  @@map("orders")
+}
+
+enum OrderStatus {
+  /// Created; the saga has not accepted it yet.
+  PENDING
+  /// The saga is working through its steps.
+  PROCESSING
+  /// Paid, shipped, and confirmed. Terminal.
+  CONFIRMED
+  /// A step failed and everything before it was compensated. Terminal.
+  CANCELLED
+}
+
+/// One running saga: which step it is on, which way it is going, and everything
+/// it has learned so far. Durable because the alternative is a promise chain,
+/// and a promise chain that dies mid-flight leaves money taken for goods that
+/// were never shipped. See docs/saga.md.
+model SagaInstance {
+  id String @id @default(cuid())
+
+  /// The definition this row is an instance of, as registered with
+  /// `SagaRegistry` — `order.checkout` is the only one today. Stored as text
+  /// for the reason `outbox_events.name` is: the database has no reason to
+  /// care, and a deploy that retires a saga must not be blocked by rows still
+  /// running under it.
+  name String
+
+  status SagaStatus @default(RUNNING)
+
+  /// The step the saga is *at*: the next one to execute while `RUNNING`, the
+  /// one to compensate while `COMPENSATING`. It counts up on the way forward
+  /// and down on the way back, so one column carries the position in both
+  /// directions and there is no second cursor to disagree with it.
+  cursor Int @default(0)
+
+  /// Failures of the step at `cursor`, in the current direction. Reset to zero
+  /// whenever the cursor moves, because the ladder belongs to the step and not
+  /// to the saga.
+  attempts Int @default(0)
+
+  /// The earliest this saga may be advanced. `now()` on a fresh row, so the
+  /// request that created it can run the first step without waiting for a poll.
+  nextAttemptAt DateTime @default(now())
+
+  /// The lease. A saga step is an arbitrary remote call, so — unlike the outbox
+  /// relay, which holds a transaction across a bounded broker publish — an
+  /// advance cannot hold a row lock for its duration without parking a
+  /// connection on somebody else's network. `lockedBy` is the fencing token:
+  /// every write back to this row is conditional on it, so a runner whose lease
+  /// expired mid-step cannot overwrite the runner that replaced it.
+  lockedBy    String?
+  lockedUntil DateTime?
+
+  /// Everything the saga has learned, as JSON: the reservation id, the payment
+  /// id, the shipment id. Written in the same statement as the cursor it
+  /// belongs to, which is the reason it is a column here rather than a table
+  /// of its own.
+  state Json
+
+  /// One entry per step outcome, oldest first. Load-bearing rather than
+  /// decorative: it is what an operator reads to see where a stuck saga stopped
+  /// and what it had already done by then.
+  log Json @default("[]")
+
+  /// The failure that moved the saga backwards, kept for the operator and
+  /// echoed to the customer as `orders.failureReason`.
+  lastError String?
+
+  /// The request that started this, when the caller knew it. Same field, same
+  /// meaning, as `outbox_events.correlationId`.
+  correlationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// The recovery poller's claim is `WHERE status IN ('RUNNING','COMPENSATING')
+  /// AND next_attempt_at <= now() AND (locked_until IS NULL OR locked_until <=
+  /// now()) ORDER BY next_attempt_at`. Terminal sagas are the overwhelming
+  /// majority of a mature table and this index is what keeps the poller from
+  /// reading them every second.
+  @@index([status, nextAttemptAt, lockedUntil])
+  @@map("saga_instances")
+}
+
+enum SagaStatus {
+  /// Working forwards through the steps.
+  RUNNING
+  /// A step failed; working backwards, undoing what completed.
+  COMPENSATING
+  /// Every step succeeded. Terminal.
+  COMPLETED
+  /// Every completed step was undone. Terminal.
+  COMPENSATED
+  /// It can go neither forward nor back on its own — a compensation that has
+  /// run out of attempts, or a step past the pivot that cannot be rolled back.
+  /// Terminal until a human intervenes, and the one status worth an alert.
+  STUCK
 }
 
 enum Role {

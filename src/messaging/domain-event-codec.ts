@@ -100,12 +100,25 @@ export const EVENT_CONTENT_TYPE = "application/json";
  * appealing mistake, since it is right there and unique — spreads one
  * aggregate's events across every partition, and `user.deleted` then arrives
  * before the `user.registered` it followed.
+ *
+ * The order events are keyed by user id too, not by order id, and the choice is
+ * worth stating because the obvious answer is the other one. Keying by order id
+ * orders one order's events; keying by user id orders one *customer's* — which
+ * includes every one of their orders, since all of an order's events carry the
+ * same user — so it is strictly stronger, and it is the only key under which
+ * `user.deleted` cannot overtake the `order.confirmed` that preceded it. What
+ * it costs is a hot partition for a customer who orders far more than anyone
+ * else, which is a problem worth having later rather than an ordering bug worth
+ * shipping now.
  */
 const PARTITION_KEY: {
   readonly [K in DomainEventName]: (payload: DomainEventPayloads[K]) => string;
 } = {
   "user.registered": (payload) => payload.userId,
   "user.deleted": (payload) => payload.userId,
+  "order.placed": (payload) => payload.userId,
+  "order.confirmed": (payload) => payload.userId,
+  "order.cancelled": (payload) => payload.userId,
 };
 
 export function partitionKeyFor(event: StoredDomainEvent): string {

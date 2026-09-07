@@ -39,6 +39,15 @@ export function isVisibleTo(event: AnyDomainEvent, audience: StreamAudience): bo
       // connection stays open and authenticated until the JWT expires. Telling
       // them their account is gone is the one thing this event is good for.
       return event.payload.userId === audience.id;
+    case "order.placed":
+    case "order.confirmed":
+    case "order.cancelled":
+      // The customer's own checkout, live: this is the stream a "your order is
+      // on its way" toast reads. `order.cancelled` carries the failing step's
+      // message, which is written for the customer — and is one more reason the
+      // rule is ownership rather than broadcast, since it names why a stranger's
+      // payment was declined.
+      return event.payload.userId === audience.id;
     default: {
       const unhandled: never = event;
       void unhandled;

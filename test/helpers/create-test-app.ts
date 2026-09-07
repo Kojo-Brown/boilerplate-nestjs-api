@@ -17,8 +17,14 @@ import { DeepFreezePipe, freezingEnabledFor } from "@/common/immutable";
 import { REFRESH_TOKEN_STORE } from "@/auth/ports";
 import { OUTBOX_STORE, OutboxRelayService } from "@/outbox";
 import type { DrainReport } from "@/outbox";
+import { SAGA_STORE, SagaRecoveryService } from "@/saga";
+import type { RecoveryReport } from "@/saga";
+import { INVENTORY_SERVICE, ORDER_STORE, SHIPPING_SERVICE } from "@/orders";
+import type { InMemoryInventoryService, InMemoryShippingService } from "@/orders";
 import { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
+import { InMemorySagaStore } from "@/test-utils/in-memory-saga.store";
+import { InMemoryOrderStore } from "@/test-utils/in-memory-order.store";
 import { InMemoryPrismaService } from "./in-memory-prisma";
 
 /**
@@ -71,6 +77,14 @@ export interface TestApp {
   refreshTokens: InMemoryRefreshTokenStore;
   /** The outbox rows the app has staged, for asserting on what was announced. */
   outbox: InMemoryOutboxStore;
+  /** The saga instances the app has started, for asserting on where a checkout got to. */
+  sagas: InMemorySagaStore;
+  /** The orders the app has written. */
+  orders: InMemoryOrderStore;
+  /** The warehouse the checkout saga reserves against, for stocking a shelf. */
+  inventory: InMemoryInventoryService;
+  /** The carrier the checkout saga books through. */
+  shipping: InMemoryShippingService;
   /**
    * Runs one relay pass and reports it.
    *
@@ -81,6 +95,16 @@ export interface TestApp {
    * through.
    */
   drainOutbox: () => Promise<DrainReport>;
+  /**
+   * Runs one saga recovery pass and reports it.
+   *
+   * The counterpart of `drainOutbox`, and needed for the same class of spec:
+   * `SAGA_RECOVERY_ENABLED` is off in the test environment, so a saga that
+   * asked to be retried later — or that a simulated crash left mid-flight —
+   * moves when a spec says it does and not on a timer it would have to sleep
+   * through.
+   */
+  recoverSagas: (now?: Date) => Promise<RecoveryReport>;
 }
 
 export async function createTestApp(): Promise<TestApp> {
@@ -102,6 +126,14 @@ export async function createTestApp(): Promise<TestApp> {
   // exercise — writing through a handle it recognises, and keeps the
   // `onRollback` hook the in-memory outbox depends on.
   const outbox = new InMemoryOutboxStore();
+  // `PrismaSagaStore` claims instances with a single `UPDATE … RETURNING` and
+  // `PrismaOrderStore` writes inside the caller's interactive transaction —
+  // neither of which `InMemoryPrismaService` has a delegate for. Both ports are
+  // substituted rather than the client underneath them, exactly as the outbox
+  // and refresh-token stores are, and both doubles are held to the same
+  // behavioural contract as the adapters they replace.
+  const sagas = new InMemorySagaStore();
+  const orders = new InMemoryOrderStore();
 
   const moduleFixture = await Test.createTestingModule({
     imports: [AppModule],
@@ -114,6 +146,10 @@ export async function createTestApp(): Promise<TestApp> {
     .useValue(refreshTokens)
     .overrideProvider(OUTBOX_STORE)
     .useValue(outbox)
+    .overrideProvider(SAGA_STORE)
+    .useValue(sagas)
+    .overrideProvider(ORDER_STORE)
+    .useValue(orders)
     // A whole suite makes far more auth calls per minute than any real client,
     // so the rate limiter would 429 every spec after the tenth. The guard itself
     // is registered via `{ provide: APP_GUARD, useClass }` and so cannot be
@@ -171,6 +207,7 @@ export async function createTestApp(): Promise<TestApp> {
   await app.init();
 
   const relay = app.get(OutboxRelayService);
+  const recovery = app.get(SagaRecoveryService);
 
   return {
     app,
@@ -178,6 +215,14 @@ export async function createTestApp(): Promise<TestApp> {
     emails: app.get<RecordingEmailQueue>(EmailQueueService),
     refreshTokens,
     outbox,
+    sagas,
+    orders,
+    // Resolved from the container rather than constructed here: the checkout
+    // saga holds the instances the module bound, and a second warehouse would
+    // have different stock on its shelves.
+    inventory: app.get<InMemoryInventoryService>(INVENTORY_SERVICE),
+    shipping: app.get<InMemoryShippingService>(SHIPPING_SERVICE),
     drainOutbox: () => relay.runOnce(),
+    recoverSagas: (now?: Date) => recovery.runOnce(now),
   };
 }

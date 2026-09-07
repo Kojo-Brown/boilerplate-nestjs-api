@@ -14,6 +14,9 @@
 export interface DomainEventPayloads {
   "user.registered": UserRegisteredPayload;
   "user.deleted": UserDeletedPayload;
+  "order.placed": OrderPlacedPayload;
+  "order.confirmed": OrderConfirmedPayload;
+  "order.cancelled": OrderCancelledPayload;
 }
 
 /**
@@ -41,6 +44,49 @@ export interface UserDeletedPayload {
   readonly email: string;
 }
 
+/**
+ * A customer has asked to buy something. Staged in the same transaction as the
+ * order row and the saga that will drive it, so it cannot describe an order
+ * that does not exist — and cannot be missing for one that does.
+ *
+ * "Placed" is not "paid". Nothing has been reserved, charged or shipped when
+ * this is emitted; `order.confirmed` and `order.cancelled` are the outcomes.
+ */
+export interface OrderPlacedPayload {
+  readonly orderId: string;
+  readonly userId: string;
+  /** Integer minor units, matching `src/payments/money.ts`. */
+  readonly totalMinor: number;
+  /** Upper-case ISO 4217. */
+  readonly currency: string;
+  /** How many lines, not how many units. Enough for a dashboard, no basket contents. */
+  readonly lineCount: number;
+}
+
+/** Paid and shipped. The checkout saga completed. */
+export interface OrderConfirmedPayload {
+  readonly orderId: string;
+  readonly userId: string;
+  /** The gateway's payment id, for reconciliation. */
+  readonly paymentId: string;
+  readonly shipmentId: string;
+}
+
+/**
+ * A checkout that could not be completed and was unwound.
+ *
+ * Emitted by the compensation that cancels the order, so by the time a
+ * subscriber sees it the stock is back on the shelf and any money taken has
+ * been refunded — which is what makes it safe for a subscriber to tell the
+ * customer.
+ */
+export interface OrderCancelledPayload {
+  readonly orderId: string;
+  readonly userId: string;
+  /** The failing step's message, as the customer will be shown it. */
+  readonly reason: string;
+}
+
 export type DomainEventName = keyof DomainEventPayloads & string;
 
 /**
@@ -53,7 +99,13 @@ export type DomainEventName = keyof DomainEventPayloads & string;
  * behind is the case — those rows are dead-lettered with a message saying so
  * rather than crashing the relay on every tick.
  */
-export const DOMAIN_EVENT_NAMES = ["user.registered", "user.deleted"] as const;
+export const DOMAIN_EVENT_NAMES = [
+  "user.registered",
+  "user.deleted",
+  "order.placed",
+  "order.confirmed",
+  "order.cancelled",
+] as const;
 
 /**
  * Adding an event to {@link DomainEventPayloads} without adding it here is a

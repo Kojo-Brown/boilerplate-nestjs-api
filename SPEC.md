@@ -94,7 +94,7 @@ and Node 24.
 
 ## Phase 11 — Resilience & Observability
 
-- [ ] Circuit breaker + retry with full jitter (opossum) on all outbound HTTP
+- [x] Circuit breaker + retry with full jitter (opossum) on all outbound HTTP — one opossum breaker per dependency in front of every `fetch` the service makes, and the shared `common/backoff` ladder around the calls that can safely take one. A 4xx that is not 408 or 429 is neither retried nor counted against the breaker, so a run of 404s from `find()` cannot take an integration out; retrying is opt-in for anything but a safe method, and both payment adapters derive that flag from the idempotency header they already send, which leaves a keyless refund, a Twilio message and an Expo batch with the breaker and exactly one attempt. The ladder sits outside the breaker so every attempt is counted and an open circuit ends it immediately, and opossum's own timeout is off because `AbortSignal.timeout` is the one that can actually abort the socket. `Retry-After` is honoured in either RFC 9110 form, jittered so a throttled fleet does not return in lockstep, and abandoned when it exceeds the ladder's ceiling (PR #45)
 - [ ] Bulkhead isolation with per-dependency concurrency caps and hard request timeouts
 - [ ] OpenTelemetry traces, metrics, and logs with W3C `traceparent` propagation
 - [ ] Prometheus RED metrics endpoint + a checked-in Grafana dashboard JSON

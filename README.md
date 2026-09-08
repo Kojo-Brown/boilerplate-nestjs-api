@@ -185,6 +185,14 @@ docker-compose up        # postgres + redis + api
   holds a lock, why a lease shorter than a step means charging twice, why a
   failed compensation is `STUCK` rather than `COMPENSATED`, and why renaming a
   step is a data migration.
+- [docs/http-resilience.md](./docs/http-resilience.md) — the circuit breaker and
+  retry ladder in front of every outbound call: why a 404 must not open a
+  breaker while a 429 must, why a retry is only safe for a request carrying an
+  idempotency key (and which of the payment and notification calls that leaves
+  un-retried), why the ladder sits outside the breaker rather than inside it,
+  why opossum's own timeout is off when `AbortSignal` is already on, why
+  `Retry-After` is honoured but still jittered, and why this is not the
+  `@Retry()` aspect.
 
 ## Testing
 

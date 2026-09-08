@@ -2,6 +2,7 @@ import { NotificationAddressRejectedError, NotificationChannelError } from "../n
 import { PushNotificationChannel } from "./push-notification.channel";
 import { FakeExpoPushApi } from "@/test-utils/fake-expo-push-api";
 import { stubConfig } from "@/test-utils/stub-config";
+import { testHttpClient } from "@/test-utils/test-http-client";
 import type { Notification, NotificationRecipient } from "../ports";
 
 const BASE_URL = "https://expo.test";
@@ -33,6 +34,7 @@ const channel = (overrides: Record<string, string | undefined> = {}): PushNotifi
       EXPO_PUSH_API_BASE_URL: BASE_URL,
       ...overrides,
     }),
+    testHttpClient().client,
   );
 
 beforeEach(() => {

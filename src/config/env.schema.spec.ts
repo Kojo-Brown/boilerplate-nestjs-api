@@ -616,3 +616,65 @@ describe("envSchema — server-sent events", () => {
     expect(() => envSchema.parse({ ...BASE_ENV, [key]: value })).toThrow();
   });
 });
+
+describe("envSchema — outbound HTTP resilience", () => {
+  it("defaults to a three-attempt ladder and a 50% breaker over ten seconds", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.HTTP_RETRY_MAX_ATTEMPTS).toBe(3);
+    expect(env.HTTP_RETRY_BASE_MS).toBe(200);
+    expect(env.HTTP_RETRY_MAX_DELAY_MS).toBe(2_000);
+    expect(env.HTTP_BREAKER_FAILURE_THRESHOLD_PERCENT).toBe(50);
+    expect(env.HTTP_BREAKER_VOLUME_THRESHOLD).toBe(10);
+    expect(env.HTTP_BREAKER_ROLLING_WINDOW_MS).toBe(10_000);
+    expect(env.HTTP_BREAKER_ROLLING_BUCKETS).toBe(10);
+    expect(env.HTTP_BREAKER_RESET_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("accepts a single-attempt ladder, which disables retrying but not the breaker", () => {
+    const env = envSchema.parse({ ...BASE_ENV, HTTP_RETRY_MAX_ATTEMPTS: "1" });
+
+    expect(env.HTTP_RETRY_MAX_ATTEMPTS).toBe(1);
+  });
+
+  /**
+   * Opossum divides the rolling window by the bucket count with integer
+   * division and rotates one bucket every interval. Fewer milliseconds than
+   * buckets floors that to zero, and `setInterval(0)` fires as fast as the
+   * event loop allows — on every breaker, for the life of the process. It
+   * surfaces as unaccountable CPU rather than as an error.
+   */
+  it("refuses more buckets than the window has milliseconds", () => {
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        HTTP_BREAKER_ROLLING_WINDOW_MS: "5",
+        HTTP_BREAKER_ROLLING_BUCKETS: "10",
+      }),
+    ).toThrow(/must be at least HTTP_BREAKER_ROLLING_BUCKETS/);
+  });
+
+  it("accepts a window that divides unevenly, which only rounds the history", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      HTTP_BREAKER_ROLLING_WINDOW_MS: "10000",
+      HTTP_BREAKER_ROLLING_BUCKETS: "3",
+    });
+
+    expect(env.HTTP_BREAKER_ROLLING_BUCKETS).toBe(3);
+  });
+
+  it.each([
+    ["HTTP_RETRY_MAX_ATTEMPTS", "0"],
+    ["HTTP_RETRY_BASE_MS", "-1"],
+    ["HTTP_RETRY_MAX_DELAY_MS", "0"],
+    // A percentage, so anything outside 1–100 is a typo rather than a setting.
+    ["HTTP_BREAKER_FAILURE_THRESHOLD_PERCENT", "0"],
+    ["HTTP_BREAKER_FAILURE_THRESHOLD_PERCENT", "101"],
+    ["HTTP_BREAKER_VOLUME_THRESHOLD", "0"],
+    ["HTTP_BREAKER_ROLLING_BUCKETS", "0"],
+    ["HTTP_BREAKER_RESET_TIMEOUT_MS", "not-a-number"],
+  ])("refuses %s=%s at boot rather than at the first outbound call", (key, value) => {
+    expect(() => envSchema.parse({ ...BASE_ENV, [key]: value })).toThrow();
+  });
+});

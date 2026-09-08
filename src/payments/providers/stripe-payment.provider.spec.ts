@@ -3,6 +3,7 @@ import { PaymentProviderError, PaymentProviderNotConfiguredError } from "../paym
 import { StripePaymentProvider } from "./stripe-payment.provider";
 import { FakeStripeApi } from "@/test-utils/fake-stripe-api";
 import { stubConfig } from "@/test-utils/stub-config";
+import { testHttpClient } from "@/test-utils/test-http-client";
 
 const BASE_URL = "https://stripe.test";
 const SECRET_KEY = "sk_test_fake_key_for_unit_tests";
@@ -14,6 +15,11 @@ const realFetch = global.fetch;
 function buildProvider(env: Record<string, string | undefined> = {}): StripePaymentProvider {
   return new StripePaymentProvider(
     stubConfig({ STRIPE_SECRET_KEY: SECRET_KEY, STRIPE_API_BASE_URL: BASE_URL, ...env }),
+    // One attempt per call, so these specs assert on what the fake API was
+    // sent rather than on how many times. The ladder itself is covered in
+    // `resilient-http.client.spec.ts`; the breaker is still in the path here,
+    // which is what keeps the wiring honest.
+    testHttpClient().client,
   );
 }
 
@@ -44,7 +50,7 @@ describe("StripePaymentProvider", () => {
 
   describe("when STRIPE_SECRET_KEY is absent", () => {
     it("constructs, reports itself unconfigured, and refuses every call", async () => {
-      const provider = new StripePaymentProvider(stubConfig({}));
+      const provider = new StripePaymentProvider(stubConfig({}), testHttpClient().client);
 
       // Nest instantiates providers eagerly, so an unconfigured Stripe must not
       // throw at construction — only when something actually asks it to work.

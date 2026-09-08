@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { asRecord, readArray, readString, requestJson } from "@/common/http";
+import { asRecord, readArray, readString, ResilientHttpClient } from "@/common/http";
 import { NotificationAddressRejectedError, NotificationChannelError } from "../notification.errors";
 import type {
   Notification,
@@ -52,7 +52,10 @@ export class PushNotificationChannel implements NotificationChannel {
   private readonly accessToken: string | null;
   private readonly baseUrl: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly http: ResilientHttpClient,
+  ) {
     this.accessToken = config.get<string>("EXPO_ACCESS_TOKEN") ?? null;
     this.baseUrl = config.get<string>("EXPO_PUSH_API_BASE_URL") ?? "https://exp.host";
   }
@@ -84,7 +87,10 @@ export class PushNotificationChannel implements NotificationChannel {
     }
     const accessToken = this.requireAccessToken();
 
-    const response = await requestJson(`${this.baseUrl}/--/api/v2/push/send`, {
+    // Breaker, no ladder, for the same reason as SMS: Expo accepts a batch and
+    // delivers it, and a retry after a lost response is a second notification
+    // on every device in that batch.
+    const response = await this.http.request(this.channel, `${this.baseUrl}/--/api/v2/push/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,

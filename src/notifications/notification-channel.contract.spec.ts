@@ -5,6 +5,7 @@ import { SmsNotificationChannel } from "./channels/sms-notification.channel";
 import { FakeExpoPushApi } from "@/test-utils/fake-expo-push-api";
 import { FakeTwilioApi } from "@/test-utils/fake-twilio-api";
 import { stubConfig } from "@/test-utils/stub-config";
+import { testHttpClient } from "@/test-utils/test-http-client";
 import type { EmailQueueService } from "@/queue/email/email-queue.service";
 
 const TWILIO_BASE_URL = "https://twilio.test";
@@ -61,6 +62,7 @@ describeNotificationChannelContract("SmsNotificationChannel", () => {
         TWILIO_FROM_NUMBER,
         TWILIO_API_BASE_URL: TWILIO_BASE_URL,
       }),
+      testHttpClient().client,
     ),
     reachable: () => fullyReachable,
     unreachable: () => ({ ...fullyReachable, phone: null }),
@@ -77,6 +79,7 @@ describeNotificationChannelContract("PushNotificationChannel", () => {
         EXPO_ACCESS_TOKEN,
         EXPO_PUSH_API_BASE_URL: EXPO_BASE_URL,
       }),
+      testHttpClient().client,
     ),
     reachable: () => fullyReachable,
     unreachable: () => ({ ...fullyReachable, deviceTokens: [] }),

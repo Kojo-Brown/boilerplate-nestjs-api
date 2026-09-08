@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { ResilientHttpModule } from "@/common/http";
 import { UsersModule } from "@/users/users.module";
 import { QueueModule } from "@/queue/queue.module";
 import { EmailNotificationChannel } from "./channels/email-notification.channel";
@@ -21,7 +22,9 @@ import type { NotificationChannel } from "./ports";
  * a users command handler can gain a notification without a circular import.
  */
 @Module({
-  imports: [UsersModule, QueueModule],
+  // `ResilientHttpModule` for the SMS and push channels: both are `fetch`
+  // clients and both go out through a breaker of their own.
+  imports: [UsersModule, QueueModule, ResilientHttpModule],
   providers: [
     EmailNotificationChannel,
     SmsNotificationChannel,

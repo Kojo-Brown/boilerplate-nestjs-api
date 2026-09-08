@@ -2,6 +2,7 @@ import { NotificationAddressRejectedError, NotificationChannelError } from "../n
 import { SmsNotificationChannel, composeSms, redactPhone } from "./sms-notification.channel";
 import { FakeTwilioApi } from "@/test-utils/fake-twilio-api";
 import { stubConfig } from "@/test-utils/stub-config";
+import { testHttpClient } from "@/test-utils/test-http-client";
 import type { Notification, NotificationRecipient } from "../ports";
 
 const BASE_URL = "https://twilio.test";
@@ -37,6 +38,10 @@ const channel = (overrides: Record<string, string | undefined> = {}): SmsNotific
       TWILIO_API_BASE_URL: BASE_URL,
       ...overrides,
     }),
+    // One attempt per call: an SMS is never retried in production either, and
+    // these specs assert on what the fake Twilio received. The ladder is
+    // covered in `resilient-http.client.spec.ts`.
+    testHttpClient().client,
   );
 
 beforeEach(() => {
@@ -73,7 +78,7 @@ describe("SmsNotificationChannel", () => {
     it("constructs cleanly with nothing configured and refuses work later", async () => {
       // Nest instantiates every channel eagerly, so an unconfigured Twilio must
       // not throw from the constructor.
-      const unconfigured = new SmsNotificationChannel(stubConfig({}));
+      const unconfigured = new SmsNotificationChannel(stubConfig({}), testHttpClient().client);
 
       expect(unconfigured.isConfigured).toBe(false);
       await expect(unconfigured.send(RECIPIENT, NOTIFICATION)).rejects.toThrow(

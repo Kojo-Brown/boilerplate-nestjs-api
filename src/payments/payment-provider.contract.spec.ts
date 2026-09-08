@@ -5,6 +5,7 @@ import { StripePaymentProvider } from "./providers/stripe-payment.provider";
 import { FakePaypalApi } from "@/test-utils/fake-paypal-api";
 import { FakeStripeApi } from "@/test-utils/fake-stripe-api";
 import { stubConfig } from "@/test-utils/stub-config";
+import { testHttpClient } from "@/test-utils/test-http-client";
 
 const STRIPE_BASE_URL = "https://stripe.test";
 const STRIPE_SECRET_KEY = "sk_test_fake_key_for_unit_tests";
@@ -35,6 +36,7 @@ describePaymentProviderContract("StripePaymentProvider", () => {
         STRIPE_SECRET_KEY,
         STRIPE_API_BASE_URL: STRIPE_BASE_URL,
       }),
+      testHttpClient().client,
     ),
     // Stripe's approval happens client-side against the intent's client secret,
     // before the server ever sees it; the fake creates intents already
@@ -54,6 +56,7 @@ describePaymentProviderContract("PaypalPaymentProvider", () => {
         PAYPAL_CLIENT_SECRET,
         PAYPAL_API_BASE_URL: PAYPAL_BASE_URL,
       }),
+      testHttpClient().client,
     ),
     // The buyer approving on PayPal's site. Without it the order stays CREATED
     // and PayPal answers a capture with 422/ORDER_NOT_APPROVED.

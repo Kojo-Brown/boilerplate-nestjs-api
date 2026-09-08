@@ -8,6 +8,7 @@ import { PaypalPaymentProvider } from "./paypal-payment.provider";
 import { FakePaypalApi } from "@/test-utils/fake-paypal-api";
 import type { FakePaypalRequest } from "@/test-utils/fake-paypal-api";
 import { stubConfig } from "@/test-utils/stub-config";
+import { testHttpClient } from "@/test-utils/test-http-client";
 
 const BASE_URL = "https://paypal.test";
 const CLIENT_ID = "fake-paypal-client-id";
@@ -25,6 +26,10 @@ function buildProvider(env: Record<string, string | undefined> = {}): PaypalPaym
       PAYPAL_API_BASE_URL: BASE_URL,
       ...env,
     }),
+    // One attempt per call, so these specs assert on what the fake PayPal was
+    // sent rather than on how many times. The ladder has its own spec; the
+    // breaker is still in the path here, which is what keeps the wiring honest.
+    testHttpClient().client,
   );
 }
 
@@ -67,7 +72,10 @@ describe("PaypalPaymentProvider", () => {
 
   describe("when the client credentials are absent", () => {
     it("constructs, reports itself unconfigured, and refuses every call", async () => {
-      const provider = new PaypalPaymentProvider(stubConfig({ PAYPAL_CLIENT_ID: CLIENT_ID }));
+      const provider = new PaypalPaymentProvider(
+        stubConfig({ PAYPAL_CLIENT_ID: CLIENT_ID }),
+        testHttpClient().client,
+      );
 
       expect(provider.isConfigured).toBe(false);
       await expect(provider.authorize({ amount: AMOUNT, reference: "order-1" })).rejects.toThrow(

@@ -11,7 +11,7 @@ import {
 import { resolveRefundAmount } from "../refund-rules";
 import type { CreatePaymentInput, Payment, PaymentProvider, PaymentProviderName } from "../ports";
 import type { PaymentNextAction, PaymentStatus } from "../ports";
-import { asRecord, readArray, readString, requestJson } from "@/common/http";
+import { asRecord, readArray, readString, ResilientHttpClient } from "@/common/http";
 
 const DEFAULT_BASE_URL = "https://api-m.sandbox.paypal.com";
 
@@ -49,7 +49,10 @@ export class PaypalPaymentProvider implements PaymentProvider {
   /** In-flight token request, shared so concurrent calls make one round trip. */
   private tokenRequest: Promise<string> | null = null;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly http: ResilientHttpClient,
+  ) {
     this.clientId = config.get<string>("PAYPAL_CLIENT_ID") ?? null;
     this.clientSecret = config.get<string>("PAYPAL_CLIENT_SECRET") ?? null;
     this.baseUrl = (config.get<string>("PAYPAL_API_BASE_URL") ?? DEFAULT_BASE_URL).replace(
@@ -151,7 +154,8 @@ export class PaypalPaymentProvider implements PaymentProvider {
 
   private async findOrder(paymentId: string): Promise<unknown> {
     const token = await this.accessToken();
-    const response = await requestJson(
+    const response = await this.http.request(
+      this.name,
       `${this.baseUrl}/v2/checkout/orders/${encodeURIComponent(paymentId)}`,
       { method: "GET", headers: { Authorization: `Bearer ${token}` } },
     );
@@ -191,14 +195,23 @@ export class PaypalPaymentProvider implements PaymentProvider {
     const { clientId, clientSecret } = this.requireCredentials();
     const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
-    const response = await requestJson(`${this.baseUrl}/v1/oauth2/token`, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basic}`,
-        "Content-Type": "application/x-www-form-urlencoded",
+    const response = await this.http.request(
+      this.name,
+      `${this.baseUrl}/v1/oauth2/token`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${basic}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "grant_type=client_credentials",
       },
-      body: "grant_type=client_credentials",
-    });
+      // A POST that creates nothing and moves nothing: it exchanges the client
+      // credentials for a token, and doing that twice costs one extra token
+      // nobody uses. Retrying it is what keeps a blip on the token endpoint
+      // from failing an order the gateway would have accepted.
+      { idempotent: true },
+    );
 
     if (!response.ok) throw this.upstreamError(response.status, response.body);
 
@@ -224,15 +237,25 @@ export class PaypalPaymentProvider implements PaymentProvider {
   ): Promise<unknown> {
     const token = await this.accessToken();
 
-    const response = await requestJson(`${this.baseUrl}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        ...extraHeaders,
+    const response = await this.http.request(
+      this.name,
+      `${this.baseUrl}${path}`,
+      {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          ...extraHeaders,
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+      {
+        // Read off the header for the same reason as Stripe's: a PayPal POST is
+        // replayable exactly when it carries the request id PayPal deduplicates
+        // on. `authorize()` and `capture()` send one; the refund does not.
+        idempotent: "PayPal-Request-Id" in extraHeaders,
+      },
+    );
 
     if (response.ok) return response.body;
 

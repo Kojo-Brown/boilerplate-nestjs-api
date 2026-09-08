@@ -101,6 +101,9 @@ importers:
       keyv:
         specifier: ^5.3.0
         version: 5.6.0
+      opossum:
+        specifier: ^10.0.0
+        version: 10.0.0
       passport:
         specifier: ^0.7.0
         version: 0.7.0
@@ -153,6 +156,9 @@ importers:
       '@types/node':
         specifier: 26.1.1
         version: 26.1.1
+      '@types/opossum':
+        specifier: ^8.1.9
+        version: 8.1.9
       '@types/passport-google-oauth20':
         specifier: ^2.0.16
         version: 2.0.17
@@ -1513,6 +1519,9 @@ packages:
 
   '@types/oauth@0.9.6':
     resolution: {integrity: sha512-H9TRCVKBNOhZZmyHLqFt9drPM9l+ShWiqqJijU1B8P3DX3ub84NjxDuy+Hjrz+fEca5Kwip3qPMKNyiLgNJtIA==}
+
+  '@types/opossum@8.1.9':
+    resolution: {integrity: sha512-Jm/tYxuJFefiwRYs+/EOsUP3ktk0c8siMgAHPLnA4PXF4wKghzcjqf88dY+Xii5jId5Txw4JV0FMKTpjbd7KJA==}
 
   '@types/passport-google-oauth20@2.0.17':
     resolution: {integrity: sha512-MHNOd2l7gOTCn3iS+wInPQMiukliAUvMpODO3VlXxOiwNEMSyzV7UNvAdqxSN872o8OXx1SqPDVT6tLW74AtqQ==}
@@ -3276,6 +3285,10 @@ packages:
   onetime@5.1.2:
     resolution: {integrity: sha512-kbpaSSGJTWdAY5KPVeMOKXSrPtr8C8C7wodJbcsd51jRnmD+GZu8Y0VoU6Dm5Z4vWr0Ig/1NKuWRKf7j5aaYSg==}
     engines: {node: '>=6'}
+
+  opossum@10.0.0:
+    resolution: {integrity: sha512-sghtqL8Usj+et06Zui0nyn0R6FFsl7cyuoU+d7MctYU0nbS7Htzjleh+tWohFqk1Rp1srrFwbFa8Vxd0O64w6A==}
+    engines: {node: ^26 || ^24 || ^22}
 
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
@@ -5723,6 +5736,10 @@ snapshots:
     dependencies:
       '@types/node': 26.1.1
 
+  '@types/opossum@8.1.9':
+    dependencies:
+      '@types/node': 26.1.1
+
   '@types/passport-google-oauth20@2.0.17':
     dependencies:
       '@types/express': 5.0.6
@@ -7778,6 +7795,8 @@ snapshots:
   onetime@5.1.2:
     dependencies:
       mimic-fn: 2.1.0
+
+  opossum@10.0.0: {}
 
   optionator@0.9.4:
     dependencies:

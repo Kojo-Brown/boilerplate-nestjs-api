@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { ResilientHttpModule } from "@/common/http";
 import { PaymentProviderFactory } from "./payment-provider.factory";
 import { PAYMENT_PROVIDERS } from "./ports";
 import type { PaymentProvider } from "./ports";
@@ -13,6 +14,11 @@ import { StripePaymentProvider } from "./providers/stripe-payment.provider";
  * `inject` — and no consumer, and not `PaymentProviderFactory`, changes.
  */
 @Module({
+  // Both real gateways are `fetch` clients, and every call they make goes
+  // through the breaker and ladder this module provides. Imported rather than
+  // global so that a module talking to the outside world says so in its own
+  // file.
+  imports: [ResilientHttpModule],
   providers: [
     MockPaymentProvider,
     StripePaymentProvider,

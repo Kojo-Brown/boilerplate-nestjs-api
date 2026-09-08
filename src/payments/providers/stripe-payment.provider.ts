@@ -11,7 +11,7 @@ import {
 import { resolveRefundAmount } from "../refund-rules";
 import type { CreatePaymentInput, Payment, PaymentProvider, PaymentProviderName } from "../ports";
 import type { PaymentStatus } from "../ports";
-import { asRecord, readNumber, readString, requestJson } from "@/common/http";
+import { asRecord, readNumber, readString, ResilientHttpClient } from "@/common/http";
 
 const DEFAULT_BASE_URL = "https://api.stripe.com";
 
@@ -43,7 +43,10 @@ export class StripePaymentProvider implements PaymentProvider {
   private readonly baseUrl: string;
   private readonly apiVersion: string | null;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly http: ResilientHttpClient,
+  ) {
     this.secretKey = config.get<string>("STRIPE_SECRET_KEY") ?? null;
     this.baseUrl = (config.get<string>("STRIPE_API_BASE_URL") ?? DEFAULT_BASE_URL).replace(
       /\/+$/,
@@ -117,7 +120,10 @@ export class StripePaymentProvider implements PaymentProvider {
     this.requireCredentials();
 
     const url = `${this.baseUrl}/v1/payment_intents/${encodeURIComponent(paymentId)}?expand[]=latest_charge`;
-    const response = await requestJson(url, { method: "GET", headers: this.headers({}) });
+    const response = await this.http.request(this.name, url, {
+      method: "GET",
+      headers: this.headers({}),
+    });
 
     if (response.status === HttpStatus.NOT_FOUND) return null;
     if (!response.ok) throw this.upstreamError(response.status, response.body);
@@ -150,14 +156,26 @@ export class StripePaymentProvider implements PaymentProvider {
   ): Promise<unknown> {
     this.requireCredentials();
 
-    const response = await requestJson(`${this.baseUrl}${path}`, {
-      method,
-      headers: {
-        ...this.headers(extraHeaders),
-        "Content-Type": "application/x-www-form-urlencoded",
+    const response = await this.http.request(
+      this.name,
+      `${this.baseUrl}${path}`,
+      {
+        method,
+        headers: {
+          ...this.headers(extraHeaders),
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: form.toString(),
       },
-      body: form.toString(),
-    });
+      {
+        // A Stripe POST is replayable exactly when it carries the key Stripe
+        // replays on, so the flag is read off the header rather than passed
+        // beside it — the two cannot drift apart. `authorize()` sends one;
+        // `capture()` and `refund()` do not, and a retried keyless refund is a
+        // second refund.
+        idempotent: "Idempotency-Key" in extraHeaders,
+      },
+    );
 
     if (response.ok) return response.body;
 

@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { asRecord, readNumber, readString, requestJson } from "@/common/http";
+import { asRecord, readNumber, readString, ResilientHttpClient } from "@/common/http";
 import { NotificationAddressRejectedError, NotificationChannelError } from "../notification.errors";
 import type {
   Notification,
@@ -54,7 +54,10 @@ export class SmsNotificationChannel implements NotificationChannel {
   private readonly from: string | null;
   private readonly baseUrl: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly http: ResilientHttpClient,
+  ) {
     this.accountSid = config.get<string>("TWILIO_ACCOUNT_SID") ?? null;
     this.authToken = config.get<string>("TWILIO_AUTH_TOKEN") ?? null;
     // A messaging service SID is the production-shaped option — Twilio picks the
@@ -98,7 +101,14 @@ export class SmsNotificationChannel implements NotificationChannel {
       ...(from.startsWith("MG") ? { MessagingServiceSid: from } : { From: from }),
     });
 
-    const response = await requestJson(
+    // Breaker, no ladder. Twilio bills per message and delivers every one it
+    // accepts, so a retry after a lost response is a second text on somebody's
+    // phone. The API has no idempotency key to make that safe — the only
+    // deduplication it offers is a `MessagingServiceSid` rate limit — so a
+    // failed send is reported, not repeated, and the dispatcher's own report
+    // says which channel did not go out.
+    const response = await this.http.request(
+      this.channel,
       `${this.baseUrl}/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages.json`,
       {
         method: "POST",

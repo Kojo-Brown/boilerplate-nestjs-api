@@ -581,6 +581,55 @@ export const envSchema = z
      * spinner they cannot.
      */
     SAGA_MAX_ATTEMPTS: z.coerce.number().int().positive().default(6),
+
+    /**
+     * Attempts one outbound HTTP call gets, the first one included.
+     *
+     * Applies only to calls that may be replayed — a safe method, or a `POST`
+     * carrying an idempotency key. `1` disables retrying without disabling the
+     * breaker. Three is the usual shape: it covers the single dropped
+     * connection and the one-off 503 without turning a dependency's bad minute
+     * into three times the load on it.
+     */
+    HTTP_RETRY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+    /** Delay before the second attempt, before jitter. */
+    HTTP_RETRY_BASE_MS: z.coerce.number().int().positive().default(200),
+    /**
+     * Ceiling on the un-jittered delay, and the longest `Retry-After` the
+     * ladder will honour rather than give up on. Small, because somebody is
+     * waiting on the request at the other end.
+     */
+    HTTP_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(2_000),
+    /**
+     * Share of failed calls in the rolling window, above which a dependency's
+     * breaker opens.
+     *
+     * 50% rather than something stricter because the denominator counts only
+     * calls that reached the dependency: a 4xx that is not 408 or 429 is the
+     * dependency answering correctly and is not in it at all.
+     */
+    HTTP_BREAKER_FAILURE_THRESHOLD_PERCENT: z.coerce.number().int().min(1).max(100).default(50),
+    /**
+     * Calls the window must hold before the percentage is allowed to open the
+     * breaker. Without it the first call of a quiet minute failing is a 100%
+     * failure rate over a sample of one.
+     */
+    HTTP_BREAKER_VOLUME_THRESHOLD: z.coerce.number().int().positive().default(10),
+    /** How much history the failure percentage is computed over. */
+    HTTP_BREAKER_ROLLING_WINDOW_MS: z.coerce.number().int().positive().default(10_000),
+    /**
+     * Buckets the window is divided into; it advances one bucket at a time.
+     * Must divide the window exactly — see the refinement below.
+     */
+    HTTP_BREAKER_ROLLING_BUCKETS: z.coerce.number().int().positive().default(10),
+    /**
+     * How long an open breaker rejects calls before letting one probe through.
+     *
+     * This is the number a caller waits out, so it is also the honest content
+     * of the 503 they get: long enough for a dependency to finish restarting,
+     * short enough that recovery is not gated on a deploy.
+     */
+    HTTP_BREAKER_RESET_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -909,6 +958,30 @@ export const envSchema = z
           `while a step is still running lets a second runner start the same step, which ` +
           `for a payment means charging twice. Raise SAGA_LEASE_MS above ` +
           `${env.SAGA_STEP_TIMEOUT_MS * 2}ms, or lower SAGA_STEP_TIMEOUT_MS.`,
+      });
+    }
+
+    /**
+     * Opossum divides the rolling window into buckets with integer division and
+     * rotates one every `window / buckets` milliseconds. A window smaller than
+     * its bucket count floors that to zero, and `setInterval(0)` is a timer
+     * that fires as fast as the event loop will let it — on every breaker, for
+     * the life of the process. It surfaces as CPU nobody can account for rather
+     * than as an error, and it is arithmetic this file can do at boot.
+     *
+     * Only the degenerate case is refused. A window that divides unevenly loses
+     * at most one bucket-interval of history, which is a rounding difference
+     * and not worth refusing a deployment over.
+     */
+    if (env.HTTP_BREAKER_ROLLING_WINDOW_MS < env.HTTP_BREAKER_ROLLING_BUCKETS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["HTTP_BREAKER_ROLLING_WINDOW_MS"],
+        message:
+          `HTTP_BREAKER_ROLLING_WINDOW_MS (${env.HTTP_BREAKER_ROLLING_WINDOW_MS}ms) must be at ` +
+          `least HTTP_BREAKER_ROLLING_BUCKETS (${env.HTTP_BREAKER_ROLLING_BUCKETS}): the ` +
+          `breaker rotates one bucket at a time, and a bucket shorter than a millisecond is a ` +
+          `timer that never stops firing.`,
       });
     }
   });

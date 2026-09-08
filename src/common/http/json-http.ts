@@ -12,6 +12,13 @@
  *
  * Lives under `common/` rather than inside one feature module so that neither
  * feature has to import the other's internals to reuse it.
+ *
+ * This file is the raw transport and nothing outside `common/http` calls it
+ * directly: adapters go through {@link ResilientHttpClient}, which is what adds
+ * the per-dependency circuit breaker and the retry ladder. That is why
+ * `requestJson` is deliberately absent from the barrel — a call that skipped the
+ * client would be an outbound request with no breaker in front of it, and
+ * "every outbound call is protected" is only true if there is one way out.
  */
 
 /** Anything slower than this is a failed request, not a slow one. */
@@ -22,6 +29,14 @@ export interface HttpJsonResponse {
   readonly ok: boolean;
   /** Parsed JSON body, or `null` for an empty (204) response. */
   readonly body: unknown;
+  /**
+   * `Retry-After` in milliseconds, when the upstream sent one.
+   *
+   * Parsed here rather than in the retry ladder because this is the only place
+   * that still has the response headers — everything above this function sees
+   * a plain object. `null` when the header is absent or unparseable.
+   */
+  readonly retryAfterMs: number | null;
 }
 
 /**
@@ -50,7 +65,41 @@ export async function requestJson(
     }
   }
 
-  return { status: response.status, ok: response.ok, body };
+  return {
+    status: response.status,
+    ok: response.ok,
+    body,
+    retryAfterMs: parseRetryAfter(response.headers.get("retry-after"), Date.now()),
+  };
+}
+
+/**
+ * `Retry-After`, in milliseconds from now.
+ *
+ * RFC 9110 allows either delta-seconds or an HTTP-date, and upstreams use both:
+ * Twilio and Stripe send seconds, a CDN in front of a gateway is as likely to
+ * send a date. A date already in the past is `0` rather than a negative delay —
+ * "retry now" is what an expired hint means, not "retry before you asked".
+ *
+ * `now` is a parameter so a test can pin the date arithmetic without freezing
+ * the clock for everything else in the process.
+ */
+export function parseRetryAfter(header: string | null, now: number): number | null {
+  if (header === null) return null;
+
+  const trimmed = header.trim();
+  if (trimmed.length === 0) return null;
+
+  // `Number("")` is 0 and `Number("2 days")` is NaN — the empty case is already
+  // out, so a finite non-negative number here really was delta-seconds.
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds)) {
+    return seconds >= 0 ? Math.round(seconds * 1000) : null;
+  }
+
+  const date = Date.parse(trimmed);
+  if (Number.isNaN(date)) return null;
+  return Math.max(0, date - now);
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | null {

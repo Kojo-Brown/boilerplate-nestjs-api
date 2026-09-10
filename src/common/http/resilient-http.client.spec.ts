@@ -1,6 +1,12 @@
-import { HttpCircuitOpenError, HttpTransportError } from "./http.errors";
+import {
+  HttpBulkheadRejectedError,
+  HttpCircuitOpenError,
+  HttpDeadlineExceededError,
+  HttpTransportError,
+} from "./http.errors";
 import { ResilientHttpClient } from "./resilient-http.client";
 import type { ResilientHttpOptions } from "./http-resilience";
+import type { BulkheadPolicy, BulkheadStats } from "@/common/bulkhead";
 
 const realFetch = global.fetch;
 
@@ -33,6 +39,83 @@ function respondWith(...replies: Array<Reply | Error>): jest.Mock {
   return mock;
 }
 
+/**
+ * A `fetch` that does not answer until this test says so.
+ *
+ * The concurrency cap can only be observed while calls are in flight, and a
+ * mock that resolves on the next microtask is never in flight for long enough
+ * to have a second one queue behind it. `release()` finishes everything
+ * outstanding and answers anything that arrives afterwards, so a test never
+ * ends with a request still parked.
+ */
+interface Upstream {
+  readonly mock: jest.Mock;
+  readonly release: () => void;
+}
+
+function hangs(): Upstream {
+  const pending: Array<(response: Response) => void> = [];
+  let released = false;
+  const answer = (): Response =>
+    new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const mock = jest.fn(async (_url: string, init: RequestInit) => {
+    if (released) return answer();
+    return new Promise<Response>((resolve, reject) => {
+      pending.push(resolve);
+      init.signal?.addEventListener("abort", () => {
+        reject(init.signal?.reason ?? new Error("aborted"));
+      });
+    });
+  });
+
+  global.fetch = mock as unknown as typeof fetch;
+  return {
+    mock,
+    release: () => {
+      released = true;
+      for (const resolve of pending.splice(0)) resolve(answer());
+    },
+  };
+}
+
+/** Lets every already-scheduled microtask run, so pending state is settled state. */
+const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * The error a call rejected with, so a test can assert on more than its type.
+ *
+ * `rejects.toBeInstanceOf` cannot also check a status and a message, and
+ * `try`/`catch` around an `await` that is supposed to throw passes silently
+ * when it does not.
+ */
+function capture(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    (value) => {
+      throw new Error(`Expected a rejection, got ${JSON.stringify(value)}`);
+    },
+    (error: unknown) => error,
+  );
+}
+
+const BULKHEAD: BulkheadPolicy = { maxConcurrent: 20, maxQueued: 20, maxQueueWaitMs: 1_000 };
+
+/** What a dependency's bulkhead reports when nothing is holding it. */
+function idleBulkhead(name: string, policy: BulkheadPolicy = BULKHEAD): BulkheadStats {
+  return {
+    name,
+    inFlight: 0,
+    queued: 0,
+    maxConcurrent: policy.maxConcurrent,
+    maxQueued: policy.maxQueued,
+    queueFullRejections: 0,
+    queueTimeoutRejections: 0,
+  };
+}
+
 interface Harness {
   readonly client: ResilientHttpClient;
   readonly delays: number[];
@@ -40,6 +123,10 @@ interface Harness {
 
 function buildClient(overrides: Partial<ResilientHttpOptions> = {}): Harness {
   const delays: number[] = [];
+  // The clock the deadline is measured on. It only moves when the ladder
+  // sleeps, or when a test moves it, so a budget is spent in the same
+  // milliseconds the schedule is asserted in rather than in real ones.
+  let nowMs = 0;
   const options: ResilientHttpOptions = {
     retry: { maxAttempts: 3, baseMs: 100, maxMs: 1_000 },
     breaker: {
@@ -49,15 +136,21 @@ function buildClient(overrides: Partial<ResilientHttpOptions> = {}): Harness {
       rollingBuckets: 10,
       resetTimeoutMs: 30_000,
     },
-    // Resolves immediately: the ladder's schedule is asserted on, never waited
-    // out. A suite that really slept its own backoff would take 4.5 seconds to
-    // prove arithmetic.
+    // Wide enough that only the tests about it ever reach it: every other test
+    // here makes its calls one at a time.
+    bulkhead: BULKHEAD,
+    deadlineMs: 25_000,
+    // Resolves immediately but still costs the budget it asked for: the
+    // ladder's schedule is asserted on, never waited out. A suite that really
+    // slept its own backoff would take 4.5 seconds to prove arithmetic.
     sleep: async (ms) => {
       delays.push(ms);
+      nowMs += ms;
     },
     // Full jitter draws uniformly below the ceiling, so a fixed draw makes each
     // delay a single number a test can name: 0.5 is half of it.
     random: () => 0.5,
+    now: () => nowMs,
     ...overrides,
   };
   return { client: new ResilientHttpClient(options), delays };
@@ -114,7 +207,14 @@ describe("ResilientHttpClient", () => {
       // a breaker that opened here would be causing the outage rather than
       // containing one.
       expect(harness.client.snapshot()).toEqual([
-        { dependency: "paypal", state: "closed", successes: 10, failures: 0, rejects: 0 },
+        {
+          dependency: "paypal",
+          state: "closed",
+          successes: 10,
+          failures: 0,
+          rejects: 0,
+          bulkhead: idleBulkhead("paypal"),
+        },
       ]);
     });
   });
@@ -309,8 +409,22 @@ describe("ResilientHttpClient", () => {
 
       expect(response.status).toBe(200);
       expect(harness.client.snapshot()).toEqual([
-        { dependency: "stripe", state: "open", successes: 0, failures: 5, rejects: 0 },
-        { dependency: "paypal", state: "closed", successes: 1, failures: 0, rejects: 0 },
+        {
+          dependency: "stripe",
+          state: "open",
+          successes: 0,
+          failures: 5,
+          rejects: 0,
+          bulkhead: idleBulkhead("stripe"),
+        },
+        {
+          dependency: "paypal",
+          state: "closed",
+          successes: 1,
+          failures: 0,
+          rejects: 0,
+          bulkhead: idleBulkhead("paypal"),
+        },
       ]);
       expect(fetchMock).toHaveBeenCalledTimes(5);
     });
@@ -356,6 +470,297 @@ describe("ResilientHttpClient", () => {
       harness.client.onApplicationShutdown();
 
       expect(harness.client.snapshot()).toEqual([]);
+    });
+  });
+
+  describe("the bulkhead", () => {
+    const POLICY: BulkheadPolicy = { maxConcurrent: 2, maxQueued: 1, maxQueueWaitMs: 1_000 };
+
+    it("holds the cap open and queues what arrives over it", async () => {
+      const local = buildClient({ bulkhead: POLICY });
+      const upstream = hangs();
+
+      const inFlight = [1, 2].map(() =>
+        local.client.request("stripe", "https://api.test/v1/things", { method: "GET" }),
+      );
+      await flush();
+      expect(upstream.mock).toHaveBeenCalledTimes(2);
+
+      const queued = local.client.request("stripe", "https://api.test/v1/things", {
+        method: "GET",
+      });
+      await flush();
+
+      // The third call exists and the dependency has not been asked to do a
+      // third thing. That is the whole pattern: a slow dependency gets a
+      // bounded amount of this process, not all of it.
+      expect(upstream.mock).toHaveBeenCalledTimes(2);
+      expect(local.client.snapshot()[0]?.bulkhead).toMatchObject({ inFlight: 2, queued: 1 });
+
+      upstream.release();
+      await Promise.all([...inFlight, queued]);
+
+      expect(upstream.mock).toHaveBeenCalledTimes(3);
+      expect(local.client.snapshot()[0]?.bulkhead).toMatchObject({ inFlight: 0, queued: 0 });
+      local.client.onApplicationShutdown();
+    });
+
+    it("refuses a call with a 503 once the cap and the queue are both full", async () => {
+      const local = buildClient({ bulkhead: POLICY });
+      const upstream = hangs();
+      const held = [1, 2, 3].map(() =>
+        local.client.request("stripe", "https://api.test/v1/things", { method: "GET" }),
+      );
+      await flush();
+
+      const error = await capture(
+        local.client.request(
+          "stripe",
+          "https://api.test/v1/things",
+          { method: "POST" },
+          { idempotent: true },
+        ),
+      );
+
+      expect(error).toBeInstanceOf(HttpBulkheadRejectedError);
+      expect((error as HttpBulkheadRejectedError).getStatus()).toBe(503);
+      expect((error as HttpBulkheadRejectedError).cause.reason).toBe("queue-full");
+      // Never sent, and never retried: the ladder would queue again behind the
+      // same saturated dependency and spend the caller's budget to arrive at
+      // the same answer more slowly.
+      expect(upstream.mock).toHaveBeenCalledTimes(2);
+      expect(local.delays).toEqual([]);
+
+      upstream.release();
+      await Promise.all(held);
+      local.client.onApplicationShutdown();
+    });
+
+    it("does not count its own back-pressure against the dependency's breaker", async () => {
+      const local = buildClient({
+        bulkhead: { maxConcurrent: 1, maxQueued: 0, maxQueueWaitMs: 1_000 },
+      });
+      const upstream = hangs();
+      const held = local.client.request("stripe", "https://api.test/v1/things", { method: "GET" });
+      await flush();
+
+      for (let i = 0; i < 6; i += 1) {
+        await expect(
+          local.client.request("stripe", "https://api.test/v1/things", { method: "GET" }),
+        ).rejects.toBeInstanceOf(HttpBulkheadRejectedError);
+      }
+
+      // Six rejections against a volume threshold of five and a 50% failure
+      // rate. This is the reason the bulkhead is not opossum's `capacity`:
+      // opossum files a semaphore rejection through `handleError`, so it lands
+      // in `stats.failures` and counts toward the error percentage — enough of
+      // our own back-pressure would open the breaker and take a dependency
+      // that has answered nothing wrong out for the whole reset timeout.
+      const [snapshot] = local.client.snapshot();
+      expect(snapshot).toMatchObject({ state: "closed", failures: 0, successes: 0 });
+      expect(snapshot?.bulkhead).toMatchObject({ inFlight: 1, queueFullRejections: 6 });
+
+      upstream.release();
+      await held;
+      local.client.onApplicationShutdown();
+    });
+
+    it("keeps one bulkhead per dependency", async () => {
+      const local = buildClient({
+        bulkhead: { maxConcurrent: 1, maxQueued: 0, maxQueueWaitMs: 1_000 },
+      });
+      const upstream = hangs();
+      const held = local.client.request("stripe", "https://api.test/v1/things", { method: "GET" });
+      await flush();
+
+      await expect(
+        local.client.request("stripe", "https://api.test/v1/things", { method: "GET" }),
+      ).rejects.toBeInstanceOf(HttpBulkheadRejectedError);
+
+      // Stripe being slow must not make Twilio unreachable — the same reason
+      // there is one breaker per dependency rather than one for "outbound
+      // HTTP".
+      upstream.release();
+      const response = await local.client.request("sms", "https://twilio.test/Messages", {
+        method: "GET",
+      });
+
+      expect(response.status).toBe(200);
+      await held;
+      local.client.onApplicationShutdown();
+    });
+  });
+
+  describe("the request deadline", () => {
+    it("returns the last response when the next sleep would outlast the budget", async () => {
+      const local = buildClient();
+      const fetchMock = respondWith(json(503, { message: "still starting up" }));
+
+      const response = await local.client.request(
+        "stripe",
+        "https://api.test/v1/things",
+        { method: "GET" },
+        { deadlineMs: 150 },
+      );
+
+      // Attempt one sleeps 50ms of the 150ms budget; attempt two would need
+      // 100ms of the 100ms left, so the ladder stops with an attempt still
+      // unspent. The caller gets the 503 rather than a deadline error, because
+      // a status is data whichever limit ended the call.
+      expect(response.status).toBe(503);
+      expect(local.delays).toEqual([50]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      local.client.onApplicationShutdown();
+    });
+
+    it("gives up with a 504 when the budget runs out with nothing to return", async () => {
+      const local = buildClient();
+      respondWith(new TypeError("fetch failed"));
+
+      const error = await capture(
+        local.client.request(
+          "stripe",
+          "https://api.test/v1/things",
+          { method: "GET" },
+          { deadlineMs: 150 },
+        ),
+      );
+
+      expect(error).toBeInstanceOf(HttpDeadlineExceededError);
+      expect((error as HttpDeadlineExceededError).getStatus()).toBe(504);
+      // A transport error would say the ladder was spent, which it was not:
+      // two of three attempts fitted in the budget, and the budget is what
+      // ended the call.
+      expect((error as Error).message).toContain("exceeded its 150ms budget after 2 attempts");
+      expect(local.delays).toEqual([50]);
+      local.client.onApplicationShutdown();
+    });
+
+    it("clamps an attempt's socket timeout to what is left of the budget", async () => {
+      // The one group that runs on the real clock: `AbortSignal.timeout` is a
+      // real timer, so the thing under test — that the attempt is cut off by
+      // the budget rather than by its own generous timeout — can only be
+      // observed in real milliseconds.
+      const local = buildClient({ now: () => performance.now() });
+      const upstream = hangs();
+
+      const started = performance.now();
+      const error = await capture(
+        local.client.request(
+          "stripe",
+          "https://api.test/v1/things",
+          { method: "GET" },
+          { timeoutMs: 30_000, deadlineMs: 80 },
+        ),
+      );
+      const elapsedMs = performance.now() - started;
+
+      expect(error).toBeInstanceOf(HttpDeadlineExceededError);
+      expect(elapsedMs).toBeLessThan(2_000);
+      expect(upstream.mock).toHaveBeenCalledTimes(1);
+      upstream.release();
+      local.client.onApplicationShutdown();
+    });
+
+    it("sends nothing when the budget is already gone by the time a permit is free", async () => {
+      // The clock is read to set the deadline, again at the top of the loop,
+      // and again once a permit is in hand. Jumping on that third read is the
+      // queue wait having consumed the whole budget, expressed without racing
+      // a real one.
+      let reads = 0;
+      const local = buildClient({
+        now: () => (reads++ < 2 ? 0 : 1_000),
+        deadlineMs: 100,
+      });
+      const fetchMock = respondWith(json(200));
+
+      const error = await capture(
+        local.client.request("stripe", "https://api.test/v1/things", { method: "GET" }),
+      );
+
+      expect(error).toBeInstanceOf(HttpDeadlineExceededError);
+      expect((error as Error).message).toContain("exceeded its 100ms budget after 0 attempts");
+      expect(fetchMock).not.toHaveBeenCalled();
+      local.client.onApplicationShutdown();
+    });
+
+    it("returns the response that bought a sleep when the sleep overshot the budget", async () => {
+      // A timer guarantees a floor, not a ceiling: an event loop busy with
+      // somebody else's work can turn a 50ms sleep into a 1s one, and the
+      // ladder cannot schedule its way out of that.
+      let clock = 0;
+      const local = buildClient({
+        deadlineMs: 100,
+        now: () => clock,
+        sleep: async () => {
+          clock += 1_000;
+        },
+      });
+      respondWith(json(503, { message: "still starting up" }));
+
+      const response = await local.client.request("stripe", "https://api.test/v1/things", {
+        method: "GET",
+      });
+
+      // The 503 is a worse answer than a 200 and a better one than a 504 that
+      // says nothing at all about the dependency.
+      expect(response.status).toBe(503);
+      local.client.onApplicationShutdown();
+    });
+
+    it("reports the deadline when an overshooting sleep leaves nothing to return", async () => {
+      let clock = 0;
+      const local = buildClient({
+        deadlineMs: 100,
+        now: () => clock,
+        sleep: async () => {
+          clock += 1_000;
+        },
+      });
+      respondWith(new TypeError("fetch failed"));
+
+      const error = await capture(
+        local.client.request("stripe", "https://api.test/v1/things", { method: "GET" }),
+      );
+
+      expect(error).toBeInstanceOf(HttpDeadlineExceededError);
+      expect((error as Error).message).toContain("exceeded its 100ms budget after 1 attempt");
+      local.client.onApplicationShutdown();
+    });
+
+    it("counts the wait for a bulkhead permit against the budget", async () => {
+      const local = buildClient({
+        bulkhead: { maxConcurrent: 1, maxQueued: 4, maxQueueWaitMs: 10_000 },
+        now: () => performance.now(),
+      });
+      const upstream = hangs();
+      const held = local.client.request(
+        "stripe",
+        "https://api.test/v1/things",
+        { method: "GET" },
+        { timeoutMs: 30_000, deadlineMs: 30_000 },
+      );
+      await flush();
+
+      const error = await capture(
+        local.client.request(
+          "stripe",
+          "https://api.test/v1/things",
+          { method: "GET" },
+          { deadlineMs: 60 },
+        ),
+      );
+
+      // A caller with 60ms left does not queue for the ten seconds the policy
+      // would otherwise allow: the wait is the smaller of the two, so the
+      // rejection arrives while the caller is still waiting for it.
+      expect(error).toBeInstanceOf(HttpBulkheadRejectedError);
+      expect((error as HttpBulkheadRejectedError).cause.reason).toBe("queue-timeout");
+      expect(upstream.mock).toHaveBeenCalledTimes(1);
+
+      upstream.release();
+      await held;
+      local.client.onApplicationShutdown();
     });
   });
 });

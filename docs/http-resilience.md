@@ -2,18 +2,31 @@
 
 Every call this service makes to somebody else's API — Stripe, PayPal, Twilio,
 Expo — goes through `ResilientHttpClient`
-(`src/common/http/resilient-http.client.ts`). It puts a circuit breaker in front
-of each dependency and a full-jitter retry ladder around the calls that can
-safely take one.
+(`src/common/http/resilient-http.client.ts`). It puts a circuit breaker and a
+concurrency cap in front of each dependency, a full-jitter retry ladder around
+the calls that can safely take one, and a hard deadline around the whole thing.
 
-The two mechanisms answer different failures. The ladder is for the failure that
-is over by the time you look again: one dropped connection, one 503 from a
-node that was being replaced. The breaker is for the failure that is not: a
-dependency that is down, or so slow that every request against it is a request
-this service is holding open for ten seconds and then losing. Retrying into that
-is worse than useless — it multiplies the load on something already failing and
-converts a dependency's outage into this service's, because every worker is
-parked waiting on it.
+Each mechanism answers a different failure.
+
+| Mechanism | The failure it is for                                                    |
+| --------- | ------------------------------------------------------------------------ |
+| Ladder    | over by the time you look again: a dropped connection, a node restarting |
+| Breaker   | a dependency that is down, and calls that should not be sent at all      |
+| Bulkhead  | a dependency that is slow, and calls that should not all be sent at once |
+| Deadline  | a call that is still going long after anybody had a use for the answer   |
+
+The ladder and the breaker are two halves of the same argument. Retrying into a
+real outage is worse than useless: it multiplies the load on something already
+failing and converts a dependency's outage into this service's, because every
+worker is parked waiting on it.
+
+The bulkhead is there because the breaker cannot see the slow case. A breaker
+reads history, and history is made of calls that have finished. A dependency
+answering in nine seconds, just inside its ten-second timeout, produces no
+failures at all — every call eventually succeeds — while each one occupies this
+process for nine seconds. Capping concurrency is the only thing in the list that
+bounds that, and the deadline is what stops a single call from spending more of
+somebody else's budget than they have.
 
 ## The shape of a call
 
@@ -33,14 +46,22 @@ because the adapters read the upstream's error body to tell a declined card from
 a dead gateway and that decision belongs to them. Only a call that produced no
 response at all throws:
 
-| Failure                                                  | Thrown                 | Status |
-| -------------------------------------------------------- | ---------------------- | ------ |
-| DNS, refused connection, socket hang-up, request timeout | `HttpTransportError`   | 502    |
-| The breaker is open, so nothing was sent                 | `HttpCircuitOpenError` | 503    |
+| Failure                                                  | Thrown                      | Status |
+| -------------------------------------------------------- | --------------------------- | ------ |
+| DNS, refused connection, socket hang-up, attempt timeout | `HttpTransportError`        | 502    |
+| The breaker is open, so nothing was sent                 | `HttpCircuitOpenError`      | 503    |
+| The bulkhead is saturated, so nothing was sent           | `HttpBulkheadRejectedError` | 503    |
+| The call's whole budget went without an answer           | `HttpDeadlineExceededError` | 504    |
 
-Both are `HttpException`s, so `AllExceptionsFilter` renders them without a
+All are `HttpException`s, so `AllExceptionsFilter` renders them without a
 controller having to translate anything, and a network failure reaching a caller
 is a 502 rather than the 500 a raw `TypeError` from `fetch` would have produced.
+
+The two 503s are deliberately distinct classes. An open breaker says the
+dependency is failing; a full bulkhead says it is slower than this service has
+capacity for. Those want different fixes, and one error for both would make them
+indistinguishable in the only two places anybody looks — the log line and the
+response body.
 
 ## What counts as a failure
 
@@ -134,8 +155,88 @@ _waiting_ for the promise: the request stays in flight, its side effect still
 happens, and the connection is still held. Two deadlines where one of them
 cannot cancel anything is how a "timed out" call ends up having succeeded.
 
-`client.snapshot()` reports each dependency's state and counters, for a health
-indicator or a metrics scrape.
+## The bulkhead
+
+`Bulkhead` (`src/common/bulkhead/bulkhead.ts`) is a counting semaphore with a
+bounded FIFO wait queue, one instance per dependency name, created on that
+dependency's first call alongside its breaker.
+
+A call takes a permit, sends its request, and gives the permit back. When all
+`HTTP_BULKHEAD_MAX_CONCURRENT` permits are held, the next call queues; when
+`HTTP_BULKHEAD_MAX_QUEUED` callers are already queued, or a queued caller has
+waited `HTTP_BULKHEAD_QUEUE_TIMEOUT_MS`, it is refused with a 503 and nothing is
+sent.
+
+Both bounds matter. An unbounded queue converts a concurrency problem into a
+memory problem and hides it until the process dies; a deep one fills with
+requests whose callers have already given up. A queue at all is worth having
+because the burst that clears in a moment is the common case, and refusing it
+outright would make the bulkhead itself the outage.
+
+**Why it is not opossum's `capacity`.** The previous iteration of this page said
+that was where bulkheads would go. Reading opossum 10's `circuit.js` ruled it
+out on two counts:
+
+- It calls `semaphore.test()`, which never waits. There is no queue, so a burst
+  one call over the cap is refused rather than absorbed.
+- A refusal is routed through `handleError`, which lands it in `stats.failures`.
+  The error percentage is `failures / fires`, so enough of our own back-pressure
+  would open the breaker — taking out a dependency that has answered every
+  request correctly, for the whole reset timeout. Our admission decisions must
+  not be evidence about somebody else's health, and there is a test asserting
+  exactly that: six bulkhead rejections against a volume threshold of five leave
+  the breaker closed with zero failures.
+
+**Where it sits.** Outside the breaker and inside the ladder:
+
+```
+request()
+└── for each attempt
+    └── bulkhead permit          ← acquired and released per attempt
+        └── breaker
+            └── fetch
+```
+
+Outside the breaker, because a permit stands for a call this service is holding
+open and an open breaker holds nothing — a rejection there is instant, so it
+turns permits over rather than occupying them.
+
+Inside the ladder, because a backoff sleep holds no socket either. A permit kept
+across one would cap real concurrency below the configured figure and let a
+failing dependency's own retries crowd out its healthy calls.
+
+## The deadline
+
+`HTTP_REQUEST_DEADLINE_MS` is a hard ceiling on one `request()` call, covering
+everything it can spend time on: waiting for a permit, every attempt, and every
+sleep between them. `deadlineMs` on `HttpRequestOptions` overrides it for a
+caller that has a tighter budget of its own.
+
+It is enforced rather than hoped for:
+
+- Each attempt's socket timeout is the smaller of `timeoutMs` and what is left
+  of the budget, re-read after the queue wait — so a ten-second attempt inside a
+  budget with two seconds left gets two.
+- The ladder stops when the next sleep would not fit in what remains, instead of
+  sleeping past the deadline to make an attempt that cannot finish.
+
+When the budget runs out the caller gets the same thing it would get from a
+spent ladder: the last response, if there is one. `HttpDeadlineExceededError`
+(504) is thrown only when the budget went with no response at all, and it
+reports how many attempts fitted — which is the difference between a dependency
+that is slow and one that is failing fast and being retried.
+
+`HTTP_REQUEST_DEADLINE_MS` must be greater than
+`HTTP_BULKHEAD_QUEUE_TIMEOUT_MS`, and the config refuses to boot otherwise.
+Otherwise every call under contention waits out the full queue timeout, is
+admitted, finds nothing left of its budget, and gives up without sending
+anything: a 504 for every request, however healthy the dependency is.
+
+`client.snapshot()` reports each dependency's breaker state and counters
+alongside its bulkhead's occupancy and rejections, for a health indicator or a
+metrics scrape. They are read together — a saturated bulkhead with a closed
+breaker is a slow dependency, and the same bulkhead with an open breaker is a
+queue of calls waiting to be told the circuit is open.
 
 ## Configuration
 
@@ -152,9 +253,14 @@ clean clone runs.
 | `HTTP_BREAKER_ROLLING_WINDOW_MS`         | `10000` | how much history the rate is computed over                   |
 | `HTTP_BREAKER_ROLLING_BUCKETS`           | `10`    | buckets the window advances through                          |
 | `HTTP_BREAKER_RESET_TIMEOUT_MS`          | `30000` | how long an open breaker rejects before probing              |
+| `HTTP_BULKHEAD_MAX_CONCURRENT`           | `20`    | calls one dependency may have in flight at once              |
+| `HTTP_BULKHEAD_MAX_QUEUED`               | `20`    | callers that may wait for a permit; `0` is pure fail-fast    |
+| `HTTP_BULKHEAD_QUEUE_TIMEOUT_MS`         | `1000`  | how long a call waits for a permit before a 503              |
+| `HTTP_REQUEST_DEADLINE_MS`               | `25000` | hard ceiling on one call: queue wait, attempts and sleeps    |
 
-The window must be at least the bucket count, and the config refuses to boot
-otherwise. Opossum divides one by the other with integer division and rotates a
+Two of these are checked against each other at boot. The window must be at least
+the bucket count, and the request deadline must exceed the queue timeout; the
+config refuses to boot otherwise. Opossum divides one by the other with integer division and rotates a
 bucket every interval, so fewer milliseconds than buckets floors that to zero —
 a timer firing as fast as the event loop allows, on every breaker, forever. An
 uneven division is fine and is not refused: it loses at most one bucket of
@@ -176,16 +282,25 @@ repeating as a whole. It is the wrong one here for two reasons:
 
 ## What is not here yet
 
-There is no per-dependency concurrency cap. A dependency that is slow rather
-than broken can still tie up every caller that arrives inside its timeout, and
-the breaker only reacts once enough of those calls have finished failing.
-Bulkheads are the next item in `SPEC.md`, and opossum's `capacity` option is
-where they go.
+**Nothing hands a caller's deadline down automatically.** `deadlineMs` exists and
+is respected, but every caller has to pass it. A saga step is bounded by
+`SAGA_STEP_TIMEOUT_MS` (10s by default) and its payment call still defaults to
+the 25s policy budget, so the step's wait is cut off first: the saga retries on
+its own ladder, every participant is idempotent on the step's key, and the
+outcome is correct — but the budget is spent twice over. The general fix is a
+request-scoped deadline the client reads for itself rather than an argument each
+call site remembers, which wants the `AsyncLocalStorage` context that the
+OpenTelemetry item will introduce. Until then, pass `deadlineMs` explicitly from
+any caller that has a deadline of its own.
 
-The ladder also does not know about a deadline above it. A saga step that calls a
-payment provider is bounded by `SAGA_STEP_TIMEOUT_MS` (10s by default), while
-three attempts at a 10s HTTP timeout can take thirty. The step's wait is cut off
-first; the saga retries the step on its own ladder, and every participant is
-idempotent on the step's key, so the outcome is correct — but the budget is
-spent twice over. Lower `HTTP_RETRY_MAX_ATTEMPTS` or raise
-`SAGA_STEP_TIMEOUT_MS` if that matters for a given deployment.
+**The bulkhead is per instance, not per fleet.** `HTTP_BULKHEAD_MAX_CONCURRENT`
+caps one process, so the load a dependency actually sees is that times the
+replica count. Sizing it means dividing the dependency's real budget by the
+number of replicas, and nothing here notices when that number changes. A
+distributed cap would need shared state on the hot path of every outbound call,
+which is a worse trade than sizing the local one conservatively.
+
+**Nothing exports these counters yet.** `snapshot()` has everything a dashboard
+needs — breaker state, in-flight and queued counts, both rejection tallies — and
+no health indicator or metrics endpoint reads it. Those are the next two items in
+`SPEC.md`.

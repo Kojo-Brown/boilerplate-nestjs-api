@@ -631,6 +631,37 @@ describe("envSchema — outbound HTTP resilience", () => {
     expect(env.HTTP_BREAKER_RESET_TIMEOUT_MS).toBe(30_000);
   });
 
+  it("defaults to a twenty-deep bulkhead and a twenty-five second request budget", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.HTTP_BULKHEAD_MAX_CONCURRENT).toBe(20);
+    expect(env.HTTP_BULKHEAD_MAX_QUEUED).toBe(20);
+    expect(env.HTTP_BULKHEAD_QUEUE_TIMEOUT_MS).toBe(1_000);
+    expect(env.HTTP_REQUEST_DEADLINE_MS).toBe(25_000);
+  });
+
+  it("accepts a bulkhead with no queue at all, which is pure fail-fast", () => {
+    const env = envSchema.parse({ ...BASE_ENV, HTTP_BULKHEAD_MAX_QUEUED: "0" });
+
+    expect(env.HTTP_BULKHEAD_MAX_QUEUED).toBe(0);
+  });
+
+  /**
+   * A budget no longer than the queue wait is a service where every contended
+   * call waits out the full queue timeout, is admitted, finds nothing left of
+   * its deadline, and gives up without sending anything — a 504 for every call
+   * under load, however healthy the dependency is.
+   */
+  it("refuses a request budget the queue wait could consume entirely", () => {
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        HTTP_BULKHEAD_QUEUE_TIMEOUT_MS: "1000",
+        HTTP_REQUEST_DEADLINE_MS: "1000",
+      }),
+    ).toThrow(/must be greater than HTTP_BULKHEAD_QUEUE_TIMEOUT_MS/);
+  });
+
   it("accepts a single-attempt ladder, which disables retrying but not the breaker", () => {
     const env = envSchema.parse({ ...BASE_ENV, HTTP_RETRY_MAX_ATTEMPTS: "1" });
 
@@ -674,6 +705,12 @@ describe("envSchema — outbound HTTP resilience", () => {
     ["HTTP_BREAKER_VOLUME_THRESHOLD", "0"],
     ["HTTP_BREAKER_ROLLING_BUCKETS", "0"],
     ["HTTP_BREAKER_RESET_TIMEOUT_MS", "not-a-number"],
+    // A cap of zero admits nothing and rejects every outbound call forever.
+    ["HTTP_BULKHEAD_MAX_CONCURRENT", "0"],
+    ["HTTP_BULKHEAD_MAX_QUEUED", "-1"],
+    ["HTTP_BULKHEAD_QUEUE_TIMEOUT_MS", "0"],
+    ["HTTP_REQUEST_DEADLINE_MS", "0"],
+    ["HTTP_REQUEST_DEADLINE_MS", "not-a-number"],
   ])("refuses %s=%s at boot rather than at the first outbound call", (key, value) => {
     expect(() => envSchema.parse({ ...BASE_ENV, [key]: value })).toThrow();
   });

@@ -13,8 +13,12 @@ import type { ResilientHttpOptions } from "@/common/http";
  *
  * The policy is otherwise the real one. An adapter spec that wants no retrying
  * at all — most of them, since they assert on what the fake API received —
- * passes `maxAttempts: 1`; the breaker stays in the path either way, which is
- * what keeps these specs honest about the wiring.
+ * passes `maxAttempts: 1`; the breaker and the bulkhead stay in the path either
+ * way, which is what keeps these specs honest about the wiring.
+ *
+ * `now` is the real monotonic clock: an adapter spec's calls are sequential and
+ * its `sleep` returns instantly, so nothing gets near the deadline. A spec that
+ * wants to exercise the budget passes a clock it steps itself.
  */
 export interface TestHttpClient {
   readonly client: ResilientHttpClient;
@@ -34,10 +38,13 @@ export function testHttpClient(overrides: Partial<ResilientHttpOptions> = {}): T
       rollingBuckets: 10,
       resetTimeoutMs: 30_000,
     },
+    bulkhead: { maxConcurrent: 20, maxQueued: 20, maxQueueWaitMs: 1_000 },
+    deadlineMs: 25_000,
     sleep: async (ms) => {
       delays.push(ms);
     },
     random: () => 0.5,
+    now: () => performance.now(),
     ...overrides,
   };
 

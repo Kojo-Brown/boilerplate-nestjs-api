@@ -1,4 +1,5 @@
 import type { BackoffPolicy } from "@/common/backoff";
+import type { BulkheadPolicy } from "@/common/bulkhead";
 
 /**
  * The knobs the breaker is built from, named for what they do rather than for
@@ -29,7 +30,7 @@ export interface CircuitBreakerPolicy {
   readonly resetTimeoutMs: number;
 }
 
-/** Retry ladder plus breaker: one policy, shared by every dependency. */
+/** Ladder, breaker, bulkhead and deadline: one policy, shared by every dependency. */
 export interface HttpResiliencePolicy {
   /**
    * The retry ladder. `maxAttempts` counts the first attempt, so `1` disables
@@ -37,18 +38,46 @@ export interface HttpResiliencePolicy {
    */
   readonly retry: BackoffPolicy;
   readonly breaker: CircuitBreakerPolicy;
+  /**
+   * The concurrency cap, per dependency. One slow dependency may hold this
+   * many calls open and queue this many more; everything beyond that is
+   * refused without being sent.
+   */
+  readonly bulkhead: BulkheadPolicy;
+  /**
+   * Hard ceiling on one `request()` call, covering everything it can spend
+   * time on: waiting for a bulkhead permit, every attempt, and every sleep
+   * between them.
+   *
+   * The per-attempt timeout ({@link HttpRequestOptions.timeoutMs}) bounds one
+   * socket; this bounds the call. Without it, three attempts at a ten-second
+   * timeout plus their backoff is over thirty seconds of somebody else's
+   * budget, which is how a caller with a ten-second deadline of its own ends
+   * up abandoning a request that is still running.
+   */
+  readonly deadlineMs: number;
 }
 
 /**
- * The policy plus the two seams a test needs to make the ladder deterministic.
+ * The policy plus the three seams a test needs to make the ladder and the
+ * deadline deterministic.
  *
- * Both default to the real thing in {@link ResilientHttpModule}; a spec passes
- * a counting `sleep` and a fixed `random` so it can assert on the schedule
- * instead of waiting for it.
+ * All default to the real thing in {@link ResilientHttpModule}; a spec passes
+ * a counting `sleep`, a fixed `random` and a clock it advances itself, so it
+ * can assert on the schedule instead of waiting for it.
  */
 export interface ResilientHttpOptions extends HttpResiliencePolicy {
   readonly sleep: (ms: number) => Promise<void>;
   readonly random: () => number;
+  /**
+   * Milliseconds from an arbitrary origin, used only for deadline arithmetic.
+   *
+   * Monotonic in production (`performance.now()`), because the alternative is
+   * a deadline that an NTP step can expire early or extend indefinitely. It is
+   * never formatted or persisted, so having no relation to wall-clock time
+   * costs nothing.
+   */
+  readonly now: () => number;
 }
 
 /** Injection token for {@link ResilientHttpOptions}. */
@@ -56,8 +85,24 @@ export const HTTP_RESILIENCE_OPTIONS = Symbol("HTTP_RESILIENCE_OPTIONS");
 
 /** Per-call overrides. Everything else comes from the policy. */
 export interface HttpRequestOptions {
-  /** Overrides {@link DEFAULT_HTTP_TIMEOUT_MS} for this call. */
+  /**
+   * Overrides {@link DEFAULT_HTTP_TIMEOUT_MS} for one attempt.
+   *
+   * It is a ceiling, not a guarantee: an attempt is given whatever is smaller,
+   * this or what is left of {@link deadlineMs}. A ten-second attempt inside a
+   * budget with two seconds left gets two.
+   */
   readonly timeoutMs?: number;
+  /**
+   * Overrides {@link HttpResiliencePolicy.deadlineMs} for this call — the hard
+   * ceiling on the whole thing, queue wait and retries included.
+   *
+   * Pass it when the caller already has a deadline of its own. A saga step is
+   * bounded by `SAGA_STEP_TIMEOUT_MS`, and a step that abandons a request
+   * still running upstream has spent its budget without learning the outcome;
+   * handing the same number down means the client gives up first and says so.
+   */
+  readonly deadlineMs?: number;
   /**
    * Whether sending this request twice is harmless.
    *

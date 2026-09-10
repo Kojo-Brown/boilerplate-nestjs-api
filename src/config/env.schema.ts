@@ -630,6 +630,45 @@ export const envSchema = z
      * short enough that recovery is not gated on a deploy.
      */
     HTTP_BREAKER_RESET_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+    /**
+     * Calls one dependency may have in flight at once.
+     *
+     * This is the bulkhead, and it exists for the dependency that is slow
+     * rather than broken: the breaker needs finished failures before it can
+     * react, and a gateway answering just inside its timeout never supplies
+     * any. Twenty is roughly what a single instance can hold open against one
+     * integration without its own inbound traffic queueing behind it, and it
+     * is per dependency, so four integrations do not share one budget.
+     */
+    HTTP_BULKHEAD_MAX_CONCURRENT: z.coerce.number().int().positive().default(20),
+    /**
+     * Callers that may wait for a permit before requests are refused outright.
+     *
+     * Bounded, and bounded low, on purpose. An unbounded queue turns a
+     * concurrency problem into a memory problem and hides it until the process
+     * dies; a deep one fills with requests whose callers have already given up.
+     */
+    HTTP_BULKHEAD_MAX_QUEUED: z.coerce.number().int().nonnegative().default(20),
+    /**
+     * How long a call waits for a permit before being refused.
+     *
+     * A second, because a queue is worth having for the burst that clears in a
+     * moment and not much else. Waiting longer than this against a saturated
+     * dependency is time the caller could have spent being told no.
+     */
+    HTTP_BULKHEAD_QUEUE_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
+    /**
+     * Hard ceiling on one outbound call, covering the queue wait, every
+     * attempt, and every sleep between them.
+     *
+     * The per-attempt timeout bounds a socket; this bounds the call. Twenty-five
+     * seconds fits one full ten-second attempt, a jittered sleep, and a second
+     * full attempt, with room for a queue wait — a third attempt only happens
+     * when the earlier ones failed fast, which is the case where it is cheap
+     * and worth having. Callers with a tighter deadline of their own pass it
+     * per call rather than lowering this.
+     */
+    HTTP_REQUEST_DEADLINE_MS: z.coerce.number().int().positive().default(25_000),
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -982,6 +1021,26 @@ export const envSchema = z
           `least HTTP_BREAKER_ROLLING_BUCKETS (${env.HTTP_BREAKER_ROLLING_BUCKETS}): the ` +
           `breaker rotates one bucket at a time, and a bucket shorter than a millisecond is a ` +
           `timer that never stops firing.`,
+      });
+    }
+
+    /**
+     * The request budget has to outlast the queue wait, or the bulkhead is the
+     * only thing a contended call ever reaches: it waits the full queue
+     * timeout, is admitted, finds nothing left of its deadline, and gives up
+     * without sending anything. Every call under contention would then be a
+     * 504 no matter how healthy the dependency is — the most confusing possible
+     * shape for this failure, and arithmetic this file can do at boot.
+     */
+    if (env.HTTP_REQUEST_DEADLINE_MS <= env.HTTP_BULKHEAD_QUEUE_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["HTTP_REQUEST_DEADLINE_MS"],
+        message:
+          `HTTP_REQUEST_DEADLINE_MS (${env.HTTP_REQUEST_DEADLINE_MS}ms) must be greater than ` +
+          `HTTP_BULKHEAD_QUEUE_TIMEOUT_MS (${env.HTTP_BULKHEAD_QUEUE_TIMEOUT_MS}ms): a call that ` +
+          `may spend its whole budget queueing for a permit can never spend any of it on a ` +
+          `request.`,
       });
     }
   });

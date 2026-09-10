@@ -1,6 +1,11 @@
 export { DEFAULT_HTTP_TIMEOUT_MS, asRecord, readString, readNumber, readArray } from "./json-http";
 export type { HttpJsonResponse } from "./json-http";
-export { HttpCircuitOpenError, HttpTransportError } from "./http.errors";
+export {
+  HttpBulkheadRejectedError,
+  HttpCircuitOpenError,
+  HttpDeadlineExceededError,
+  HttpTransportError,
+} from "./http.errors";
 export { HTTP_RESILIENCE_OPTIONS, isRetryableStatus, isSafeMethod } from "./http-resilience";
 export type {
   CircuitBreakerPolicy,

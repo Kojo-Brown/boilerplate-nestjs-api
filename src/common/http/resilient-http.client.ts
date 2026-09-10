@@ -3,7 +3,14 @@ import type { OnApplicationShutdown } from "@nestjs/common";
 import CircuitBreaker from "opossum";
 import { nextAttemptDelayMs } from "@/common/backoff";
 import type { BackoffPolicy } from "@/common/backoff";
-import { HttpCircuitOpenError, HttpTransportError } from "./http.errors";
+import { Bulkhead, BulkheadRejectedError } from "@/common/bulkhead";
+import type { BulkheadStats } from "@/common/bulkhead";
+import {
+  HttpBulkheadRejectedError,
+  HttpCircuitOpenError,
+  HttpDeadlineExceededError,
+  HttpTransportError,
+} from "./http.errors";
 import {
   HTTP_RESILIENCE_OPTIONS,
   isRetryableStatus,
@@ -22,10 +29,25 @@ export interface HttpDependencySnapshot {
   readonly failures: number;
   /** Calls the open breaker refused without sending. */
   readonly rejects: number;
+  /**
+   * The bulkhead's live occupancy and its cumulative rejections.
+   *
+   * Reported next to the breaker's counters rather than separately because the
+   * two are read together: a dependency with a saturated bulkhead and a closed
+   * breaker is slow, and the same bulkhead with an open breaker is a queue of
+   * calls waiting to be told the circuit is open.
+   */
+  readonly bulkhead: BulkheadStats;
 }
 
 /** The arguments the breaker's action takes, in `fire()` order. */
 type Attempt = [url: string, init: RequestInit, timeoutMs: number];
+
+/** Everything one dependency name owns. Created together, so they cannot diverge. */
+interface Dependency {
+  readonly breaker: CircuitBreaker<Attempt, HttpJsonResponse>;
+  readonly bulkhead: Bulkhead;
+}
 
 /**
  * A response the upstream gave that the ladder and the breaker both count as a
@@ -65,15 +87,33 @@ class RetryableResponseError extends Error {
  * first outcome is unknown, so anything that moves money or sends a message
  * without an idempotency key gets the breaker and one attempt.
  *
- * **What it does not do.** There is no per-dependency concurrency cap here: a
- * slow dependency can still tie up as many callers as arrive during the
- * timeout. Bulkheads are the next item in the spec, and opossum's `capacity`
- * option is where they will go.
+ * **Why there is a bulkhead as well as a breaker.** The breaker reads history,
+ * so it can only react to calls that have already finished failing. A
+ * dependency answering in nine seconds, just inside its timeout, never produces
+ * that history — and every caller arriving inside those nine seconds is
+ * admitted, until the process is holding its whole capacity open against one
+ * integration. {@link Bulkhead} caps that at `maxConcurrent` in flight plus
+ * `maxQueued` waiting, per dependency.
+ *
+ * **Why the bulkhead is not opossum's `capacity`.** Two reasons, both in
+ * opossum 10's `circuit.js`. It calls `semaphore.test()`, which never waits, so
+ * there is no queue and a burst one millisecond over the cap is refused
+ * outright. And a refusal goes through `handleError`, so it lands in
+ * `stats.failures` and counts toward the error percentage: enough local
+ * back-pressure would open the breaker and take a *healthy* dependency out for
+ * the whole reset timeout. Our own admission decisions must not be evidence
+ * about somebody else's health.
+ *
+ * **Why every call has a deadline.** The per-attempt timeout bounds one socket,
+ * not the call: three attempts at ten seconds plus backoff is over half a
+ * minute. `deadlineMs` bounds the whole thing — queue wait, attempts, sleeps —
+ * and each attempt's socket timeout is clamped to whatever is left of it, so
+ * the ceiling is enforced rather than hoped for.
  */
 @Injectable()
 export class ResilientHttpClient implements OnApplicationShutdown {
   private readonly logger = new Logger(ResilientHttpClient.name);
-  private readonly breakers = new Map<string, CircuitBreaker<Attempt, HttpJsonResponse>>();
+  private readonly dependencies = new Map<string, Dependency>();
 
   constructor(@Inject(HTTP_RESILIENCE_OPTIONS) private readonly options: ResilientHttpOptions) {}
 
@@ -82,10 +122,13 @@ export class ResilientHttpClient implements OnApplicationShutdown {
    * the failure allow it.
    *
    * Keeps `requestJson`'s contract: a status is data and comes back as an
-   * `HttpJsonResponse` whatever it is, including after the ladder is spent.
-   * Only a request that produced no response at all throws — as
-   * {@link HttpTransportError}, or as {@link HttpCircuitOpenError} when the
-   * breaker refused to send it.
+   * `HttpJsonResponse` whatever it is, including after the ladder is spent or
+   * the budget ran out. Only a request that produced no response at all
+   * throws — as {@link HttpTransportError}, as {@link HttpCircuitOpenError}
+   * when the breaker refused to send it, as
+   * {@link HttpBulkheadRejectedError} when the dependency's bulkhead was
+   * saturated, or as {@link HttpDeadlineExceededError} when the whole budget
+   * went without an answer.
    */
   async request(
     dependency: string,
@@ -93,18 +136,64 @@ export class ResilientHttpClient implements OnApplicationShutdown {
     init: RequestInit,
     options: HttpRequestOptions = {},
   ): Promise<HttpJsonResponse> {
-    const breaker = this.breakerFor(dependency);
-    const timeoutMs = options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+    const { breaker, bulkhead } = this.dependencyFor(dependency);
+    const attemptTimeoutMs = options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+    const budgetMs = options.deadlineMs ?? this.options.deadlineMs;
+    const deadline = this.options.now() + budgetMs;
     const ladder: BackoffPolicy = {
       ...this.options.retry,
       maxAttempts:
         (options.idempotent ?? isSafeMethod(init.method)) ? this.options.retry.maxAttempts : 1,
     };
 
+    /** The last response the ladder counted as a failure, for the deadline paths. */
+    let lastResponse: HttpJsonResponse | null = null;
+
     for (let attempt = 1; ; attempt += 1) {
+      const remainingMs = deadline - this.options.now();
+      if (remainingMs <= 0) {
+        // Reachable only when a sleep overshot: the ladder never schedules one
+        // it has no room for. A timer is a floor, not a ceiling, so the case
+        // has to be handled rather than reasoned away — and the response that
+        // bought the sleep is still the best answer the caller is going to get.
+        if (lastResponse !== null) return lastResponse;
+        throw new HttpDeadlineExceededError(dependency, budgetMs, attempt - 1, undefined);
+      }
+
       try {
-        return await breaker.fire(url, init, timeoutMs);
+        // The bulkhead is outside the breaker and inside the ladder. Outside
+        // the breaker, because a permit is a call this service is holding open
+        // and an open breaker holds nothing — and because opossum would file
+        // our own back-pressure as the dependency's failures. Inside the
+        // ladder, because a backoff sleep holds no socket either: a permit kept
+        // across one would cap concurrency below the real figure and let a
+        // dependency's own retries crowd out its healthy calls.
+        return await bulkhead.run(() => {
+          // Re-read the clock rather than reusing `remainingMs`: queueing for a
+          // permit spends budget too, and an attempt started with the figure
+          // from before the wait is how a "hard" ceiling ends up being the
+          // deadline plus however long the queue was.
+          const attemptBudgetMs = Math.floor(deadline - this.options.now());
+          if (attemptBudgetMs < 1) {
+            throw new HttpDeadlineExceededError(dependency, budgetMs, attempt - 1, undefined);
+          }
+          // Floored, and at least 1: `AbortSignal.timeout` goes to a Node timer,
+          // which throws `ERR_OUT_OF_RANGE` on a fractional delay — and a
+          // monotonic clock reads in fractions of a millisecond.
+          const timeoutMs = Math.max(1, Math.floor(Math.min(attemptTimeoutMs, attemptBudgetMs)));
+          return breaker.fire(url, init, timeoutMs);
+        }, remainingMs);
       } catch (caught) {
+        // The budget is spent, and the ladder is not a way to get more of it.
+        if (caught instanceof HttpDeadlineExceededError) throw caught;
+
+        if (caught instanceof BulkheadRejectedError) {
+          // Nothing was sent and nothing will be: the ladder would queue again
+          // behind the same saturated dependency, spending the caller's budget
+          // to arrive at the same answer more slowly.
+          throw new HttpBulkheadRejectedError(dependency, caught);
+        }
+
         if (isBreakerOpen(caught)) {
           // Not a failure of this call — it never happened. Retrying here would
           // spend the ladder on rejections that cost nothing and tell us
@@ -113,30 +202,44 @@ export class ResilientHttpClient implements OnApplicationShutdown {
         }
 
         const response = caught instanceof RetryableResponseError ? caught.response : null;
+        if (response !== null) lastResponse = response;
         const delayMs = this.delayFor(attempt, ladder, response?.retryAfterMs ?? null);
+        const budgetLeftMs = deadline - this.options.now();
 
-        if (delayMs === null) {
+        // Two ways to be done: the ladder is spent, or there is not enough
+        // budget left to sleep off the next delay. Either way the caller gets
+        // the last response if there is one — the contract does not change
+        // depending on which limit ended the call.
+        if (delayMs === null || delayMs >= budgetLeftMs) {
           if (response !== null) return response;
+          if (delayMs !== null) {
+            throw new HttpDeadlineExceededError(dependency, budgetMs, attempt, caught);
+          }
           throw new HttpTransportError(dependency, attempt, caught);
         }
 
         this.logger.debug(
           `Retrying ${init.method ?? "GET"} ${url} against "${dependency}" in ${delayMs}ms ` +
-            `(attempt ${attempt} of ${ladder.maxAttempts} failed: ${describeFailure(caught)})`,
+            `(attempt ${attempt} of ${ladder.maxAttempts} failed: ${describeFailure(caught)}; ` +
+            `${Math.round(budgetLeftMs)}ms of budget left)`,
         );
         await this.options.sleep(delayMs);
       }
     }
   }
 
-  /** Current breaker state per dependency. Empty until the first call is made. */
+  /**
+   * Current breaker state and bulkhead occupancy per dependency. Empty until
+   * the first call is made.
+   */
   snapshot(): readonly HttpDependencySnapshot[] {
-    return [...this.breakers.entries()].map(([dependency, breaker]) => ({
+    return [...this.dependencies.entries()].map(([dependency, { breaker, bulkhead }]) => ({
       dependency,
       state: breaker.opened ? "open" : breaker.halfOpen ? "half-open" : "closed",
       successes: breaker.stats.successes,
       failures: breaker.stats.failures,
       rejects: breaker.stats.rejects,
+      bulkhead: bulkhead.stats(),
     }));
   }
 
@@ -149,8 +252,11 @@ export class ResilientHttpClient implements OnApplicationShutdown {
    * the circuit is done.
    */
   onApplicationShutdown(): void {
-    for (const breaker of this.breakers.values()) breaker.shutdown();
-    this.breakers.clear();
+    for (const { breaker } of this.dependencies.values()) breaker.shutdown();
+    // The bulkheads need nothing: they own no timer of their own beyond a
+    // queued caller's wait, and every one of those is already guaranteed to
+    // settle by `maxQueueWaitMs`. Dropping the map cannot strand a waiter.
+    this.dependencies.clear();
   }
 
   /**
@@ -183,8 +289,8 @@ export class ResilientHttpClient implements OnApplicationShutdown {
     return retryAfterMs + Math.floor(this.options.random() * ladder.baseMs);
   }
 
-  private breakerFor(dependency: string): CircuitBreaker<Attempt, HttpJsonResponse> {
-    const existing = this.breakers.get(dependency);
+  private dependencyFor(dependency: string): Dependency {
+    const existing = this.dependencies.get(dependency);
     if (existing) return existing;
 
     const { breaker: policy } = this.options;
@@ -215,8 +321,12 @@ export class ResilientHttpClient implements OnApplicationShutdown {
     );
     created.on("close", () => this.logger.log(`Circuit for "${dependency}" closed.`));
 
-    this.breakers.set(dependency, created);
-    return created;
+    const entry: Dependency = {
+      breaker: created,
+      bulkhead: new Bulkhead(dependency, this.options.bulkhead),
+    };
+    this.dependencies.set(dependency, entry);
+    return entry;
   }
 }
 

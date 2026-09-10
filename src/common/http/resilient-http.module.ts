@@ -28,11 +28,23 @@ export function httpResilienceOptions(config: ConfigService): ResilientHttpOptio
       rollingBuckets: config.get<number>("HTTP_BREAKER_ROLLING_BUCKETS", 10),
       resetTimeoutMs: config.get<number>("HTTP_BREAKER_RESET_TIMEOUT_MS", 30_000),
     },
+    bulkhead: {
+      maxConcurrent: config.get<number>("HTTP_BULKHEAD_MAX_CONCURRENT", 20),
+      maxQueued: config.get<number>("HTTP_BULKHEAD_MAX_QUEUED", 20),
+      maxQueueWaitMs: config.get<number>("HTTP_BULKHEAD_QUEUE_TIMEOUT_MS", 1_000),
+    },
+    deadlineMs: config.get<number>("HTTP_REQUEST_DEADLINE_MS", 25_000),
     // `node:timers/promises` rather than a hand-rolled `setTimeout` wrapper:
     // its timer is `unref`able and it does not leave a dangling handle when the
     // process is shutting down mid-ladder.
     sleep: (ms) => sleep(ms),
     random: Math.random,
+    // `performance.now()` rather than `Date.now()`: this only ever feeds
+    // deadline subtraction, and a wall clock that an NTP correction steps
+    // backwards mid-request extends that deadline by however far it stepped —
+    // or, stepping forwards, expires a request that has been running for a
+    // millisecond.
+    now: () => performance.now(),
   };
 }
 

@@ -1,3 +1,4 @@
+import { EMPTY_TRACE_CARRIER } from "@/telemetry";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { describeOutboxStoreContract } from "./outbox-store.contract";
@@ -45,6 +46,7 @@ describe("InMemoryOutboxStore", () => {
         name: "user.retired" as never,
         payload: {} as never,
         correlationId: null,
+        trace: EMPTY_TRACE_CARRIER,
         occurredAt: new Date(0),
       }),
     );

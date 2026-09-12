@@ -1,9 +1,20 @@
 import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { SpanKind, type Histogram, type Tracer } from "@opentelemetry/api";
 import type { BackoffPolicy } from "@/common/backoff";
 import type { Env } from "@/config/env.schema";
 import { DomainEventBus } from "@/events";
 import { EventContract } from "@/schema-registry";
+import { extractTraceContext, meterFor, recordSpanError, tracerFor } from "@/telemetry";
+import {
+  ATTR_APP_MESSAGING_OUTCOME,
+  ATTR_MESSAGING_CONSUMER_GROUP_NAME,
+  ATTR_MESSAGING_DESTINATION_NAME,
+  ATTR_MESSAGING_DESTINATION_PARTITION_ID,
+  ATTR_MESSAGING_KAFKA_OFFSET,
+  ATTR_MESSAGING_OPERATION_NAME,
+  ATTR_MESSAGING_SYSTEM,
+} from "@/telemetry/semconv";
 import { MESSAGE_BROKER, type IncomingMessage, type MessageBroker } from "./ports";
 import { DEAD_LETTER_JITTER, DOMAIN_EVENTS_TOPIC } from "./messaging.tokens";
 import { decodeDomainEvent } from "./domain-event-codec";
@@ -68,6 +79,29 @@ import type { DecodedDomainEvent } from "./domain-event-codec";
 @Injectable()
 export class DomainEventConsumer {
   private readonly logger = new Logger(DomainEventConsumer.name);
+  private readonly tracer: Tracer = tracerFor("messaging");
+  /**
+   * How long one message took, end to end, and how it ended.
+   *
+   * A histogram rather than a counter, and one instrument rather than three,
+   * because the interesting questions about a consumer are all about the
+   * distribution — a p99 that has doubled, or a `outcome=dead-letter` bucket
+   * that is no longer empty. The count comes free with a histogram; the
+   * converse is not true.
+   *
+   * Created in the constructor rather than at module scope so it binds to
+   * whatever meter provider is installed when the consumer is built. A
+   * module-level instrument would be created while the file is first required,
+   * which in a test is before the provider exists — and an instrument taken
+   * from the API's no-op meter stays no-op for the life of the process.
+   */
+  private readonly duration: Histogram = meterFor("messaging").createHistogram(
+    "messaging.process.duration",
+    {
+      description: "Time to process one domain event, from delivery to commit.",
+      unit: "s",
+    },
+  );
 
   private readonly enabled: boolean;
   private readonly groupId: string;
@@ -149,7 +183,58 @@ export class DomainEventConsumer {
     this.subscription = null;
   }
 
-  private async handle(message: IncomingMessage): Promise<void> {
+  /**
+   * One message, inside one consumer span.
+   *
+   * The parent comes from the message's own `traceparent` header, so the span
+   * is a child of the producer span in `BrokerOutboxPublisher` — which is
+   * itself a child of the request that staged the event. That is the whole
+   * chain the W3C header exists to carry, and it is the only way to see it: the
+   * consumer is a different process from the producer and, in a scaled-out
+   * deployment, a different machine.
+   *
+   * The span covers the retry ladder and the dead-lettering as well as the
+   * handlers, because "this message took nine seconds and three attempts" is
+   * the thing worth seeing, and a span that ended at the first failure would
+   * report the first attempt as the whole story.
+   */
+  private handle(message: IncomingMessage): Promise<void> {
+    const attributes = {
+      [ATTR_MESSAGING_SYSTEM]: this.broker.name,
+      [ATTR_MESSAGING_OPERATION_NAME]: "process",
+      [ATTR_MESSAGING_DESTINATION_NAME]: message.topic,
+      [ATTR_MESSAGING_DESTINATION_PARTITION_ID]: String(message.partition),
+      [ATTR_MESSAGING_KAFKA_OFFSET]: message.offset,
+      [ATTR_MESSAGING_CONSUMER_GROUP_NAME]: this.groupId,
+    };
+
+    return this.tracer.startActiveSpan(
+      `${message.topic} process`,
+      { kind: SpanKind.CONSUMER, attributes },
+      extractTraceContext(message.headers),
+      async (span) => {
+        const startedAt = Date.now();
+        // The third outcome, and the one worth naming: `handle` throwing is
+        // what withholds the offset commit, so the message is redelivered.
+        let outcome = "uncommitted";
+        try {
+          outcome = await this.dispatch(message);
+        } catch (caught: unknown) {
+          recordSpanError(span, caught);
+          throw caught;
+        } finally {
+          span.end();
+          this.duration.record((Date.now() - startedAt) / 1000, {
+            ...attributes,
+            [ATTR_APP_MESSAGING_OUTCOME]: outcome,
+          });
+        }
+      },
+    );
+  }
+
+  /** What became of one message. `dead-lettered` is a success: the offset commits. */
+  private async dispatch(message: IncomingMessage): Promise<"handled" | "dead-lettered"> {
     let decoded: DecodedDomainEvent;
     try {
       decoded = decodeDomainEvent(message, this.contract);
@@ -159,13 +244,13 @@ export class DomainEventConsumer {
       // the two failures belong to different owners. See `DeadLetterReason`.
       if (caught instanceof SchemaContractViolationError) {
         await this.giveUp(message, "schema-invalid", 1, caught);
-        return;
+        return "dead-lettered";
       }
       if (!(caught instanceof UndecodableMessageError)) throw caught;
       // Straight to the dead-letter topic, ladder skipped. One "attempt" is
       // recorded because one was made: the decode itself.
       await this.giveUp(message, "undecodable", 1, caught);
-      return;
+      return "dead-lettered";
     }
     const event = decoded;
 
@@ -207,7 +292,9 @@ export class DomainEventConsumer {
 
     if (result.outcome === "exhausted") {
       await this.giveUp(message, "handler-failed", result.attempts, result.error);
+      return "dead-lettered";
     }
+    return "handled";
   }
 
   /**

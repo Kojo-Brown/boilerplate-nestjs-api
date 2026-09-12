@@ -1,3 +1,4 @@
+import { EMPTY_TRACE_CARRIER } from "@/telemetry";
 import type { OutboxRecord } from "@/outbox";
 import { InMemoryBroker } from "./in-memory-broker";
 import { BrokerOutboxPublisher } from "./broker-outbox.publisher";
@@ -16,6 +17,7 @@ const record: OutboxRecord = {
   correlationId: "req-9",
   occurredAt: new Date("2026-08-27T09:30:00.000Z"),
   attempts: 0,
+  trace: EMPTY_TRACE_CARRIER,
 };
 
 describe("BrokerOutboxPublisher", () => {

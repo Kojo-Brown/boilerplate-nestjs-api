@@ -1,6 +1,7 @@
 import type { TransactionContext } from "@/common/prisma/transaction.port";
 import { isDomainEventName } from "@/events";
 import { UnknownOutboxEventError } from "@/outbox";
+import type { TraceCarrier } from "@/telemetry";
 import type {
   DrainOptions,
   DrainReport,
@@ -17,6 +18,7 @@ interface Row {
   name: string;
   payload: unknown;
   correlationId: string | null;
+  trace: TraceCarrier;
   occurredAt: Date;
   status: OutboxStatus;
   attempts: number;
@@ -55,6 +57,7 @@ export class InMemoryOutboxStore implements OutboxStore {
       name: event.name,
       payload: event.payload,
       correlationId: event.correlationId,
+      trace: event.trace,
       occurredAt: event.occurredAt,
       status: "PENDING",
       attempts: 0,
@@ -124,6 +127,7 @@ export class InMemoryOutboxStore implements OutboxStore {
       id: row.id,
       eventId: row.eventId,
       correlationId: row.correlationId,
+      trace: row.trace,
       occurredAt: row.occurredAt,
       attempts: row.attempts,
       name: row.name,

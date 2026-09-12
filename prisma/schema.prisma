@@ -62,6 +62,24 @@ model OutboxEvent {
   payload       Json
   correlationId String?
 
+  /// W3C `traceparent` of the request that staged this event, and its
+  /// `tracestate` when there was one — captured inside the transaction, not at
+  /// delivery.
+  ///
+  /// The relay runs minutes later, in whichever replica's poll wins the row,
+  /// under a trace context that describes the poll and nothing else. Without
+  /// these two columns the published message would name that poll as its
+  /// parent, so every event in the system would hang off a timer rather than
+  /// off the request that caused it — the one link the whole trace is for.
+  ///
+  /// Nullable, and expected to be: rows staged before this column existed, and
+  /// rows staged while telemetry was switched off, have no context to record.
+  /// Stored as the header's own text because the format belongs to the
+  /// propagator, and a `tracestate` entry from a vendor this service has never
+  /// heard of has to survive the round trip unchanged.
+  traceparent String?
+  tracestate  String?
+
   /// When the event happened — the moment its transaction staged it — not when
   /// it was relayed. The relay publishes this as `DomainEvent.occurredAt`.
   occurredAt DateTime @default(now())

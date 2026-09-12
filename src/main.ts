@@ -1,3 +1,8 @@
+// First, ahead of everything including `reflect-metadata`. Importing this
+// installs the OpenTelemetry SDK, and the HTTP and Express instrumentations
+// work by patching those modules as they are required — so anything loaded
+// before this line is loaded uninstrumented. See src/telemetry/register.ts.
+import { telemetry } from "./telemetry/register";
 import "reflect-metadata";
 import { NestFactory, Reflector } from "@nestjs/core";
 import { Logger, ValidationPipe, VersioningType } from "@nestjs/common";
@@ -11,11 +16,18 @@ import { DeepFreezePipe, freezingEnabledFor } from "./common/immutable";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { ConfigService } from "@nestjs/config";
 import { WsAdapter } from "@nestjs/platform-ws";
+import { TelemetryLogger } from "./telemetry";
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  // What `bufferLogs: true` was always for: the buffered lines are replayed
+  // through this logger, so the boot sequence reaches the logs pipeline too
+  // rather than only the lines written once the application is up.
+  // `TelemetryLogger` is the stock `ConsoleLogger` plus an OpenTelemetry log
+  // record per line, and degrades to exactly the stock one when the SDK is off.
+  app.useLogger(new TelemetryLogger());
   const logger = new Logger("Bootstrap");
 
   const config = app.get(ConfigService);
@@ -80,10 +92,18 @@ async function bootstrap() {
     }, SHUTDOWN_TIMEOUT_MS);
     // Allow the process to exit normally if shutdown completes before the timer
     timer.unref();
-    void app.close().then(() => {
-      logger.log(`Application closed cleanly on ${signal}`);
-      process.exit(0);
-    });
+    void app
+      .close()
+      // After `app.close()`, not before and not in parallel: shutdown hooks are
+      // where the outbox relay finishes its last drain and the consumer leaves
+      // its group, and both of those produce spans and log records. Flushing
+      // first would export everything except the part of the lifecycle that is
+      // hardest to observe any other way. Never rejects — see `TelemetryHandle`.
+      .then(() => {
+        logger.log(`Application closed cleanly on ${signal}`);
+        return telemetry.shutdown();
+      })
+      .then(() => process.exit(0));
   };
 
   process.once("SIGTERM", () => forceExit("SIGTERM"));

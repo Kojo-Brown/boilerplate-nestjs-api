@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import type { TransactionContext } from "@/common/prisma/transaction.port";
 import type { DomainEventName, DomainEventPayloads } from "@/events";
 import { EventContract } from "@/schema-registry";
+import { currentTraceCarrier } from "@/telemetry";
 import type { NewOutboxEvent } from "./outbox-record";
 import { OUTBOX_STORE, type OutboxStore } from "./ports";
 
@@ -77,6 +78,12 @@ export class TransactionalOutbox {
       // than at delivery is what keeps `occurredAt` meaningful when a relay is
       // behind, or when a row has been retried for an hour.
       occurredAt: new Date(),
+      // Captured for exactly the same reason, and it is the same mistake to
+      // leave to the relay: the context that explains this event is the one
+      // active *now*, inside the request that caused it. By the time the row is
+      // published the only context available is a poll's. Empty, and harmlessly
+      // so, when nothing is being traced.
+      trace: currentTraceCarrier(),
     } satisfies NewOutboxEvent<K>;
 
     await this.store.stage(tx, event);

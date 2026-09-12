@@ -1,4 +1,5 @@
 import type { DomainEventName, DomainEventPayloads, StoredDomainEvent } from "@/events";
+import type { TraceCarrier } from "@/telemetry";
 
 /** Where a row is in its life. Mirrors the `OutboxStatus` enum in the schema. */
 export type OutboxStatus = "PENDING" | "PUBLISHED" | "DEAD";
@@ -25,6 +26,13 @@ export interface NewOutboxEvent<K extends DomainEventName = DomainEventName> {
   readonly eventId: string;
   readonly occurredAt: Date;
   readonly correlationId: string | null;
+  /**
+   * The trace context of whatever staged it, for the same reason `occurredAt`
+   * is stamped here: the relay's own context describes a poll, and an event
+   * parented to the poll that delivered it has lost the request that caused it.
+   * See `docs/telemetry.md`.
+   */
+  readonly trace: TraceCarrier;
 }
 
 /**
@@ -49,6 +57,8 @@ export type OutboxRecord = StoredDomainEvent & {
   readonly occurredAt: Date;
   /** Deliveries attempted *before* this one. Zero on the first claim. */
   readonly attempts: number;
+  /** What {@link NewOutboxEvent.trace} was staged with, read back for the publisher. */
+  readonly trace: TraceCarrier;
 };
 
 /** What one claimed row did in one drain. */

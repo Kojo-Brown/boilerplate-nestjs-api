@@ -5,6 +5,7 @@ import {
   type StoredDomainEvent,
 } from "@/events";
 import { SchemaValidationError, type PayloadContract } from "@/schema-registry";
+import { injectTraceContext } from "@/telemetry";
 import type { IncomingMessage, OutgoingMessage } from "./ports";
 import { SchemaContractViolationError, UndecodableMessageError } from "./messaging.errors";
 
@@ -175,6 +176,22 @@ export function encodeDomainEvent(
   if (event.correlationId !== null) {
     headers[EVENT_HEADERS.correlationId] = event.correlationId;
   }
+
+  // `traceparent`, and `tracestate` when there is one, written by the global
+  // propagator rather than by this file. Two things follow from doing it here
+  // rather than at the call site.
+  //
+  // The names are W3C's and carry no `event-` prefix, because unlike every
+  // header above them these are not this repository's invention: a consumer
+  // written in another language, with an SDK that has never heard of this
+  // service, finds its parent span by looking for exactly this key.
+  //
+  // And the context injected is the *active* one, which at this point is the
+  // producer span `BrokerOutboxPublisher` opened — itself parented on the trace
+  // context stored with the row. So the chain on the wire is request → outbox
+  // publish → consumer, rather than the relay's poll → consumer that a context
+  // captured at publish time alone would have produced.
+  injectTraceContext(headers);
 
   return {
     topic,

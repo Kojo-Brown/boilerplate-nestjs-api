@@ -1,3 +1,4 @@
+import { EMPTY_TRACE_CARRIER } from "@/telemetry";
 import type { PrismaClient } from "@prisma/client";
 import { PrismaOutboxStore } from "@/outbox";
 import type { OutboxStore } from "@/outbox";
@@ -60,6 +61,7 @@ describe("PrismaOutboxStore (Postgres)", () => {
           name: "user.registered",
           payload: { userId: "user-1", email: uniqueEmail("outbox"), name: null, provider: null },
           correlationId: null,
+          trace: EMPTY_TRACE_CARRIER,
           occurredAt,
         }),
       );
@@ -100,6 +102,7 @@ describe("PrismaOutboxStore (Postgres)", () => {
             name: "user.registered",
             payload: { userId: "u", email: uniqueEmail("rollback"), name: null, provider: null },
             correlationId: null,
+            trace: EMPTY_TRACE_CARRIER,
             occurredAt: new Date(),
           });
           throw new Error("the operation failed after staging");
@@ -126,6 +129,7 @@ describe("PrismaOutboxStore (Postgres)", () => {
           name: "user.registered",
           payload: { userId: created.id, email, name: null, provider: null },
           correlationId: null,
+          trace: EMPTY_TRACE_CARRIER,
           occurredAt: new Date(),
         });
       });
@@ -148,6 +152,7 @@ describe("PrismaOutboxStore (Postgres)", () => {
             name: "user.registered",
             payload: { userId: "u", email, name: null, provider: null },
             correlationId: null,
+            trace: EMPTY_TRACE_CARRIER,
             occurredAt: new Date(),
           });
           throw new Error("something later went wrong");

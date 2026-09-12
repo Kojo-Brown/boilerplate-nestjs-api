@@ -1,6 +1,15 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
+import { SpanKind, type Tracer } from "@opentelemetry/api";
 import type { OutboxPublisher, OutboxRecord } from "@/outbox";
 import { EventContract } from "@/schema-registry";
+import { contextFromTraceCarrier, recordSpanError, tracerFor } from "@/telemetry";
+import {
+  ATTR_APP_EVENT_NAME,
+  ATTR_MESSAGING_DESTINATION_NAME,
+  ATTR_MESSAGING_MESSAGE_ID,
+  ATTR_MESSAGING_OPERATION_NAME,
+  ATTR_MESSAGING_SYSTEM,
+} from "@/telemetry/semconv";
 import { MESSAGE_BROKER, type MessageBroker } from "./ports";
 import { DOMAIN_EVENTS_TOPIC } from "./messaging.tokens";
 import { encodeDomainEvent } from "./domain-event-codec";
@@ -31,6 +40,7 @@ import { encodeDomainEvent } from "./domain-event-codec";
 @Injectable()
 export class BrokerOutboxPublisher implements OutboxPublisher {
   private readonly logger = new Logger(BrokerOutboxPublisher.name);
+  private readonly tracer: Tracer = tracerFor("outbox");
 
   readonly name: string;
 
@@ -57,7 +67,48 @@ export class BrokerOutboxPublisher implements OutboxPublisher {
     // retried — which is the right shape for a failure that a deploy fixes and a
     // retry does not: the row is still there afterwards, rather than having been
     // put on a topic every consumer is obliged to dead-letter.
-    await this.broker.produce([encodeDomainEvent(this.topic, record, this.contract)]);
+    //
+    // The span is the seam where the trace is stitched back together. Its
+    // parent is the context the row was *staged* with — the request that caused
+    // the event, minutes and a process ago — rather than the ambient context
+    // here, which belongs to the relay's poll. `encodeDomainEvent` then injects
+    // whatever is active, which is this span, so the consumer becomes its
+    // child. See `docs/telemetry.md`.
+    //
+    // The operation name follows the messaging conventions:
+    // `<destination> <operation>`, so a backend groups every publish to this
+    // topic together without a rule about our naming.
+    const parent = contextFromTraceCarrier(record.trace);
+    await this.tracer.startActiveSpan(
+      `${this.topic} send`,
+      {
+        kind: SpanKind.PRODUCER,
+        attributes: {
+          [ATTR_MESSAGING_SYSTEM]: this.broker.name,
+          [ATTR_MESSAGING_OPERATION_NAME]: "send",
+          [ATTR_MESSAGING_DESTINATION_NAME]: this.topic,
+          // The event id, not the row id: it is what survives every redelivery
+          // and what a consumer deduplicates on, so it is the id that lets a
+          // published span and a consumed span be matched up by hand.
+          [ATTR_MESSAGING_MESSAGE_ID]: record.eventId,
+          [ATTR_APP_EVENT_NAME]: record.name,
+        },
+      },
+      parent,
+      async (span) => {
+        try {
+          await this.broker.produce([encodeDomainEvent(this.topic, record, this.contract)]);
+        } catch (caught: unknown) {
+          // Recorded and rethrown. The relay is what decides the row's fate —
+          // retry or dead letter — and a publisher that swallowed the failure
+          // to keep its span tidy would mark an unpublished event delivered.
+          recordSpanError(span, caught);
+          throw caught;
+        } finally {
+          span.end();
+        }
+      },
+    );
     this.logger.debug(`Published ${record.name} (${record.eventId}) to ${this.topic}`);
   }
 }

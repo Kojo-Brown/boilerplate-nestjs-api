@@ -6,6 +6,7 @@ import { MESSAGE_BROKER_NAMES } from "@/messaging/ports";
 import { OUTBOX_PUBLISHER_NAMES } from "@/outbox/ports";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
+import { refineTelemetryEnv, telemetryEnvShape } from "@/telemetry/telemetry.env";
 import { WORKER_POOL_NAMES } from "@/workers/ports";
 
 export const envSchema = z
@@ -669,6 +670,18 @@ export const envSchema = z
      * per call rather than lowering this.
      */
     HTTP_REQUEST_DEADLINE_MS: z.coerce.number().int().positive().default(25_000),
+
+    /**
+     * OpenTelemetry, spread in from `src/telemetry/telemetry.env.ts` rather
+     * than written out here.
+     *
+     * These settings are read twice: by this schema, and by
+     * `telemetry/register.ts`, which installs the SDK before Nest — and
+     * therefore before `ConfigService` — exists. Sharing the declaration is
+     * what stops the two from disagreeing about what a valid sampling ratio
+     * is. See `docs/telemetry.md`.
+     */
+    ...telemetryEnvShape,
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -681,6 +694,10 @@ export const envSchema = z
    * factory refuses the incomplete one if anything asks for it by name.
    */
   .superRefine((env, ctx) => {
+    // The telemetry rules, shared with the pre-Nest bootstrap for the same
+    // reason the shape above is.
+    refineTelemetryEnv(env, env.NODE_ENV, ctx);
+
     /**
      * Selecting S3 without its credentials is a deployment that boots happily
      * and 503s on the first upload — the same failure the payment block below

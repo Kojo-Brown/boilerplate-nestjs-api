@@ -1,4 +1,7 @@
 import { ConfigService } from "@nestjs/config";
+import type { SumMetricData } from "@opentelemetry/sdk-metrics";
+import { EMPTY_TRACE_CARRIER } from "@/telemetry";
+import { installInMemoryTelemetry, type TelemetryProbe } from "@/test-utils/in-memory-telemetry";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { OutboxRelayService } from "./outbox-relay.service";
@@ -50,6 +53,7 @@ describe("OutboxRelayService", () => {
         name: "user.registered",
         payload: { userId: "user-1", email: "relay@example.test", name: null, provider: null },
         correlationId: null,
+        trace: EMPTY_TRACE_CARRIER,
         occurredAt,
       }),
     );
@@ -245,6 +249,66 @@ describe("OutboxRelayService", () => {
       expect(failing.drain.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
+    /**
+     * The one outbox number an operator cannot get from the logs.
+     *
+     * A `retry` announces itself twice — once in the warning and once again when
+     * it either publishes or dies — but a dead letter is a row that stops being
+     * mentioned anywhere. `disposition="dead"` climbing is the alert.
+     */
+    describe("metrics", () => {
+      let probe: TelemetryProbe;
+
+      beforeEach(() => {
+        // Before the relay is constructed: its instruments are created then, and
+        // one taken from the API's no-op meter stays no-op for good.
+        probe = installInMemoryTelemetry();
+      });
+
+      afterEach(async () => {
+        await probe.shutdown();
+      });
+
+      it("counts every row it finished with, by disposition", async () => {
+        await stage("evt-ok");
+        await stage("evt-dead");
+        publisher.behaviour = (record) =>
+          record.eventId === "evt-dead" ? Promise.reject(new Error("poison")) : Promise.resolve();
+
+        // `OUTBOX_MAX_ATTEMPTS: 1` makes the first failure terminal, so one pass
+        // produces one of each disposition.
+        await relay({ OUTBOX_MAX_ATTEMPTS: 1 }).runOnce();
+
+        const points = await counterPoints(probe, "outbox.events.drained");
+        expect(points).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              value: 1,
+              attributes: {
+                "app.outbox.disposition": "published",
+                "app.event.name": "user.registered",
+              },
+            }),
+            expect.objectContaining({
+              value: 1,
+              attributes: { "app.outbox.disposition": "dead", "app.event.name": "user.registered" },
+            }),
+          ]),
+        );
+      });
+
+      it("counts a drain driven by a scheduler, not only one driven by the timer", async () => {
+        await stage("evt-1");
+
+        // `runOnce` rather than `onApplicationBootstrap`: a deployment that
+        // relays from its own scheduler calls this, and its dead letters count
+        // for exactly as much as the timer's.
+        await relay().runOnce();
+
+        expect(await counterPoints(probe, "outbox.events.drained")).toHaveLength(1);
+      });
+    });
+
     it("schedules no further tick once it has been destroyed", async () => {
       const relayUnderTest = relay();
       relayUnderTest.onApplicationBootstrap();
@@ -264,4 +328,16 @@ async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<voi
     if (Date.now() > deadline) throw new Error("timed out waiting for the relay");
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
+}
+
+/** The data points one counter holds, across every scope in the collection. */
+async function counterPoints(
+  probe: TelemetryProbe,
+  name: string,
+): Promise<SumMetricData["dataPoints"]> {
+  const collected = await probe.collectMetrics();
+  return collected.scopeMetrics
+    .flatMap((scope) => scope.metrics)
+    .filter((metric): metric is SumMetricData => metric.descriptor.name === name)
+    .flatMap((metric) => metric.dataPoints);
 }

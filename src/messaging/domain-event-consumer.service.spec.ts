@@ -1,5 +1,9 @@
 import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { SpanKind, context, trace } from "@opentelemetry/api";
+import type { HistogramMetricData } from "@opentelemetry/sdk-metrics";
+import { injectTraceContext } from "@/telemetry";
+import { installInMemoryTelemetry, type TelemetryProbe } from "@/test-utils/in-memory-telemetry";
 import type { Env } from "@/config/env.schema";
 import type { DomainEventBus, PublishReport } from "@/events";
 import { InMemoryBroker } from "./in-memory-broker";
@@ -353,7 +357,98 @@ describe("DomainEventConsumer", () => {
     // only replica shuts down through this path on every deploy.
     await expect(consumer.stop()).resolves.toBeUndefined();
   });
+
+  describe("telemetry", () => {
+    let probe: TelemetryProbe;
+
+    beforeEach(() => {
+      // Installed before the consumer is constructed: its histogram is created
+      // then, and an instrument taken from the API's no-op meter stays no-op.
+      probe = installInMemoryTelemetry();
+    });
+
+    afterEach(async () => {
+      await probe.shutdown();
+    });
+
+    /**
+     * The consumer is a different process from the producer, so the only thing
+     * connecting the two spans is the header on the message. A span started
+     * without extracting it would be a root span — a trace that appears to
+     * begin at a broker, with the request that caused the event unreachable.
+     */
+    it("continues the producer's trace rather than starting its own", async () => {
+      const { bus, settled } = busThat(() => []);
+      const consumer = await start(bus);
+
+      const produced = trace
+        .getTracer("spec")
+        .startSpan("domain-events send", { kind: SpanKind.PRODUCER });
+      const headers: Record<string, string> = {};
+      context.with(trace.setSpan(context.active(), produced), () => injectTraceContext(headers));
+      produced.end();
+
+      const encoded = encodeDomainEvent(TOPIC, event, contract);
+      await broker.produce([{ ...encoded, headers: { ...encoded.headers, ...headers } }]);
+      await waitFor(() => settled.length === 1);
+      await consumer.stop();
+
+      const consumed = probe.spans().find((span) => span.name === `${TOPIC} process`);
+      expect(consumed?.kind).toBe(SpanKind.CONSUMER);
+      expect(consumed?.spanContext().traceId).toBe(produced.spanContext().traceId);
+      expect(consumed?.parentSpanContext?.spanId).toBe(produced.spanContext().spanId);
+      expect(consumed?.attributes["messaging.consumer.group.name"]).toBe("spec-group");
+      expect(consumed?.attributes["messaging.destination.name"]).toBe(TOPIC);
+    });
+
+    it("times every message, and says how it ended", async () => {
+      const { bus, settled } = busThat(() => []);
+      const consumer = await start(bus);
+
+      await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
+      await waitFor(() => settled.length === 1);
+      await consumer.stop();
+
+      const points = await histogramPoints(probe, "messaging.process.duration");
+      expect(points).toHaveLength(1);
+      expect(points[0]?.value.count).toBe(1);
+      expect(points[0]?.attributes).toMatchObject({ "app.messaging.outcome": "handled" });
+    });
+
+    /**
+     * The bucket worth alerting on. A dead-lettered message is a *successful*
+     * return from the handler — the offset commits — so nothing else about the
+     * consumer's own numbers distinguishes it from a message that worked.
+     */
+    it("records a dead-lettered message under its own outcome", async () => {
+      const { bus, settled } = busThat(() => ["welcome-email"]);
+      const consumer = await start(bus, { config: configWith({ KAFKA_RETRY_MAX_ATTEMPTS: 1 }) });
+      const deadLetters = await readDeadLetters();
+
+      await broker.produce([encodeDomainEvent(TOPIC, event, contract)]);
+      await waitFor(() => settled.length === 1 && deadLetters.received.length === 1);
+      await deadLetters.stop();
+      await consumer.stop();
+
+      const points = await histogramPoints(probe, "messaging.process.duration");
+      expect(points.map((point) => point.attributes["app.messaging.outcome"])).toEqual([
+        "dead-lettered",
+      ]);
+    });
+  });
 });
+
+/** The data points one histogram holds, across every scope in the collection. */
+async function histogramPoints(
+  probe: TelemetryProbe,
+  name: string,
+): Promise<HistogramMetricData["dataPoints"]> {
+  const collected = await probe.collectMetrics();
+  return collected.scopeMetrics
+    .flatMap((scope) => scope.metrics)
+    .filter((metric): metric is HistogramMetricData => metric.descriptor.name === name)
+    .flatMap((metric) => metric.dataPoints);
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 5_000;

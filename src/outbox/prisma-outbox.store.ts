@@ -37,6 +37,8 @@ interface ClaimedRow {
   correlationId: string | null;
   occurredAt: Date;
   attempts: number;
+  traceparent: string | null;
+  tracestate: string | null;
 }
 
 /**
@@ -67,6 +69,8 @@ export class PrismaOutboxStore implements OutboxStore {
         payload: event.payload as unknown as Prisma.InputJsonObject,
         correlationId: event.correlationId,
         occurredAt: event.occurredAt,
+        traceparent: event.trace.traceparent,
+        tracestate: event.trace.tracestate,
       },
     });
   }
@@ -116,7 +120,8 @@ export class PrismaOutboxStore implements OutboxStore {
    */
   private claim(client: Prisma.TransactionClient, options: DrainOptions): Promise<ClaimedRow[]> {
     return client.$queryRaw<ClaimedRow[]>(Prisma.sql`
-      SELECT "id", "eventId", "name", "payload", "correlationId", "occurredAt", "attempts"
+      SELECT "id", "eventId", "name", "payload", "correlationId", "occurredAt", "attempts",
+             "traceparent", "tracestate"
         FROM "outbox_events"
        WHERE "status" = 'PENDING'::"OutboxStatus"
          AND "nextAttemptAt" <= ${options.now}
@@ -218,6 +223,7 @@ function toRecord(row: ClaimedRow): OutboxRecord {
     correlationId: row.correlationId,
     occurredAt: row.occurredAt,
     attempts: row.attempts,
+    trace: { traceparent: row.traceparent, tracestate: row.tracestate },
     name,
     payload: row.payload as unknown as DomainEventPayloads[typeof name],
   } as OutboxRecord;

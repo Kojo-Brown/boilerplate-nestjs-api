@@ -196,6 +196,16 @@ docker-compose up        # postgres + redis + api
   it is not opossum's `capacity` option, why a permit is held per attempt rather
   than per call, why a per-attempt timeout is not a deadline, and why this is
   not the `@Retry()` aspect.
+- [docs/telemetry.md](./docs/telemetry.md) — OpenTelemetry traces, metrics and
+  logs: why the SDK starts before Nest rather than inside a provider, why
+  `OTEL_EXPORTER=none` costs nothing rather than collecting and discarding, why
+  sampling is parent-based (and what resampling at each hop does to a
+  distributed trace), why the trace context of the _staging request_ is written
+  to the outbox row rather than captured when the relay publishes, why the
+  message's headers are W3C's names rather than this repository's, why the
+  application logger writes to both stdout and the logs pipeline, why the access
+  log's two trace fields are snake_case when nothing else on the line is, and
+  which four things are still not traced.
 
 ## Testing
 

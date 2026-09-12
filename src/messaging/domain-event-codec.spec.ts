@@ -8,7 +8,10 @@ import {
   partitionKeyFor,
   type EncodedDomainEvent,
 } from "./domain-event-codec";
+import { trace } from "@opentelemetry/api";
 import { SchemaValidationError } from "@/schema-registry";
+import { TRACEPARENT_HEADER, TRACESTATE_HEADER } from "@/telemetry";
+import { installInMemoryTelemetry, type TelemetryProbe } from "@/test-utils/in-memory-telemetry";
 import { realEventContract } from "@/test-utils/event-contract";
 import { SchemaContractViolationError, UndecodableMessageError } from "./messaging.errors";
 
@@ -276,6 +279,67 @@ describe("decodeDomainEvent", () => {
         contract,
       );
       expect(decoded.payload).toEqual({ ...registered.payload, locale: "en-GB" });
+    });
+  });
+
+  describe("trace context", () => {
+    /**
+     * The header carries no `event-` prefix, unlike everything else this codec
+     * writes, because unlike everything else it is not this repository's
+     * invention: a consumer in another language, with an SDK that has never
+     * heard of this service, finds its parent by looking for exactly this key.
+     */
+    describe("with an SDK installed", () => {
+      let probe: TelemetryProbe;
+
+      beforeEach(() => {
+        probe = installInMemoryTelemetry();
+      });
+
+      afterEach(async () => {
+        await probe.shutdown();
+      });
+
+      it("writes the active span's traceparent", () => {
+        const message = trace.getTracer("spec").startActiveSpan("publish", (span) => {
+          try {
+            return encodeDomainEvent(TOPIC, registered, contract);
+          } finally {
+            span.end();
+          }
+        });
+
+        const published = probe.spans()[0]!.spanContext();
+        expect(message.headers[TRACEPARENT_HEADER]).toBe(
+          `00-${published.traceId}-${published.spanId}-01`,
+        );
+      });
+
+      it("leaves the event's own headers alone", () => {
+        const message = trace.getTracer("spec").startActiveSpan("publish", (span) => {
+          try {
+            return encodeDomainEvent(TOPIC, registered, contract);
+          } finally {
+            span.end();
+          }
+        });
+
+        expect(message.headers[EVENT_HEADERS.name]).toBe("user.registered");
+        expect(message.headers[EVENT_HEADERS.id]).toBe(registered.eventId);
+        expect(message.headers[EVENT_HEADERS.contentType]).toBe(EVENT_CONTENT_TYPE);
+      });
+    });
+
+    /**
+     * No trace, no header — rather than a header describing a span that does
+     * not exist. A consumer that extracted one would start a child of nothing
+     * and report a trace whose root is missing.
+     */
+    it("writes no trace headers when nothing is being traced", () => {
+      const message = encodeDomainEvent(TOPIC, registered, contract);
+
+      expect(message.headers[TRACEPARENT_HEADER]).toBeUndefined();
+      expect(message.headers[TRACESTATE_HEADER]).toBeUndefined();
     });
   });
 });

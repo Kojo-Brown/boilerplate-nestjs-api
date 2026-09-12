@@ -1,4 +1,5 @@
 import type { TransactionContext, TransactionRunner } from "@/common/prisma/transaction.port";
+import { EMPTY_TRACE_CARRIER } from "@/telemetry";
 import type { DrainOptions, NewOutboxEvent, OutboxRecord, OutboxStore } from ".";
 
 /** What a suite must supply to run the contract. */
@@ -66,7 +67,7 @@ export function describeOutboxStoreContract(
      * happily let a caller replace one of them and leave the other.
      */
     type EnvelopeOverrides = Partial<
-      Pick<NewOutboxEvent, "eventId" | "occurredAt" | "correlationId">
+      Pick<NewOutboxEvent, "eventId" | "occurredAt" | "correlationId" | "trace">
     >;
 
     const event = (overrides: EnvelopeOverrides = {}): NewOutboxEvent<"user.registered"> => ({
@@ -79,6 +80,7 @@ export function describeOutboxStoreContract(
         provider: null,
       },
       correlationId: null,
+      trace: EMPTY_TRACE_CARRIER,
       occurredAt: new Date(Date.now() - HOUR),
       ...overrides,
     });
@@ -149,6 +151,36 @@ export function describeOutboxStoreContract(
         const { delivered } = await drainCollecting();
         expect(delivered).toEqual([]);
         await expect(harness.store.countByStatus()).resolves.toMatchObject({ PENDING: 0 });
+      });
+
+      /**
+       * The property the `traceparent`/`tracestate` columns exist for.
+       *
+       * The relay reads this back to parent the published message to the
+       * request that staged the event — see `docs/telemetry.md` — so a store
+       * that dropped it, or normalised it, would leave every event in the
+       * system hanging off whichever poll happened to claim its row. The value
+       * is opaque and must come back byte for byte: `tracestate` carries
+       * vendor entries this service has never heard of.
+       */
+      it("returns the trace context it was staged with, unchanged", async () => {
+        const trace = {
+          traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          tracestate: "vendor=t61rcWkgMzE,other=value",
+        };
+        await stage({ trace });
+
+        const { delivered } = await drainCollecting();
+
+        expect(delivered[0]?.trace).toEqual(trace);
+      });
+
+      it("reads back an absent trace context as nulls rather than undefined", async () => {
+        await stage({ trace: EMPTY_TRACE_CARRIER });
+
+        const { delivered } = await drainCollecting();
+
+        expect(delivered[0]?.trace).toEqual({ traceparent: null, tracestate: null });
       });
 
       it("reports the first attempt as attempt zero", async () => {

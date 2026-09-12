@@ -7,6 +7,9 @@ import {
   type OnModuleDestroy,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import type { Counter } from "@opentelemetry/api";
+import { meterFor } from "@/telemetry";
+import { ATTR_APP_EVENT_NAME, ATTR_APP_OUTBOX_DISPOSITION } from "@/telemetry/semconv";
 import type { DrainReport, OutboxRecord } from "./outbox-record";
 import { OUTBOX_PUBLISHER, OUTBOX_STORE, type OutboxPublisher, type OutboxStore } from "./ports";
 import { nextAttemptAt, type BackoffPolicy } from "@/common/backoff";
@@ -40,6 +43,24 @@ export const OUTBOX_JITTER = Symbol("OUTBOX_JITTER");
 @Injectable()
 export class OutboxRelayService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(OutboxRelayService.name);
+  /**
+   * Rows the relay finished with, by disposition and event name.
+   *
+   * The one number an operator needs from the outbox that the logs do not
+   * already give them: `disposition="dead"` climbing above zero means events
+   * were given up on, and it is the only outbox failure that is silent
+   * otherwise — a `retry` eventually publishes or becomes a `dead`, but a dead
+   * letter just sits in the table.
+   *
+   * A counter rather than a gauge of the pending backlog, because the backlog
+   * is a `SELECT count(*)` over a table this relay is deliberately never
+   * allowed to scan on a timer (see `countByStatus`). Rate of change is what
+   * an alert wants anyway.
+   */
+  private readonly outcomes: Counter = meterFor("outbox").createCounter("outbox.events.drained", {
+    description: "Outbox rows the relay finished with, by disposition.",
+    unit: "{event}",
+  });
 
   private readonly enabled: boolean;
   private readonly intervalMs: number;
@@ -114,12 +135,22 @@ export class OutboxRelayService implements OnApplicationBootstrap, OnModuleDestr
    * with the timer — `SKIP LOCKED` means the two passes take disjoint batches.
    */
   async runOnce(now: Date = new Date()): Promise<DrainReport> {
-    return this.store.drain({
+    const report = await this.store.drain({
       now,
       batchSize: this.batchSize,
       deliver: (record) => this.deliver(record),
       retryAt: (record) => nextAttemptAt(now, record.attempts + 1, this.policy, this.random),
     });
+    // Counted here rather than in `report()`, which only runs on the timer
+    // path: a deployment that drives the relay from its own scheduler calls
+    // this method directly, and its dead letters count for exactly as much.
+    for (const outcome of report.outcomes) {
+      this.outcomes.add(1, {
+        [ATTR_APP_OUTBOX_DISPOSITION]: outcome.disposition,
+        [ATTR_APP_EVENT_NAME]: outcome.name,
+      });
+    }
+    return report;
   }
 
   /**

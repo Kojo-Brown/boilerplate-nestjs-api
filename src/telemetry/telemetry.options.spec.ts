@@ -88,7 +88,22 @@ describe("telemetryOptionsFrom", () => {
       samplerRatio: 1,
       metricExportIntervalMs: 60_000,
       shutdownTimeoutMs: 5_000,
+      prometheusScrape: false,
     });
+  });
+
+  /**
+   * Scraping is a separate destination from pushing, not a fourth exporter:
+   * `PROMETHEUS_METRICS_ENABLED` alone is the Prometheus-only deployment, and
+   * it has to survive an exporter left at its default.
+   */
+  it("carries the scrape switch independently of the exporter", () => {
+    expect(
+      telemetryOptionsFrom(parse({ PROMETHEUS_METRICS_ENABLED: "true" }), "test"),
+    ).toMatchObject({ exporter: "none", prometheusScrape: true });
+    expect(telemetryOptionsFrom(parse({ OTEL_EXPORTER: "console" }), "test").prometheusScrape).toBe(
+      false,
+    );
   });
 
   /**

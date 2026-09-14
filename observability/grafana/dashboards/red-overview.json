@@ -1,0 +1,364 @@
+{
+  "uid": "boilerplate-nestjs-api-red",
+  "title": "boilerplate-nestjs-api — RED",
+  "description": "Rate, errors and duration for every HTTP route, from the OpenTelemetry instrumentation scraped at /metrics. Provisioned by observability/grafana/provisioning, or importable by hand with Dashboards → Import.",
+  "tags": ["red", "prometheus", "opentelemetry"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(http_server_request_duration_count, job)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "route",
+        "label": "Route",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(http_server_request_duration_count{job=~\"$job\"}, http_route)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Rate, errors, duration",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Requests / s",
+      "description": "The R. Counted from the histogram's _count series — one instrument carries all three signals, which is why nothing here records a separate request counter.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "decimals": 2, "color": { "mode": "thresholds" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum(rate(http_server_request_duration_count{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "5xx ratio",
+      "description": "The E. Server faults only: a 4xx is the caller's error and burning an error budget on it makes the panel useless during a scraper misconfiguration or a bot sweep.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum(rate(http_server_request_duration_count{job=~\"$job\", http_route=~\"$route\", http_response_status_code=~\"5..\"}[$__rate_interval])) / clamp_min(sum(rate(http_server_request_duration_count{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])), 0.0001)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p95 latency",
+      "description": "The D. A quantile over the aggregated buckets, not an average of per-route quantiles — quantiles do not average.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "decimals": 3, "color": { "mode": "thresholds" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_bucket{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])))"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Mean latency",
+      "description": "_sum / _count. Shown next to p95 on purpose: a mean that is flat while p95 climbs is the shape of a slow minority, which is the one an average hides.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "decimals": 3, "color": { "mode": "thresholds" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum(rate(http_server_request_duration_sum{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])) / clamp_min(sum(rate(http_server_request_duration_count{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])), 0.0001)"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Request rate by route",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{http_request_method}} {{http_route}}",
+          "expr": "sum by (http_request_method, http_route) (rate(http_server_request_duration_count{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Response classes",
+      "description": "Every request that finished, grouped by the first digit of its status. A route that starts answering 404 shows here and nowhere in the 5xx panels.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 30, "lineWidth": 1, "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{status_class}}",
+          "expr": "sum by (status_class) (label_replace(rate(http_server_request_duration_count{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval]), \"status_class\", \"${1}xx\", \"http_response_status_code\", \"(.).*\"))"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Latency quantiles",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 0, "lineWidth": 2, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "p50",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_request_duration_bucket{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])))"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "legendFormat": "p90",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(http_server_request_duration_bucket{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])))"
+        },
+        {
+          "refId": "C",
+          "editorMode": "code",
+          "legendFormat": "p99",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_bucket{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])))"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "p95 by route",
+      "description": "Where the aggregate p95 came from. The top line is the route to open a trace for.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 0, "lineWidth": 1, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{http_request_method}} {{http_route}}",
+          "expr": "histogram_quantile(0.95, sum by (le, http_request_method, http_route) (rate(http_server_request_duration_bucket{job=~\"$job\", http_route=~\"$route\"}[$__rate_interval])))"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Outbound dependencies",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Outbound p95 by host",
+      "description": "The client half of the same instrument, recorded by the undici instrumentation on every fetch this service makes. A latency rise that appears here and in the server panel together is somebody else's incident.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 0, "lineWidth": 1, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{server_address}}",
+          "expr": "histogram_quantile(0.95, sum by (le, server_address) (rate(http_client_request_duration_bucket{job=~\"$job\"}[$__rate_interval])))"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Outbound failure rate by host",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{server_address}} {{error_type}}",
+          "expr": "sum by (server_address, error_type) (rate(http_client_request_duration_count{job=~\"$job\", error_type!=\"\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Asynchronous work",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Outbox rows drained by disposition",
+      "description": "disposition=\"dead\" is the only outbox failure that is otherwise silent — the relay gives up and the row stops being retried, with nothing in the request path to notice.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": { "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{app_outbox_disposition}}",
+          "expr": "sum by (app_outbox_disposition) (rate(outbox_events_drained_total{job=~\"$job\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Event processing p95 by outcome",
+      "description": "A dead-lettered message is a successful return from the handler, so it cannot be found in an error rate — it is a distinct outcome on this instrument instead.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 0, "lineWidth": 1, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{app_messaging_outcome}}",
+          "expr": "histogram_quantile(0.95, sum by (le, app_messaging_outcome) (rate(messaging_process_duration_bucket{job=~\"$job\"}[$__rate_interval])))"
+        }
+      ]
+    }
+  ]
+}

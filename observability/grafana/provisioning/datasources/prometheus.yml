@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # Fixed rather than generated, because the dashboard's `datasource`
+    # variable resolves against it. A uid Grafana invents at startup is a
+    # different one on every machine, and the panels come up unbound.
+    uid: prometheus-local
+    jsonData:
+      # Must match `scrape_interval` in observability/prometheus.yml: it is
+      # what Grafana sizes `$__rate_interval` from, and a value shorter than
+      # the real interval produces a rate over a window with one sample in it.
+      timeInterval: 15s

@@ -11,6 +11,8 @@ import {
   isUntracedPath,
   startTelemetry,
 } from "./otel-sdk";
+import { installedMetricsScrapeSource } from "./metrics-scrape";
+import { meterFor } from "./spans";
 
 const options = (env: Record<string, string>, nodeEnv = "test") =>
   telemetryOptionsFrom(telemetryEnvSchema.parse(env), nodeEnv);
@@ -129,6 +131,85 @@ describe("startTelemetry", () => {
     expect(() => logs.getLogger("spec").emit({ body: "nowhere" })).not.toThrow();
 
     await expect(handle.shutdown()).resolves.toBeUndefined();
+  });
+
+  /**
+   * The Prometheus-only deployment: no collector anywhere, and a scraper
+   * pointed at `/metrics`. The metrics half of the SDK is installed and the
+   * push half is not, which is the whole reason `PROMETHEUS_METRICS_ENABLED`
+   * is a switch of its own rather than a fourth `OTEL_EXPORTER`.
+   */
+  describe("with the Prometheus scrape and no exporter", () => {
+    let handle: ReturnType<typeof startTelemetry> | null = null;
+    let warned: jest.SpyInstance;
+
+    beforeEach(() => {
+      // `diag.setLogger` warns when it replaces one, and a worker that has
+      // already run this file's neighbours has one registered.
+      warned = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      handle = startTelemetry(options({ PROMETHEUS_METRICS_ENABLED: "true" }));
+    });
+
+    afterEach(async () => {
+      await handle?.shutdown();
+      handle = null;
+      warned.mockRestore();
+      trace.disable();
+      metrics.disable();
+      propagation.disable();
+      context.disable();
+      logs.disable();
+      diag.disable();
+    });
+
+    it("installs a meter provider and serves what the application records through it", async () => {
+      expect(handle?.enabled).toBe(true);
+      expect(metrics.getMeterProvider().constructor.name).toBe("MeterProvider");
+
+      meterFor("spec").createCounter("spec.requests").add(3, { "app.event.name": "probe" });
+      const exposition = await installedMetricsScrapeSource()?.scrape();
+
+      expect(exposition).toContain('target_info{service_name="boilerplate-nestjs-api"');
+      expect(exposition).toMatch(/spec_requests_total\{[^}]*app_event_name="probe"[^}]*} 3/);
+    });
+
+    /**
+     * The tracer provider is registered even with nothing to export it to,
+     * because registering it is what installs the context manager — and the
+     * context manager is what carries `http.route` from the Express
+     * instrumentation to the HTTP instrumentation's metric attributes. The
+     * sampler then makes every one of those spans non-recording, so the cost is
+     * a span context and nothing else.
+     */
+    it("registers the tracer provider for its context manager but records no span", () => {
+      const span = trace.getTracer("spec").startSpan("work");
+
+      expect(trace.isSpanContextValid(span.spanContext())).toBe(true);
+      expect(span.isRecording()).toBe(false);
+      expect(propagation.fields()).toEqual(expect.arrayContaining(["traceparent", "baggage"]));
+      span.end();
+    });
+
+    /** A log record has no pull-based exposition to appear in. */
+    it("installs no logger provider", () => {
+      expect(() => logs.getLogger("spec").emit({ body: "nowhere" })).not.toThrow();
+      expect(logs.getLoggerProvider().constructor.name).not.toBe("LoggerProvider");
+    });
+
+    /**
+     * A shut-down reader answers every collection with an empty exposition, and
+     * an empty exposition is indistinguishable from an idle service — so the
+     * endpoint has to start answering 503 instead, which is what the absent
+     * source makes it do.
+     */
+    it("stops serving on shutdown rather than serving nothing", async () => {
+      expect(installedMetricsScrapeSource()).not.toBeNull();
+
+      await handle?.shutdown();
+      handle = null;
+
+      expect(installedMetricsScrapeSource()).toBeNull();
+    });
   });
 
   it("refuses otlp options with no endpoint rather than silently posting to localhost", () => {

@@ -210,13 +210,124 @@ instrumentation apart from a library's, and one flat name for the whole service
 would make the outbox's numbers indistinguishable from the consumer's on the day
 one of them starts misbehaving.
 
-There is deliberately no Prometheus endpoint here — that is the next item in
-`SPEC.md` Phase 11, and it is a different decision (a pull-based scrape with its
-own exposition format) rather than a second exporter bolted onto this one.
+## The Prometheus scrape
+
+`PROMETHEUS_METRICS_ENABLED=true` serves the current exposition at `GET
+/metrics`, rendered on demand from the meter provider above.
+
+**No instrument was added for it.** That is the whole shape of the item, and it
+is worth saying where somebody will go looking for the RED code: the rate, the
+errors and the duration are already in `http.server.request.duration`, which
+`instrumentation-http` records for every request, with `http.route` filled in by
+the Express instrumentation and `http.response.status_code` on every series. The
+count of a histogram is the rate, a matcher on the status is the error rate, and
+the buckets are the duration. A second histogram recorded from a Nest
+interceptor would carry the same name from a different instrumentation scope,
+and two metric families with one name is an exposition Prometheus rejects
+outright. What was missing was never the measurement — it was a way to read it
+without a collector in the path.
+
+Four decisions are load-bearing:
+
+**It is a reader, not a second exporter.** `PrometheusScrapeReader` is a
+`MetricReader` on the same `MeterProvider`, so pushing and scraping are two
+destinations for one set of instruments and a deployment can have either, both,
+or neither. Both at once is how a migration between them runs without a window
+where nothing is recording.
+
+**It is served by a Nest controller, not by `PrometheusExporter`.** That class
+would have been two lines and opens an HTTP server of its own on a second port —
+a second thing to expose through the mesh, a second port in the chart, a second
+surface that answers before the application is ready and after it has stopped
+draining, and one that no interceptor, guard or filter in this codebase sits in
+front of. What is borrowed from the package is `PrometheusSerializer`, which is
+the specification-conformant name and label translation.
+
+**`PROMETHEUS_METRICS_ENABLED=true` with `OTEL_EXPORTER=none` installs the SDK.**
+It is the Prometheus-only deployment and the common one. The meter provider and
+the instrumentations go in; the logger provider does not, because a log record
+has no pull-based exposition to appear in. The tracer provider _is_ registered,
+with an `AlwaysOff` sampler — not for traces, but because registering it is what
+installs the context manager, and the context manager is what carries
+`http.route` from the Express instrumentation to the HTTP instrumentation's
+metric attributes. Without it every series collapses onto one route-less line.
+
+**The route is `/metrics`, not `/v1/metrics`.** The only unversioned route in the
+service, and a deliberate exception to the rule in `CLAUDE.md`: a REST resource
+has a contract with its clients and earns a version, while this one's client is
+the scraper, `/metrics` is where every scraper points by default, and the
+exposition's compatibility story is the metric names inside it rather than the
+path. `UNTRACED_PATH_PREFIXES` drops it on the way in, so the scraper's own
+traffic — four requests a minute that never vary and never fail — stays out of
+the numbers the scraper reads.
+
+### Names, and the one that catches everybody
+
+The serializer's output is **not** the instrument name:
+
+| Instrument                     | Series in the exposition                          |
+| ------------------------------ | ------------------------------------------------- |
+| `http.server.request.duration` | `http_server_request_duration_{count,sum,bucket}` |
+| `http.client.request.duration` | `http_client_request_duration_{count,sum,bucket}` |
+| `outbox.events.drained`        | `outbox_events_drained_total`                     |
+| `messaging.process.duration`   | `messaging_process_duration_{count,sum,bucket}`   |
+
+Dots become underscores, a counter gains `_total`, a histogram becomes three
+series — and, unlike most Prometheus exporters, **this one does not append the
+unit**. There is no `_seconds` anywhere. The unit is on a `# UNIT` line instead.
+A query written against `http_server_request_duration_seconds_bucket` parses
+perfectly and matches nothing, on a dashboard that then looks exactly like a
+service with no traffic. `src/metrics/grafana-dashboard.spec.ts` asserts every
+series the checked-in dashboard selects against a real scrape, which is what
+keeps that from being found by a human during an incident.
+
+Attributes become labels the same way: `http.route` → `http_route`,
+`app.outbox.disposition` → `app_outbox_disposition`. `job` and `instance` come
+from the scrape config, not from the exposition.
+
+### The dashboard
+
+`observability/grafana/dashboards/red-overview.json` is the RED dashboard: rate,
+5xx ratio, p95 and mean across the top, then per-route rate, response classes,
+latency quantiles and p95 by route, with rows for outbound dependencies and for
+the two asynchronous instruments. Its datasource is a variable rather than a
+pinned uid, so it imports anywhere.
+
+The local stack runs it end to end:
+
+```
+docker compose --profile observability up
+```
+
+Prometheus comes up on `:9090` scraping `api:4000/metrics` every 15s, and
+Grafana on `:3001` with the datasource and the dashboard provisioned and the
+dashboard as its home page. The JSON is mounted read-only on purpose — the file
+in the repository is the source of truth, and a dashboard edited in the UI is a
+change that exists on one laptop.
+
+In Kubernetes the chart needs nothing new: `env.PROMETHEUS_METRICS_ENABLED:
+"true"` in the values, plus whatever the cluster's Prometheus discovers by —
+`podAnnotations` with `prometheus.io/scrape: "true"`, `prometheus.io/port:
+"4000"` and `prometheus.io/path: "/metrics"` for the annotation-based setup, or
+a `ServiceMonitor` of the operator's own.
+
+### What the scrape deliberately does not do
+
+- **No authentication.** The endpoint is unauthenticated, like `/v1/health`, and
+  is expected to be unreachable from outside the cluster. It describes the shape
+  of the service's traffic, so an ingress that exposes it publicly is a
+  disclosure — the deployment decides, and the default is that the whole switch
+  is off.
+- **No exemplars.** They are the link from a latency bucket to the trace that
+  produced it, and the serializer here does not emit them.
+- **Nothing is served while shutting down.** The SDK's `shutdown()` drops the
+  source before the provider is torn down, so a draining pod answers 503 rather
+  than an empty exposition — which Prometheus would otherwise record as a
+  service that suddenly had no traffic.
 
 ## What is deliberately not traced
 
-`UNTRACED_PATH_PREFIXES` drops `/v1/health`, `/health`, `/docs` and
+`UNTRACED_PATH_PREFIXES` drops `/v1/health`, `/health`, `/metrics`, `/docs` and
 `/favicon.ico` on the way in. A liveness probe runs every few seconds forever
 and has never been what somebody opened a trace viewer to find; left in, probes
 are the overwhelming majority of spans in a quiet service, and the sampling

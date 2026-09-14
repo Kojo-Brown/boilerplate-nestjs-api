@@ -21,6 +21,13 @@ export interface TelemetryOptions {
   readonly samplerRatio: number;
   readonly metricExportIntervalMs: number;
   readonly shutdownTimeoutMs: number;
+  /**
+   * Whether a pull-based reader is added to the meter provider, so
+   * `GET /metrics` has something to serve. Independent of {@link exporter}:
+   * scraping and pushing are two destinations for the same instruments, and a
+   * deployment may want either, both, or neither.
+   */
+  readonly prometheusScrape: boolean;
 }
 
 /** OTLP/HTTP signal paths, as the specification fixes them. */
@@ -41,6 +48,7 @@ export function telemetryOptionsFrom(env: TelemetryEnv, nodeEnv: string): Teleme
     samplerRatio: env.OTEL_TRACES_SAMPLER_ARG,
     metricExportIntervalMs: env.OTEL_METRIC_EXPORT_INTERVAL_MS,
     shutdownTimeoutMs: env.OTEL_SHUTDOWN_TIMEOUT_MS,
+    prometheusScrape: env.PROMETHEUS_METRICS_ENABLED,
   };
 }
 

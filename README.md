@@ -205,7 +205,11 @@ docker-compose up        # postgres + redis + api
   message's headers are W3C's names rather than this repository's, why the
   application logger writes to both stdout and the logs pipeline, why the access
   log's two trace fields are snake_case when nothing else on the line is, and
-  which four things are still not traced.
+  which four things are still not traced. Also the Prometheus scrape at
+  `/metrics` and the RED dashboard it feeds: why no RED instrument was written,
+  why the exposition is a reader on the existing meter provider rather than a
+  second exporter with a port of its own, why `/metrics` is the one unversioned
+  route, and why nothing in the exposition carries a `_seconds` suffix.
 
 ## Testing
 

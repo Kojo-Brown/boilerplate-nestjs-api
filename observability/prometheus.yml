@@ -1,0 +1,26 @@
+# Scrape configuration for the local observability profile:
+#
+#   docker compose --profile observability up
+#
+# Production uses whatever the cluster already runs — this file exists so the
+# dashboard in grafana/dashboards can be opened against real data from a clean
+# clone, rather than being a JSON file nobody has ever seen render.
+
+global:
+  # 15s is the interval every panel's $__rate_interval is sized against; a much
+  # longer one makes a rate over a short window return nothing at all.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # `job_name` becomes the `job` label, which is the dashboard's top-level
+  # variable. Naming it after the service rather than after the container is
+  # what lets one dashboard serve several deployments of the same code.
+  - job_name: boilerplate-nestjs-api
+    metrics_path: /metrics
+    static_configs:
+      # The compose network's internal address, not localhost: Prometheus
+      # resolves this from inside app-network.
+      - targets: ["api:4000"]
+        labels:
+          env: local

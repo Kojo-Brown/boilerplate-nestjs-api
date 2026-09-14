@@ -7,6 +7,7 @@ import {
 } from "@opentelemetry/core";
 import { defaultResource, resourceFromAttributes, type Resource } from "@opentelemetry/resources";
 import {
+  AlwaysOffSampler,
   BatchSpanProcessor,
   ConsoleSpanExporter,
   ParentBasedSampler,
@@ -19,6 +20,7 @@ import {
   ConsoleMetricExporter,
   MeterProvider,
   PeriodicExportingMetricReader,
+  type IMetricReader,
   type PushMetricExporter,
 } from "@opentelemetry/sdk-metrics";
 import {
@@ -41,6 +43,8 @@ import {
   ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { OTLP_SIGNAL_PATHS, signalEndpoint, type TelemetryOptions } from "./telemetry.options";
+import { clearMetricsScrapeSource, installMetricsScrapeSource } from "./metrics-scrape";
+import { PrometheusScrapeReader } from "./prometheus-scrape.reader";
 
 /**
  * Paths that are never worth a trace.
@@ -53,8 +57,20 @@ import { OTLP_SIGNAL_PATHS, signalEndpoint, type TelemetryOptions } from "./tele
  *
  * Prefixes rather than exact paths, because `/v1/health` is one route today and
  * `/v1/health/ready` is the next one somebody adds.
+ *
+ * `/metrics` is here for a second reason on top of the noise: it is the scrape
+ * endpoint, so leaving it in would put the monitoring system's own traffic into
+ * the numbers the monitoring system reads. A scrape every fifteen seconds is a
+ * request rate that never varies and never errs, and on a quiet service it is
+ * most of the request rate — enough to hide a real one going to zero.
  */
-export const UNTRACED_PATH_PREFIXES = ["/v1/health", "/health", "/docs", "/favicon.ico"] as const;
+export const UNTRACED_PATH_PREFIXES = [
+  "/v1/health",
+  "/health",
+  "/metrics",
+  "/docs",
+  "/favicon.ico",
+] as const;
 
 /** What `startTelemetry` hands back, so `main.ts` can flush on the way out. */
 export interface TelemetryHandle {
@@ -79,16 +95,27 @@ const DISABLED: TelemetryHandle = { enabled: false, shutdown: () => Promise.reso
  * as they are required, so a module loaded first is a module that is never
  * instrumented.
  *
- * With `OTEL_EXPORTER=none` this returns immediately and registers *nothing* —
- * no tracer provider, no meter provider, no propagator, no instrumentation. The
- * `@opentelemetry/api` globals then stay at their built-in no-op
- * implementations, so `tracer.startActiveSpan(...)` in the outbox publisher runs
- * its callback and allocates nothing, and the manual instrumentation scattered
- * through this codebase costs approximately a function call. That is what makes
- * it safe to leave it in place unconditionally — see `docs/telemetry.md`.
+ * With `OTEL_EXPORTER=none` and no Prometheus scrape this returns immediately
+ * and registers *nothing* — no tracer provider, no meter provider, no
+ * propagator, no instrumentation. The `@opentelemetry/api` globals then stay at
+ * their built-in no-op implementations, so `tracer.startActiveSpan(...)` in the
+ * outbox publisher runs its callback and allocates nothing, and the manual
+ * instrumentation scattered through this codebase costs approximately a
+ * function call. That is what makes it safe to leave it in place
+ * unconditionally — see `docs/telemetry.md`.
+ *
+ * `PROMETHEUS_METRICS_ENABLED=true` with the exporter still at `none` is the
+ * Prometheus-only deployment, and it installs the metrics half and only the
+ * metrics half: the meter provider with the scrape reader, and the
+ * instrumentations, because the RED data is theirs. There is still a tracer
+ * provider, and it is registered for one reason that has nothing to do with
+ * traces — see the sampler below.
  */
 export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
-  if (options.exporter === "none") return DISABLED;
+  // "Pushing" is the distinction that matters below, not the exporter's name:
+  // traces and logs have nowhere to go without one, metrics still do.
+  const pushing = options.exporter !== "none";
+  if (!pushing && !options.prometheusScrape) return DISABLED;
 
   // The SDK reports its own failures — an unreachable collector, a rejected
   // batch — on this channel and nowhere else. Left unset it is silent, which is
@@ -99,8 +126,24 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
 
   const tracerProvider = new NodeTracerProvider({
     resource,
-    sampler: buildSampler(options.samplerRatio),
-    spanProcessors: [new BatchSpanProcessor(buildSpanExporter(options))],
+    /**
+     * `AlwaysOff` when nothing is being pushed, and the provider registered
+     * all the same.
+     *
+     * The registration is what installs the context manager, and the context
+     * manager is what carries `http.route` from the Express instrumentation to
+     * the HTTP instrumentation's metric attributes: the route is written onto
+     * the RPC metadata in the active context, not onto the span, so it
+     * survives a span that is never recorded but not a context that is never
+     * propagated. Without this, every series in the exposition collapses onto
+     * one route-less line and the per-route half of RED is gone.
+     *
+     * The sampler then makes each of those spans a non-recording one, which
+     * costs an object with a span context and no attributes, no events and no
+     * export path.
+     */
+    sampler: pushing ? buildSampler(options.samplerRatio) : new AlwaysOffSampler(),
+    spanProcessors: pushing ? [new BatchSpanProcessor(buildSpanExporter(options))] : [],
   });
   // `register()` is what makes `trace.getTracer()` return this provider and
   // installs the context manager that keeps the active span attached across
@@ -114,22 +157,37 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
     }),
   });
 
-  const meterProvider = new MeterProvider({
-    resource,
-    readers: [
+  // Both readers can be present at once, and that is a supported deployment
+  // rather than an oversight: the same instruments are collected twice, pushed
+  // to the collector on a timer and rendered on demand for the scraper, with
+  // each reader keeping its own accumulation. It is how a migration between the
+  // two is run without a window where neither is recording.
+  const metricReaders: IMetricReader[] = [];
+  const scrapeReader = options.prometheusScrape ? new PrometheusScrapeReader() : null;
+  if (scrapeReader !== null) metricReaders.push(scrapeReader);
+  if (pushing) {
+    metricReaders.push(
       new PeriodicExportingMetricReader({
         exporter: buildMetricExporter(options),
         exportIntervalMillis: options.metricExportIntervalMs,
       }),
-    ],
-  });
-  metrics.setGlobalMeterProvider(meterProvider);
+    );
+  }
 
-  const loggerProvider = new LoggerProvider({
-    resource,
-    processors: [buildLogRecordProcessor(options)],
-  });
-  logs.setGlobalLoggerProvider(loggerProvider);
+  const meterProvider = new MeterProvider({ resource, readers: metricReaders });
+  metrics.setGlobalMeterProvider(meterProvider);
+  // After the provider is global, so the endpoint cannot start serving from a
+  // reader whose instruments have not been bound yet.
+  if (scrapeReader !== null) installMetricsScrapeSource(scrapeReader);
+
+  // No logger provider when nothing is being pushed: a log record has no
+  // pull-based exposition to appear in, so installing one would buffer records
+  // in a batch processor that never has anywhere to send them. The API global
+  // stays no-op and `TelemetryLogger` degrades to the stock `ConsoleLogger`.
+  const loggerProvider = pushing
+    ? new LoggerProvider({ resource, processors: [buildLogRecordProcessor(options)] })
+    : null;
+  if (loggerProvider !== null) logs.setGlobalLoggerProvider(loggerProvider);
 
   registerInstrumentations({
     instrumentations: [
@@ -156,13 +214,23 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
   return {
     enabled: true,
     shutdown: async () => {
+      // Before the provider is torn down, not after: a shut-down reader answers
+      // every collection with an empty exposition, and an empty exposition is
+      // indistinguishable from an idle service. The endpoint answers 503 from
+      // here on instead, which is what a draining pod should be telling its
+      // scraper anyway.
+      clearMetricsScrapeSource();
+
+      const providers = [
+        tracerProvider,
+        meterProvider,
+        ...(loggerProvider ? [loggerProvider] : []),
+      ];
       // Settled rather than all: a collector that is refusing connections
-      // rejects one of these, and the other two still have a batch to flush.
-      const results = await Promise.allSettled([
-        withTimeout(tracerProvider.shutdown(), options.shutdownTimeoutMs),
-        withTimeout(meterProvider.shutdown(), options.shutdownTimeoutMs),
-        withTimeout(loggerProvider.shutdown(), options.shutdownTimeoutMs),
-      ]);
+      // rejects one of these, and the others still have a batch to flush.
+      const results = await Promise.allSettled(
+        providers.map((provider) => withTimeout(provider.shutdown(), options.shutdownTimeoutMs)),
+      );
       for (const result of results) {
         if (result.status === "rejected") {
           diag.warn(`Telemetry shutdown did not complete cleanly: ${String(result.reason)}`);

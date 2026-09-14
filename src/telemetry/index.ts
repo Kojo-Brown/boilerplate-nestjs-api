@@ -27,4 +27,17 @@ export type { TraceCarrier } from "./trace-context";
 
 export { INSTRUMENTATION_SCOPE, meterFor, recordSpanError, tracerFor } from "./spans";
 
+// The scrape *seam*, not the reader: `metrics-scrape.ts` imports nothing from
+// the metrics SDK, which is what lets `MetricsModule` depend on the barrel
+// without dragging the SDK and the Prometheus serializer into every suite that
+// builds `AppModule`. `prometheus-scrape.reader.ts` is absent for the same
+// reason `otel-sdk.ts` is.
+export {
+  PROMETHEUS_CONTENT_TYPE,
+  clearMetricsScrapeSource,
+  installMetricsScrapeSource,
+  installedMetricsScrapeSource,
+} from "./metrics-scrape";
+export type { MetricsScrapeSource } from "./metrics-scrape";
+
 export { TelemetryLogger } from "./telemetry-logger";

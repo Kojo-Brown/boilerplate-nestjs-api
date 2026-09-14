@@ -114,6 +114,30 @@ export const telemetryEnvShape = {
    * problem than a pod that will not terminate.
    */
   OTEL_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+
+  /**
+   * Whether `GET /metrics` serves a Prometheus scrape.
+   *
+   * A separate switch from `OTEL_EXPORTER` because it is a separate decision,
+   * and the deployment that wants it is usually the one that has no collector
+   * at all: a Prometheus-only shop sets this alone and leaves the exporter at
+   * `none`. That combination installs the *metrics* half of the SDK — the
+   * meter provider, this reader, and the HTTP and Express instrumentations
+   * that produce the RED data — and nothing else. See `startTelemetry`.
+   *
+   * Off by default, for the reason every backend in this codebase is off by
+   * default: an endpoint that exists is an endpoint somebody can reach, and
+   * this one describes the shape of the service's traffic.
+   *
+   * The union rather than `z.coerce.boolean()`, for the reason
+   * `OUTBOX_RELAY_ENABLED` spells out: `Boolean("false")` is `true`, so the
+   * one spelling an operator reaches for to turn something off would turn it
+   * on.
+   */
+  PROMETHEUS_METRICS_ENABLED: z
+    .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+    .default(false)
+    .transform((value) => value === true || value === "true" || value === "1"),
 } as const;
 
 /** The telemetry settings, after defaults have been applied. */

@@ -191,6 +191,10 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL:-http://localhost:4000/v1/auth/google/callback}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      # The application's own default is `false` — see .env.example. It is on
+      # here because the `observability` profile below is useless without it,
+      # and because this stack is reachable only from the compose network.
+      PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-true}
     ports:
       - "${PORT:-4000}:4000"
     healthcheck:
@@ -208,6 +212,62 @@ services:
       retries: 3
       start_period: 20s
 
+  # ─── Observability profile ───────────────────────────────────────────────────
+  # Started only on request:
+  #
+  #     docker compose --profile observability up
+  #
+  # A profile rather than a default service because neither of these is a
+  # dependency of the API — they read it. Running the ordinary stack should not
+  # cost two more containers, and a developer who wants to see the RED dashboard
+  # against real traffic should not have to assemble one first.
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    networks:
+      - app-network
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 24h is a local-development retention. It is named explicitly because the
+      # default is 15 days, which on a laptop is gigabytes nobody asked for.
+      - --storage.tsdb.retention.time=24h
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+
+  grafana:
+    image: grafana/grafana:12.4.10
+    profiles: ["observability"]
+    restart: unless-stopped
+    networks:
+      - app-network
+    depends_on:
+      - prometheus
+    environment:
+      # Local-only credentials for a container on a laptop. There is nothing to
+      # rotate here and nothing to leak: the admin user exists so the UI can be
+      # opened, and anonymous viewing exists so it usually need not be.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Opens straight on the dashboard this repository ships.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/red-overview.json
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      # Read-only: the checked-in JSON is the source of truth, and a dashboard
+      # edited in the UI is a change that exists on one laptop.
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+
 # ─── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   pgdata:
@@ -215,3 +275,5 @@ volumes:
   redis2data:
   redis3data:
   kafkadata:
+  promdata:
+  grafanadata:

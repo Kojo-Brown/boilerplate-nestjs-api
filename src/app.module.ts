@@ -21,6 +21,7 @@ import { PaymentsModule } from "./payments/payments.module";
 import { OrdersModule } from "./orders";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { HealthModule } from "./health/health.module";
+import { MetricsModule } from "./metrics/metrics.module";
 import { StreamingModule } from "./streaming";
 import { RealtimeModule } from "./realtime";
 import { QueueModule } from "./queue/queue.module";
@@ -80,6 +81,12 @@ import { envSchema } from "./config/env.schema";
     OrdersModule,
     NotificationsModule,
     HealthModule,
+    // Serves `/metrics` from the reader `startTelemetry` installed before this
+    // container existed. Registered unconditionally: with
+    // `PROMETHEUS_METRICS_ENABLED` unset there is no reader, and the endpoint
+    // answers 503 — which is a far better answer for an operator who has just
+    // pointed a scraper at it than a 404 that looks like a routing mistake.
+    MetricsModule,
     QueueModule,
     // After EventsModule and MessagingModule: `EventStreamHub` subscribes to
     // `DomainEventBus`, so it fans out events relayed from this instance's

@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: boilerplate-nestjs-api
+    type: file
+    # The checked-in JSON is the source of truth, so edits made in the UI are
+    # overwritten on the next reload rather than diverging silently from the
+    # file in the repository. Change the dashboard by changing the file.
+    allowUiUpdates: false
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

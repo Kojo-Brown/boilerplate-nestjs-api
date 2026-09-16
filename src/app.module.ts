@@ -11,6 +11,7 @@ import { AppCqrsModule } from "./cqrs";
 import { EventsModule } from "./events";
 import { MessagingModule } from "./messaging";
 import { OutboxModule } from "./outbox";
+import { AuditModule } from "./audit";
 import { SchemaRegistryModule } from "./schema-registry";
 import { SagaModule } from "./saga";
 import { DiScopesModule } from "./di-scopes";
@@ -67,6 +68,13 @@ import { envSchema } from "./config/env.schema";
     // through `DomainEventBus`. Any module that writes something worth
     // announcing stages it here.
     OutboxModule,
+    // Global, and for the same reason OutboxModule is: anything that does
+    // something worth recording records it, inside the transaction that did it.
+    // Independent of the outbox despite the resemblance — an audit entry is
+    // evidence kept in a table nothing may modify, not a message waiting to be
+    // delivered — so the order between the two does not matter. It is here
+    // because that is where the other cross-cutting writers are.
+    AuditModule,
     // Global, and after OutboxModule: a saga step stages events through
     // `TransactionalOutbox`, and `SagaRecoveryService` starts polling on
     // `onApplicationBootstrap` — after every module's `onModuleInit`, which is

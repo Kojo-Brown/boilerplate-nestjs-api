@@ -16,12 +16,14 @@ import { EntityTagInterceptor } from "@/common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "@/common/immutable";
 import { REFRESH_TOKEN_STORE } from "@/auth/ports";
 import { OUTBOX_STORE, OutboxRelayService } from "@/outbox";
+import { AUDIT_LOG_STORE } from "@/audit";
 import type { DrainReport } from "@/outbox";
 import { SAGA_STORE, SagaRecoveryService } from "@/saga";
 import type { RecoveryReport } from "@/saga";
 import { INVENTORY_SERVICE, ORDER_STORE, SHIPPING_SERVICE } from "@/orders";
 import type { InMemoryInventoryService, InMemoryShippingService } from "@/orders";
 import { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
+import { InMemoryAuditLogStore } from "@/test-utils/in-memory-audit-log.store";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemorySagaStore } from "@/test-utils/in-memory-saga.store";
 import { InMemoryOrderStore } from "@/test-utils/in-memory-order.store";
@@ -77,6 +79,14 @@ export interface TestApp {
   refreshTokens: InMemoryRefreshTokenStore;
   /** The outbox rows the app has staged, for asserting on what was announced. */
   outbox: InMemoryOutboxStore;
+  /**
+   * The audit chain the app has written, for asserting on what was recorded.
+   *
+   * A real implementation of the chain rather than a recorder — entries are
+   * sealed through the same `sealAuditEntry` production uses — so a spec can
+   * run `AuditChainVerifier` against it and mean something by the result.
+   */
+  auditLog: InMemoryAuditLogStore;
   /** The saga instances the app has started, for asserting on where a checkout got to. */
   sagas: InMemorySagaStore;
   /** The orders the app has written. */
@@ -134,6 +144,12 @@ export async function createTestApp(): Promise<TestApp> {
   // behavioural contract as the adapters they replace.
   const sagas = new InMemorySagaStore();
   const orders = new InMemoryOrderStore();
+  // `PrismaAuditLogStore` serialises appends with `pg_advisory_xact_lock` and
+  // relies on an append-only trigger, neither of which `InMemoryPrismaService`
+  // has any way to fake — so the port is substituted rather than the client
+  // underneath it, exactly as the outbox and saga stores are, and the double is
+  // held to the same behavioural contract as the adapter it replaces.
+  const auditLog = new InMemoryAuditLogStore();
 
   const moduleFixture = await Test.createTestingModule({
     imports: [AppModule],
@@ -150,6 +166,8 @@ export async function createTestApp(): Promise<TestApp> {
     .useValue(sagas)
     .overrideProvider(ORDER_STORE)
     .useValue(orders)
+    .overrideProvider(AUDIT_LOG_STORE)
+    .useValue(auditLog)
     // A whole suite makes far more auth calls per minute than any real client,
     // so the rate limiter would 429 every spec after the tenth. The guard itself
     // is registered via `{ provide: APP_GUARD, useClass }` and so cannot be
@@ -215,6 +233,7 @@ export async function createTestApp(): Promise<TestApp> {
     emails: app.get<RecordingEmailQueue>(EmailQueueService),
     refreshTokens,
     outbox,
+    auditLog,
     sagas,
     orders,
     // Resolved from the container rather than constructed here: the checkout

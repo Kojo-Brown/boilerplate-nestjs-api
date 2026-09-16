@@ -210,13 +210,22 @@ docker-compose up        # postgres + redis + api
   why the exposition is a reader on the existing meter provider rather than a
   second exporter with a port of its own, why `/metrics` is the one unversioned
   route, and why nothing in the exposition carries a `_seconds` suffix.
+- [docs/audit-log.md](./docs/audit-log.md) — the tamper-evident audit log: why
+  the append-only triggers and the hash chain are two controls rather than one
+  and where each stops, why a deleted entry is caught by the `seq` counter and by
+  nothing else, why `seq` is assigned under an advisory lock rather than by a
+  Postgres sequence, what the serialisation costs and what buying it back would
+  look like, why the preimage is length-prefixed instead of `JSON.stringify`,
+  why the audit catalogue is separate from the event catalogue, why `seq` leaves
+  over HTTP as a string, and what the chain cannot catch without an external
+  witness.
 
 ## Testing
 
 ```bash
 pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
-pnpm test:db       # row-locking, outbox and saga-store suites — needs Postgres and DATABASE_URL
+pnpm test:db       # row-locking, outbox, saga- and audit-store suites — needs Postgres and DATABASE_URL
 
 # The Redlock legs of `pnpm test` need independent Redis nodes. Without
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as

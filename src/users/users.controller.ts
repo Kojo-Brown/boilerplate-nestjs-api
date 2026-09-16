@@ -214,8 +214,17 @@ export class UsersController {
   @ApiNotFound("User")
   @ApiForbiddenRole()
   @ApiCommonErrors()
-  remove(@Param("id") id: string, @IfMatch() expected: ExpectedVersion) {
-    return this.commands.execute(new DeleteUserCommand(id, expected));
+  remove(
+    @Param("id") id: string,
+    @IfMatch() expected: ExpectedVersion,
+    @CurrentUser() requester: AuthenticatedUser,
+  ) {
+    // The requester is carried on the command rather than looked up inside the
+    // handler, so the audit entry names the admin who actually asked. `RolesGuard`
+    // has already established that there is one.
+    return this.commands.execute(
+      new DeleteUserCommand(id, expected, { id: requester.id, role: requester.role }),
+    );
   }
 
   @Get(":id/preferences")

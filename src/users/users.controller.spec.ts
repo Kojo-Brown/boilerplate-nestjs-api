@@ -33,6 +33,13 @@ const mockUser: User = {
 
 const requester: AuthenticatedUser = { id: "user-1", email: "test@example.com", role: "USER" };
 
+/** The admin `remove()` records as the actor. `RolesGuard` is what guarantees there is one. */
+const adminRequester: AuthenticatedUser = {
+  id: "admin-1",
+  email: "admin@example.com",
+  role: "ADMIN",
+};
+
 const mockCommandBus = { execute: jest.fn() };
 const mockQueryBus = { execute: jest.fn() };
 
@@ -175,9 +182,11 @@ describe("UsersController", () => {
     it("dispatches DeleteUserCommand with the precondition", async () => {
       mockCommandBus.execute.mockResolvedValue(undefined);
 
-      await controller.remove("user-1", ifMatch(0));
+      await controller.remove("user-1", ifMatch(0), adminRequester);
 
-      expect(dispatched(mockCommandBus)).toEqual(new DeleteUserCommand("user-1", ifMatch(0)));
+      expect(dispatched(mockCommandBus)).toEqual(
+        new DeleteUserCommand("user-1", ifMatch(0), { id: adminRequester.id, role: "ADMIN" }),
+      );
     });
   });
 

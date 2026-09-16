@@ -257,6 +257,83 @@ enum SagaStatus {
   STUCK
 }
 
+/// One thing somebody did, in a table nothing may modify, linked to the entry
+/// before it by a hash. See docs/audit-log.md.
+model AuditLogEntry {
+  /// Position in the chain, and the primary key: the chain *is* the identity
+  /// here, so a second surrogate id would be a column nothing reads.
+  ///
+  /// Deliberately **not** `@default(autoincrement())`. A sequence is not
+  /// transactional — it advances for a transaction that goes on to roll back,
+  /// and two concurrent inserts take their values in whichever order they call
+  /// `nextval`, not in the order they commit. Either would leave a gap or an
+  /// inversion in the chain, and a verifier cannot tell that apart from a
+  /// deleted row. `PrismaAuditLogStore` assigns this itself, under an advisory
+  /// lock, which is what makes the column contiguous and the order real.
+  ///
+  /// `BigInt` rather than `Int` because nothing ever leaves this table: 2^31
+  /// entries is a number a busy service reaches, and the recovery from
+  /// overflowing the chain counter is not one anybody wants to design.
+  seq BigInt @id
+
+  /// When the audited thing happened — stamped by the application inside the
+  /// transaction that did it, and covered by the hash. There is deliberately no
+  /// second, database-assigned timestamp: a column outside the hash is a column
+  /// an attacker may rewrite freely, and two clocks that disagree is a question
+  /// nobody can answer after the fact.
+  occurredAt DateTime
+
+  /// A key of `AuditActionDetails`. Text for the reason `outbox_events.name` is
+  /// text: a deploy that retires an action must not be blocked by — or, worse,
+  /// unable to read back — the entries already written under it.
+  action String
+
+  /// Who did it. Null means the system did: a scheduled job, a relay, a
+  /// migration. Not a foreign key, and that is the point — an audit entry
+  /// outlives the user it describes, and `ON DELETE CASCADE` on this column
+  /// would make deleting an account erase the record of the deletion.
+  actorId String?
+
+  /// The role the actor held *at the time*, as text rather than as the `Role`
+  /// enum. Read back through a join it would be whatever they hold now, which
+  /// is exactly the fact an investigation cannot rely on — and an enum could
+  /// not hold it either: a deploy that retires a role removes the value from
+  /// the type, and every historic entry naming it becomes unreadable. Text for
+  /// the same reason `outbox_events.name` is text.
+  actorRole String?
+
+  /// What it was done to. `resourceType` comes from the action's own entry in
+  /// `AUDIT_ACTIONS`, so it cannot disagree with `action`.
+  resourceType String
+  resourceId   String
+
+  /// Everything else worth keeping, as JSON. Whatever goes in here is
+  /// serialised canonically before hashing — see `audit-hash.ts` — so two
+  /// encoders that disagree about key order cannot produce two different hashes
+  /// for the same entry.
+  details Json
+
+  /// The request this happened under, when the caller knew it. Same field, same
+  /// meaning, as `outbox_events.correlationId`.
+  correlationId String?
+
+  /// The previous entry's `hash`, or `GENESIS_HASH` for the first entry.
+  prevHash String
+
+  /// SHA-256 over this entry's fields *and* `prevHash`, hex encoded. Unique
+  /// because a repeat is either a hash collision or a replayed entry, and both
+  /// are worth a constraint violation rather than a silent second copy.
+  hash String @unique
+
+  /// `GET /v1/audit-log` reads forward from a cursor, which the primary key
+  /// already serves. These two are the questions an investigator actually
+  /// asks: everything that happened to this thing, and everything this person
+  /// did.
+  @@index([resourceType, resourceId, seq])
+  @@index([actorId, seq])
+  @@map("audit_log")
+}
+
 enum Role {
   USER
   ADMIN

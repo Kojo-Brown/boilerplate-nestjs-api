@@ -31,8 +31,10 @@ import type { ExpectedVersion } from "@/common/concurrency";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import { StorageService } from "@/storage/storage.service";
 import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
+import { AUDIT_LOG_STORE, AuditLog } from "@/audit";
 import { EventContract } from "@/schema-registry";
 import { realEventContract } from "@/test-utils/event-contract";
+import { InMemoryAuditLogStore } from "@/test-utils/in-memory-audit-log.store";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { InMemoryUsersRepository } from "@/test-utils/in-memory-users.repository";
@@ -79,7 +81,27 @@ const mockStorage = {
 let outboxStore: InMemoryOutboxStore;
 let transactions: InMemoryTransactionRunner;
 
+/**
+ * Recording is not a spy either, and for a stronger reason than announcing.
+ *
+ * The double seals entries through the same `sealAuditEntry` the Prisma adapter
+ * uses, so what these specs read back is a real chain — and a delete that rolls
+ * back has to leave the chain *unextended*, not merely make no call.
+ */
+let auditStore: InMemoryAuditLogStore;
+
 const staged = () => outboxStore.all().map((row) => ({ name: row.name, payload: row.payload }));
+
+const recorded = () =>
+  auditStore.entries.map((entry) => ({
+    action: entry.action,
+    resourceId: entry.resourceId,
+    details: entry.details,
+    actorId: entry.actorId,
+  }));
+
+/** The admin every delete in this suite is performed by, as the audit entry records them. */
+const AUDIT_ADMIN = { id: "admin-1", role: Role.ADMIN };
 
 const asUser = (id: string): RequesterIdentity => ({ id, role: Role.USER });
 const asAdmin = (id: string): RequesterIdentity => ({ id, role: Role.ADMIN });
@@ -103,6 +125,7 @@ describe("users CQRS", () => {
     mockStorage.uploadBuffer.mockResolvedValue(undefined);
     store = new InMemoryUsersRepository();
     outboxStore = new InMemoryOutboxStore();
+    auditStore = new InMemoryAuditLogStore();
     transactions = new InMemoryTransactionRunner();
 
     module = await Test.createTestingModule({
@@ -114,6 +137,7 @@ describe("users CQRS", () => {
         ...USERS_COMMAND_HANDLERS,
         ...USERS_QUERY_HANDLERS,
         TransactionalOutbox,
+        AuditLog,
         // The real contract over the real catalogue: staging checks the payload
         // against its schema, and a permissive stub here would stop this suite
         // noticing an event it emits that no consumer can read.
@@ -124,6 +148,7 @@ describe("users CQRS", () => {
         { provide: CacheService, useValue: mockCache },
         { provide: StorageService, useValue: mockStorage },
         { provide: OUTBOX_STORE, useValue: outboxStore },
+        { provide: AUDIT_LOG_STORE, useValue: auditStore },
         { provide: TRANSACTION_RUNNER, useValue: transactions },
       ],
     }).compile();
@@ -372,7 +397,7 @@ describe("users CQRS", () => {
     it("deletes the user and invalidates cache", async () => {
       store.seed({ id: "user-1", email: "test@example.com" });
 
-      await commands.execute(new DeleteUserCommand("user-1", ifMatch(0)));
+      await commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN));
 
       await expect(queries.execute(new GetUserQuery("user-1"))).rejects.toThrow(NotFoundException);
       expect(mockCache.delMany).toHaveBeenCalledWith([
@@ -383,24 +408,63 @@ describe("users CQRS", () => {
 
     it("throws NotFoundException for missing user", async () => {
       await expect(
-        commands.execute(new DeleteUserCommand("missing", UNCONDITIONAL)),
+        commands.execute(new DeleteUserCommand("missing", UNCONDITIONAL, AUDIT_ADMIN)),
       ).rejects.toThrow(NotFoundException);
     });
 
     it("stages user.deleted with the address, which nothing can look up afterwards", async () => {
       store.seed({ id: "user-1", email: "test@example.com" });
 
-      await commands.execute(new DeleteUserCommand("user-1", ifMatch(0)));
+      await commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN));
 
       expect(staged()).toEqual([
         { name: "user.deleted", payload: { userId: "user-1", email: "test@example.com" } },
       ]);
     });
 
+    it("records who deleted the account, in the same unit of work", async () => {
+      store.seed({ id: "user-1", email: "test@example.com" });
+
+      await commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN));
+
+      // A deletion is the operation that destroys the evidence of itself, so
+      // the record of who performed it has to be written by the same commit.
+      expect(recorded()).toEqual([
+        {
+          action: "user.deleted",
+          resourceId: "user-1",
+          details: { email: "test@example.com" },
+          actorId: "admin-1",
+        },
+      ]);
+      expect(auditStore.entries[0]!.actorRole).toBe("ADMIN");
+    });
+
+    it("leaves the audit chain unextended when the unit of work fails", async () => {
+      store.seed({ id: "user-1", email: "test@example.com" });
+      mockCache.delMany.mockRejectedValueOnce(new Error("redis down"));
+
+      await expect(
+        commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN)),
+      ).rejects.toThrow("redis down");
+
+      // Not merely "no entry": an entry that survived a rollback would be a
+      // record of a deletion that never happened, which is worse than none.
+      expect(recorded()).toEqual([]);
+    });
+
+    it("records nothing when the user does not exist", async () => {
+      await expect(
+        commands.execute(new DeleteUserCommand("missing", UNCONDITIONAL, AUDIT_ADMIN)),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(recorded()).toEqual([]);
+    });
+
     it("stages the event inside the transaction that deletes the row", async () => {
       store.seed({ id: "user-1", email: "test@example.com" });
 
-      await commands.execute(new DeleteUserCommand("user-1", ifMatch(0)));
+      await commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN));
 
       // One unit of work, committed once. A second `run` would mean the delete
       // and the event were separately abandonable, which is the failure the
@@ -416,9 +480,9 @@ describe("users CQRS", () => {
       // this is a user who is gone with nobody ever told.
       mockCache.delMany.mockRejectedValueOnce(new Error("redis down"));
 
-      await expect(commands.execute(new DeleteUserCommand("user-1", ifMatch(0)))).rejects.toThrow(
-        "redis down",
-      );
+      await expect(
+        commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN)),
+      ).rejects.toThrow("redis down");
 
       expect(transactions.rolledBack).toBe(1);
       expect(staged()).toEqual([]);
@@ -429,7 +493,7 @@ describe("users CQRS", () => {
 
     it("stages nothing when the user does not exist", async () => {
       await expect(
-        commands.execute(new DeleteUserCommand("missing", UNCONDITIONAL)),
+        commands.execute(new DeleteUserCommand("missing", UNCONDITIONAL, AUDIT_ADMIN)),
       ).rejects.toThrow(NotFoundException);
 
       expect(staged()).toEqual([]);
@@ -578,9 +642,9 @@ describe("users CQRS", () => {
     it("answers 412 rather than deleting against a stale version", async () => {
       await commands.execute(new UpdateUserCommand("user-1", { name: "First" }, UNCONDITIONAL));
 
-      await expect(commands.execute(new DeleteUserCommand("user-1", ifMatch(0)))).rejects.toThrow(
-        PreconditionFailedException,
-      );
+      await expect(
+        commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN)),
+      ).rejects.toThrow(PreconditionFailedException);
       await expect(queries.execute(new GetUserQuery("user-1"))).resolves.toBeDefined();
     });
 
@@ -588,7 +652,9 @@ describe("users CQRS", () => {
       await commands.execute(new UpdateUserCommand("user-1", { name: "First" }, UNCONDITIONAL));
       outboxStore.reset();
 
-      await expect(commands.execute(new DeleteUserCommand("user-1", ifMatch(0)))).rejects.toThrow();
+      await expect(
+        commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN)),
+      ).rejects.toThrow();
 
       expect(staged()).toEqual([]);
     });
@@ -645,21 +711,21 @@ describe("users CQRS", () => {
 
     it("accepts a precondition naming the current version", async () => {
       await expect(
-        commands.execute(new DeleteUserCommand("user-1", ifMatch(0))),
+        commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN)),
       ).resolves.toBeUndefined();
     });
 
     it("throws 412 for a stale one", async () => {
       await commands.execute(new UpdateUserCommand("user-1", { name: "Moved" }, UNCONDITIONAL));
 
-      await expect(commands.execute(new DeleteUserCommand("user-1", ifMatch(0)))).rejects.toThrow(
-        PreconditionFailedException,
-      );
+      await expect(
+        commands.execute(new DeleteUserCommand("user-1", ifMatch(0), AUDIT_ADMIN)),
+      ).rejects.toThrow(PreconditionFailedException);
     });
 
     it("throws 428 when the caller named no version at all", async () => {
       await expect(
-        commands.execute(new DeleteUserCommand("user-1", UNCONDITIONAL)),
+        commands.execute(new DeleteUserCommand("user-1", UNCONDITIONAL, AUDIT_ADMIN)),
       ).rejects.toThrow(PreconditionRequiredException);
     });
 
@@ -668,14 +734,14 @@ describe("users CQRS", () => {
     // it can never obtain.
     it("throws 404 rather than 428 when there is no such user", async () => {
       await expect(
-        commands.execute(new DeleteUserCommand("missing", UNCONDITIONAL)),
+        commands.execute(new DeleteUserCommand("missing", UNCONDITIONAL, AUDIT_ADMIN)),
       ).rejects.toThrow(NotFoundException);
     });
 
     it("throws 404 rather than 412 when there is no such user", async () => {
-      await expect(commands.execute(new DeleteUserCommand("missing", ifMatch(0)))).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        commands.execute(new DeleteUserCommand("missing", ifMatch(0), AUDIT_ADMIN)),
+      ).rejects.toThrow(NotFoundException);
     });
 
     it("throws 428 rather than 412 when the caller sent nothing to compare", async () => {
@@ -684,7 +750,7 @@ describe("users CQRS", () => {
       await commands.execute(new UpdateUserCommand("user-1", { name: "Moved" }, UNCONDITIONAL));
 
       await expect(
-        commands.execute(new DeleteUserCommand("user-1", UNCONDITIONAL)),
+        commands.execute(new DeleteUserCommand("user-1", UNCONDITIONAL, AUDIT_ADMIN)),
       ).rejects.toThrow(PreconditionRequiredException);
     });
   });
@@ -717,7 +783,7 @@ describe("users CQRS", () => {
 
     it("refuses an unconditional delete", async () => {
       await expect(
-        commands.execute(new DeleteUserCommand("user-1", UNCONDITIONAL)),
+        commands.execute(new DeleteUserCommand("user-1", UNCONDITIONAL, AUDIT_ADMIN)),
       ).rejects.toThrow(PreconditionRequiredException);
     });
 

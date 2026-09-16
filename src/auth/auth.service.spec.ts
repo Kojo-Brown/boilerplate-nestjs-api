@@ -10,8 +10,10 @@ import { FindUserByEmailQuery, FindUserByProviderAccountQuery } from "@/users/re
 import { REFRESH_TOKEN_STORE } from "./ports";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
+import { AUDIT_LOG_STORE, AuditLog } from "@/audit";
 import { EventContract } from "@/schema-registry";
 import { realEventContract } from "@/test-utils/event-contract";
+import { InMemoryAuditLogStore } from "@/test-utils/in-memory-audit-log.store";
 import { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
 import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.runner";
 import { UNCONDITIONAL } from "@/common/concurrency";
@@ -104,7 +106,26 @@ const mockJwtService = {
 let outboxStore: InMemoryOutboxStore;
 let transactions: InMemoryTransactionRunner;
 
+/**
+ * And the audit log, for the same reason and a different question.
+ *
+ * The event says a registration is to be announced; the entry says one
+ * happened, in a table nothing may modify, chained to everything before it.
+ * Both are written in the insert's transaction, and both have to disappear when
+ * it rolls back.
+ */
+let auditStore: InMemoryAuditLogStore;
+
 const staged = () => outboxStore.all().map((row) => ({ name: row.name, payload: row.payload }));
+
+const recorded = () =>
+  auditStore.entries.map((entry) => ({
+    action: entry.action,
+    resourceId: entry.resourceId,
+    details: entry.details,
+    actorId: entry.actorId,
+    actorRole: entry.actorRole,
+  }));
 
 const mockConfigService = {
   get: jest.fn(),
@@ -136,12 +157,14 @@ describe("AuthService", () => {
     mockConfigService.getOrThrow.mockReturnValue("test-secret");
 
     outboxStore = new InMemoryOutboxStore();
+    auditStore = new InMemoryAuditLogStore();
     transactions = new InMemoryTransactionRunner();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
         TransactionalOutbox,
+        AuditLog,
         // The real contract over the real catalogue: staging now checks the
         // payload against its schema, and a permissive stub here would stop
         // these suites noticing an event they emit that no consumer can read.
@@ -152,6 +175,7 @@ describe("AuthService", () => {
         { provide: ConfigService, useValue: mockConfigService },
         { provide: REFRESH_TOKEN_STORE, useValue: mockRefreshTokens },
         { provide: OUTBOX_STORE, useValue: outboxStore },
+        { provide: AUDIT_LOG_STORE, useValue: auditStore },
         { provide: TRANSACTION_RUNNER, useValue: transactions },
       ],
     }).compile();
@@ -208,6 +232,39 @@ describe("AuthService", () => {
           },
         },
       ]);
+    });
+
+    it("records the registration against the account itself", async () => {
+      usersModule.findByEmail.mockResolvedValue(null);
+      argon2.hash.mockResolvedValue("hashed-password");
+      usersModule.create.mockResolvedValue(mockUser);
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
+
+      await service.register({ email: "test@example.com", password: "password123" });
+
+      // The actor is the new account, not `null`: recording the system as the
+      // actor would be untrue of every self-service sign-up.
+      expect(recorded()).toEqual([
+        {
+          action: "user.registered",
+          resourceId: mockUser.id,
+          details: { email: mockUser.email, provider: null },
+          actorId: mockUser.id,
+          actorRole: "USER",
+        },
+      ]);
+    });
+
+    it("discards the audit entry when the unit of work fails", async () => {
+      usersModule.findByEmail.mockResolvedValue(null);
+      argon2.hash.mockResolvedValue("hashed-password");
+      usersModule.create.mockRejectedValue(new Error("unique violation"));
+
+      await expect(
+        service.register({ email: "test@example.com", password: "password123" }),
+      ).rejects.toThrow("unique violation");
+
+      expect(recorded()).toEqual([]);
     });
 
     it("writes the row and the event in one unit of work", async () => {
@@ -405,6 +462,28 @@ describe("AuthService", () => {
           payload: expect.objectContaining({ email: googleProfile.email, provider: "google" }),
         },
       ]);
+      // An OAuth sign-up is a registration too, and the entry says which route
+      // it came in by — which is the fact an investigation into a compromised
+      // account starts from.
+      expect(recorded()).toEqual([
+        expect.objectContaining({
+          action: "user.registered",
+          details: { email: googleProfile.email, provider: "google" },
+        }),
+      ]);
+    });
+
+    it("records nothing when Google is linked to an account that already exists", async () => {
+      usersModule.findByProviderAccount.mockResolvedValue(null);
+      usersModule.findByEmail.mockResolvedValue(mockUser);
+      usersModule.update.mockResolvedValue({ ...mockUser, provider: "google" });
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
+
+      await service.loginWithGoogle(googleProfile);
+
+      // Linking is not a registration: the account already exists and was
+      // already recorded when it was created.
+      expect(recorded()).toEqual([]);
     });
 
     it("links Google account to an existing user found by email", async () => {

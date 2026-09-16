@@ -8,6 +8,7 @@ import { FindUserByEmailQuery, FindUserByProviderAccountQuery } from "@/users/re
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import type { TransactionContext, TransactionRunner } from "@/common/prisma/transaction.port";
 import { TransactionalOutbox } from "@/outbox";
+import { AuditLog } from "@/audit";
 import { UNCONDITIONAL } from "@/common/concurrency";
 import { REFRESH_TOKEN_STORE } from "./ports";
 import type { RefreshTokenStore } from "./ports";
@@ -38,6 +39,7 @@ export class AuthService {
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshTokens: RefreshTokenStore,
     @Inject(TRANSACTION_RUNNER) private readonly transactions: TransactionRunner,
     private readonly outbox: TransactionalOutbox,
+    private readonly audit: AuditLog,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -165,6 +167,26 @@ export class AuthService {
       name: user.name,
       provider: user.provider,
     });
+    // Recorded as well as announced, and the two are not redundant. The event
+    // is a message: it is consumed, and an outbox row is pruned once it has
+    // been. The audit entry is evidence — kept, in a table nothing may modify,
+    // chained to the entry before it. "When was this account created, and by
+    // which route" is a question asked years later, long after the event that
+    // carried the same facts has been delivered and swept.
+    //
+    // The actor is the account itself. Nobody else registered it, and recording
+    // `null` here would say the system did — which is the one thing that would
+    // be untrue of every self-service sign-up.
+    //
+    // Last in the transaction deliberately: the append holds a global advisory
+    // lock until this unit of work commits. See `PrismaAuditLogStore`.
+    await this.audit.record(
+      tx,
+      "user.registered",
+      user.id,
+      { email: user.email, provider: user.provider },
+      { actor: { id: user.id, role: user.role } },
+    );
   }
 
   private async issueTokens(userId: string, email: string, role: Role) {

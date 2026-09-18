@@ -219,13 +219,20 @@ docker-compose up        # postgres + redis + api
   why the audit catalogue is separate from the event catalogue, why `seq` leaves
   over HTTP as a string, and what the chain cannot catch without an external
   witness.
+- [docs/dataloader.md](./docs/dataloader.md) — batching a hot relation and
+  catching the N+1 that made it hot: why the orders read path batches its saga
+  lookups instead of denormalising the fulfilment onto the order row, the two
+  parts of the `DataLoader` contract that fail silently when a repository's
+  batch read is handed to it directly, why a loader is created per operation
+  rather than injected as a request-scoped provider, and why the N+1 detector
+  measures how the read count _grows_ rather than how long a page takes.
 
 ## Testing
 
 ```bash
 pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
-pnpm test:db       # row-locking, outbox, saga- and audit-store suites — needs Postgres and DATABASE_URL
+pnpm test:db       # row-locking, outbox, saga-, audit-store and query-count suites — needs Postgres and DATABASE_URL
 
 # The Redlock legs of `pnpm test` need independent Redis nodes. Without
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as

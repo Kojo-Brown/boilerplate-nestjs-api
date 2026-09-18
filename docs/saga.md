@@ -216,6 +216,18 @@ it on the next poll and carries on from the step the row says it reached.
 With `SAGA_RECOVERY_ENABLED=false` on every replica, a saga interrupted between
 two steps stays where it stopped. The service logs a warning at boot saying so.
 
+## Reading one
+
+An order names its saga and copies nothing from it, for the reason
+`order-view.ts` gives: two copies of the same fact drift, and the customer would
+then be shown a payment id the orchestrator disagrees with. So a page of orders
+needs one instance per order — which it used to read one at a time, twenty-one
+round trips for a page of twenty. `SagaStore.findMany` is the batch read that
+replaces them, `SagaLoaders` is what coalesces `ListOrdersQuery`'s per-order
+reads into a single call to it, and `test/orders-read.db-spec.ts` holds the page
+to two statements at any size against a real server. `docs/dataloader.md` has
+the rest, including why the loader is created per operation rather than injected.
+
 ## What this is still not
 
 - **No parallel steps.** The list is sequential. A checkout that could reserve
@@ -227,10 +239,6 @@ two steps stays where it stopped. The service logs a warning at boot saying so.
   reset one — it is a database write today.
 - **No history retention.** Terminal instances stay in the table forever. The
   poller's index keeps it off the hot path, but nothing prunes.
-- **The read path is N+1.** `ListOrdersQuery` fetches one saga per order, so a
-  page of twenty is twenty-one round trips. `SagaStore` has no batch read; the
-  fix when a page of orders becomes hot is one, not denormalising the fulfilment
-  onto the order row.
 - **Inventory and shipping are in-process.** They are ports with working
   in-memory implementations — real state machines, not stubs, in the way
   `MockPaymentProvider` is. In a deployment they are somebody else's HTTP API

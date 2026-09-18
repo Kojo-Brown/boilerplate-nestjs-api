@@ -56,6 +56,24 @@ export interface SagaStore {
   find(id: string): Promise<SagaInstanceRecord | null>;
 
   /**
+   * Reads many instances without claiming them, in one round trip.
+   *
+   * The batch half of {@link find}, and it is here for the read path rather than
+   * for the engine: `ListOrdersQuery` needs one saga per order, so a page of
+   * twenty asking {@link find} twenty times is twenty round trips for a list
+   * nobody asked to be slow. `SagaLoaders` is what turns those per-order reads
+   * into one call here; see `docs/dataloader.md`.
+   *
+   * Returns only the instances that exist, in no defined order, with duplicate
+   * ids collapsed. A missing id is not an error — an instance may have been
+   * pruned out from under an order row that still names it — so the caller
+   * indexes what comes back by id rather than by position. `createEntityLoader`
+   * does exactly that, which is why this signature is free to be the convenient
+   * one for the database.
+   */
+  findMany(ids: readonly string[]): Promise<readonly SagaInstanceRecord[]>;
+
+  /**
    * Takes the lease on one instance, or resolves `null`.
    *
    * `null` covers every reason a runner may not proceed and does not

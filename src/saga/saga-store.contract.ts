@@ -125,6 +125,50 @@ export function describeSagaStoreContract(
       });
     });
 
+    describe("findMany()", () => {
+      it("reads every instance asked for", async () => {
+        const one = await create();
+        const two = await create();
+        const three = await create();
+
+        const found = await store.findMany([one.id, two.id, three.id]);
+
+        // Sorted before comparing: the adapter's `IN (…)` promises which rows
+        // come back and says nothing about their order, and a spec that pinned
+        // one would be asserting a property of the planner.
+        expect(found.map((row) => row.id).sort()).toEqual([one.id, two.id, three.id].sort());
+      });
+
+      it("reads the same instance find() does", async () => {
+        const created = await create();
+
+        const [batched] = await store.findMany([created.id]);
+
+        expect(batched).toEqual(await store.find(created.id));
+      });
+
+      it("leaves out an id nothing matches rather than failing", async () => {
+        // The case the read path depends on: an instance may be pruned out from
+        // under an order row that still names it, and a page of orders must
+        // still render.
+        const created = await create();
+
+        const found = await store.findMany([created.id, randomUUID()]);
+
+        expect(found.map((row) => row.id)).toEqual([created.id]);
+      });
+
+      it("collapses a repeated id", async () => {
+        const created = await create();
+
+        expect(await store.findMany([created.id, created.id])).toHaveLength(1);
+      });
+
+      it("reads nothing for an empty batch", async () => {
+        expect(await store.findMany([])).toEqual([]);
+      });
+    });
+
     describe("claim()", () => {
       it("takes the lease and reports the instance", async () => {
         const created = await create();

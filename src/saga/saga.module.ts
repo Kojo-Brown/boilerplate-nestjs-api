@@ -3,6 +3,7 @@ import { PrismaSagaStore } from "./prisma-saga.store";
 import { SagaOrchestrator } from "./saga-orchestrator.service";
 import { SagaRecoveryService } from "./saga-recovery.service";
 import { SagaRegistry } from "./saga-registry";
+import { SagaLoaders } from "./saga-loaders";
 import { SAGA_STORE } from "./ports";
 
 /**
@@ -29,7 +30,10 @@ import { SAGA_STORE } from "./ports";
     { provide: SAGA_STORE, useClass: PrismaSagaStore },
     SagaOrchestrator,
     SagaRecoveryService,
+    // A singleton that makes short-lived loaders; the loaders themselves belong
+    // to one operation each. See the note on the class.
+    SagaLoaders,
   ],
-  exports: [SagaRegistry, SagaOrchestrator, SagaRecoveryService, SAGA_STORE],
+  exports: [SagaRegistry, SagaOrchestrator, SagaRecoveryService, SagaLoaders, SAGA_STORE],
 })
 export class SagaModule {}

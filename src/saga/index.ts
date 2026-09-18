@@ -4,6 +4,8 @@ export { SagaOrchestrator, SAGA_JITTER, assertResumable } from "./saga-orchestra
 export type { StartSagaOptions } from "./saga-orchestrator.service";
 export { SagaRecoveryService } from "./saga-recovery.service";
 export type { RecoveryReport } from "./saga-recovery.service";
+export { SagaLoaders } from "./saga-loaders";
+export type { SagaLoader } from "./saga-loaders";
 export { PrismaSagaStore } from "./prisma-saga.store";
 export { defineSaga } from "./saga-definition";
 export type {

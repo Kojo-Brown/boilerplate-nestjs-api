@@ -60,6 +60,20 @@ export class InMemorySagaStore implements SagaStore {
     return Promise.resolve(this.rows.get(id) ?? null);
   }
 
+  findMany(ids: readonly string[]): Promise<readonly SagaInstanceRecord[]> {
+    const found: SagaInstanceRecord[] = [];
+    // Deduplicated, and missing ids simply left out, because that is what the
+    // `IN (…)` the adapter issues does. A double that answered for every id
+    // asked for — `null` in the gaps — would let a caller depend on position,
+    // and the adapter would then hand it rows in whatever order the planner
+    // chose.
+    for (const id of new Set(ids)) {
+      const row = this.rows.get(id);
+      if (row) found.push(row);
+    }
+    return Promise.resolve(found);
+  }
+
   claim(id: string, claim: SagaClaim): Promise<SagaInstanceRecord | null> {
     const row = this.rows.get(id);
     if (!row || !isClaimable(row, claim.now)) return Promise.resolve(null);

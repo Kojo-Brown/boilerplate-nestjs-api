@@ -72,6 +72,20 @@ export class PrismaSagaStore implements SagaStore {
     return row ? toRecord(row) : null;
   }
 
+  async findMany(ids: readonly string[]): Promise<readonly SagaInstanceRecord[]> {
+    // `WHERE id IN ()` is a round trip that can only return nothing. The loader
+    // never asks for an empty batch, but a caller reading ids off a page that
+    // came back empty will.
+    if (ids.length === 0) return [];
+    const rows = await this.prisma.sagaInstance.findMany({
+      // Deduplicated here rather than left to Postgres: `IN` returns each row
+      // once either way, so the duplicates would only be bytes on the wire and
+      // parameters in the plan.
+      where: { id: { in: [...new Set(ids)] } },
+    });
+    return rows.map(toRecord);
+  }
+
   async claim(id: string, claim: SagaClaim): Promise<SagaInstanceRecord | null> {
     const until = new Date(claim.now.getTime() + claim.leaseMs);
     const rows = await this.prisma.$queryRaw<SagaRow[]>(Prisma.sql`

@@ -3,7 +3,7 @@ import { Query, QueryHandler } from "@nestjs/cqrs";
 import type { IQueryHandler } from "@nestjs/cqrs";
 import { buildCursorPage, decodeCursor } from "@/common/pagination";
 import type { CursorPage } from "@/common/pagination";
-import { SAGA_STORE, SagaRegistry, type SagaStore } from "@/saga";
+import { SagaLoaders, SagaRegistry } from "@/saga";
 import { ORDER_STORE, type OrderStore } from "../ports";
 import type { ListOrdersQueryDto } from "../dto/list-orders-query.dto";
 import { toOrderView, type OrderView } from "./order-view";
@@ -22,7 +22,7 @@ export class ListOrdersQuery extends Query<CursorPage<OrderView>> {
 export class ListOrdersHandler implements IQueryHandler<ListOrdersQuery> {
   constructor(
     @Inject(ORDER_STORE) private readonly orders: OrderStore,
-    @Inject(SAGA_STORE) private readonly sagas: SagaStore,
+    private readonly loaders: SagaLoaders,
     private readonly registry: SagaRegistry,
   ) {}
 
@@ -30,13 +30,21 @@ export class ListOrdersHandler implements IQueryHandler<ListOrdersQuery> {
    * Always the caller's own orders — there is no `userId` parameter to get
    * wrong, which is the cheapest way to make a listing endpoint safe.
    *
-   * The saga is fetched per order rather than in one query, and that is a real
-   * N+1 that a page of twenty makes twenty-one round trips. It is left as one
-   * deliberately: `SagaStore` has no batch read, adding one for a page of
-   * twenty would be inventing an interface for a number that does not hurt yet,
-   * and the alternative — denormalising the fulfilment onto the order row — is
-   * the duplication `toOrderView` exists to avoid. `docs/saga.md` says what to
-   * do when a page of orders is a hot path.
+   * Two round trips for any page size: the orders, then every saga they name.
+   * It used to be one per order — a page of twenty cost twenty-one — and the
+   * shape of the code below is deliberately the same as it was then. The
+   * `await` inside the `map` is what makes that possible: each `load` is queued
+   * in this tick and the loader turns the whole page into a single `findMany`,
+   * so the composition stays per-order while the reads do not. The alternative,
+   * collecting ids and zipping the results back, is the same query count
+   * written so that a second relation cannot be read alongside the first.
+   *
+   * The loader is created here rather than injected because its cache must not
+   * outlive this call: these are one customer's orders, and a loader that lived
+   * longer would answer the next caller with them. `SagaLoaders` says more.
+   *
+   * `test/orders-read.db-spec.ts` counts the statements against a real server,
+   * so a regression to the per-order read fails a spec instead of a dashboard.
    */
   async execute({ userId, criteria }: ListOrdersQuery): Promise<CursorPage<OrderView>> {
     const rows = await this.orders.listForUser({
@@ -45,10 +53,9 @@ export class ListOrdersHandler implements IQueryHandler<ListOrdersQuery> {
       ...(criteria.cursor ? { cursor: decodeCursor(criteria.cursor) } : {}),
     });
 
+    const sagas = this.loaders.byId();
     const views = await Promise.all(
-      rows.map(async (order) =>
-        toOrderView(order, await this.sagas.find(order.sagaId), this.registry),
-      ),
+      rows.map(async (order) => toOrderView(order, await sagas.load(order.sagaId), this.registry)),
     );
 
     return buildCursorPage(views, criteria.limit, (view) => view.order.id);

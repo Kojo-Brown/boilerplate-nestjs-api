@@ -6,6 +6,7 @@ import { MESSAGE_BROKER_NAMES } from "@/messaging/ports";
 import { OUTBOX_PUBLISHER_NAMES } from "@/outbox/ports";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
+import { refineSecurityEnv, securityEnvShape } from "@/common/security/security.env";
 import { refineTelemetryEnv, telemetryEnvShape } from "@/telemetry/telemetry.env";
 import { WORKER_POOL_NAMES } from "@/workers/ports";
 
@@ -20,7 +21,6 @@ export const envSchema = z
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     GOOGLE_CALLBACK_URL: z.string().optional(),
-    ALLOWED_ORIGINS: z.string().default("*"),
     REDIS_URL: z.string().optional(),
 
     /**
@@ -682,6 +682,15 @@ export const envSchema = z
      * is. See `docs/telemetry.md`.
      */
     ...telemetryEnvShape,
+
+    /**
+     * The response-header and CORS settings, spread in for the same reason the
+     * telemetry shape above is: an operator should get one validation pass over
+     * the whole environment, and the rules about what a valid origin or a
+     * preload-eligible `max-age` is belong next to the code that sends the
+     * header. See `docs/security-headers.md`.
+     */
+    ...securityEnvShape,
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -697,6 +706,11 @@ export const envSchema = z
     // The telemetry rules, shared with the pre-Nest bootstrap for the same
     // reason the shape above is.
     refineTelemetryEnv(env, env.NODE_ENV, ctx);
+
+    // The security rules, for the same reason: they are cross-field checks
+    // (preload against max-age, a wildcard allowlist against credentials) and
+    // every one of them fails silently at runtime rather than loudly.
+    refineSecurityEnv(env, env.NODE_ENV, ctx);
 
     /**
      * Selecting S3 without its credentials is a deployment that boots happily

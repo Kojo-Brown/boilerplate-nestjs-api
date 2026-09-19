@@ -226,6 +226,19 @@ docker-compose up        # postgres + redis + api
   batch read is handed to it directly, why a loader is created per operation
   rather than injected as a request-scoped provider, and why the N+1 detector
   measures how the read count _grows_ rather than how long a page takes.
+- [docs/security-headers.md](./docs/security-headers.md) — the response
+  security headers and the CORS allowlist: the two silent defects in the
+  `enableCors` call this replaced (a comma-separated list compared with `===`,
+  and `Allow-Origin: *` beside `Allow-Credentials: true`, which browsers
+  discard), why an allowlist entry with a trailing slash is refused at boot
+  rather than at request time, why a disallowed origin gets `false` instead of
+  an `Error`, why `ETag` has to be named in `Access-Control-Expose-Headers` for
+  the optimistic-concurrency endpoints to be usable from a browser at all, why
+  the API policy is `default-src 'none'` plus `sandbox` rather than an
+  allowlist, why the Swagger UI page gets a second policy with `'unsafe-inline'`
+  on `style-src` and nothing on `script-src`, and why the
+  HSTS preload combination is checked by the config module instead of by
+  hstspreload.org.
 
 ## Testing
 

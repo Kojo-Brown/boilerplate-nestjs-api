@@ -2,6 +2,7 @@ import { type INestApplication, Module, ValidationPipe, VersioningType } from "@
 import { Reflector } from "@nestjs/core";
 import { WsAdapter } from "@nestjs/platform-ws";
 import { Test } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import { ThrottlerStorage } from "@nestjs/throttler";
 import type { ThrottlerStorageRecord } from "@nestjs/throttler/dist/throttler-storage-record.interface";
 import { AppModule } from "@/app.module";
@@ -14,6 +15,7 @@ import { LoggingInterceptor } from "@/common/interceptors/logging.interceptor";
 import { IdempotencyInterceptor } from "@/common/idempotency";
 import { EntityTagInterceptor } from "@/common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "@/common/immutable";
+import { applySecurity, securityEnvFrom } from "@/common/security";
 import { REFRESH_TOKEN_STORE } from "@/auth/ports";
 import { OUTBOX_STORE, OutboxRelayService } from "@/outbox";
 import { AUDIT_LOG_STORE } from "@/audit";
@@ -186,6 +188,14 @@ export async function createTestApp(): Promise<TestApp> {
     .compile();
 
   const app = moduleFixture.createNestApplication();
+
+  // Same as main.ts, and before `init()` for the reason `applySecurity`
+  // documents: Express matches middleware in registration order and Nest mounts
+  // its router during `init()`, so binding this later would put every security
+  // header behind every route. Bound here rather than only in `main.ts` because
+  // a missing response header breaks nothing in this process — the e2e suite is
+  // the only place its absence is observable at all.
+  applySecurity(app, securityEnvFrom(app.get(ConfigService)));
 
   // Same as main.ts, and for the same reason: `SocketModule` reads the adapter
   // during `init()` below and falls back to `require`-ing

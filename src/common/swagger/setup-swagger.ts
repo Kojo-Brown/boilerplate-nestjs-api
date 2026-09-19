@@ -4,6 +4,15 @@ import { documentIdempotency } from "@/common/idempotency/idempotency.openapi";
 
 export const BEARER_KEY = "access-token" as const;
 
+/**
+ * Where the Swagger UI page and its assets are mounted.
+ *
+ * Exported because it is not only this file's business: `isDocsPath` in
+ * `@/common/security` keys the relaxed Content-Security-Policy off it, and a
+ * constant the two share cannot drift into a docs page that loads nothing.
+ */
+export const SWAGGER_PATH = "docs" as const;
+
 export function setupSwagger(app: INestApplication): void {
   const config = new DocumentBuilder()
     .setTitle("Boilerplate NestJS API")
@@ -41,7 +50,7 @@ export function setupSwagger(app: INestApplication): void {
   // rather than route by route.
   const document = documentIdempotency(SwaggerModule.createDocument(app, config));
 
-  SwaggerModule.setup("docs", app, document, {
+  SwaggerModule.setup(SWAGGER_PATH, app, document, {
     swaggerOptions: {
       persistAuthorization: true,
       tagsSorter: "alpha",

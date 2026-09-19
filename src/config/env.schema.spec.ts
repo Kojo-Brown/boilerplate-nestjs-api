@@ -204,8 +204,9 @@ describe("envSchema — storage", () => {
       STORAGE_ADAPTER: "local",
       STORAGE_LOCAL_ROOT: "/var/lib/app/storage",
       // Unrelated to storage, but production refuses the in-memory idempotency
-      // store and the in-memory lock too, and this test is about the storage
-      // rule on its own.
+      // store, the in-memory lock and a wildcard CORS allowlist too, and this
+      // test is about the storage rule on its own.
+      ALLOWED_ORIGINS: "https://app.example.com",
       IDEMPOTENCY_STORE: "redis",
       DISTRIBUTED_LOCK: "redlock",
       REDIS_URL: "redis://localhost:6379",
@@ -377,6 +378,9 @@ describe("envSchema — messaging", () => {
       NODE_ENV: "production",
       OUTBOX_PUBLISHER: "bus",
       MESSAGE_BROKER: "memory",
+      // As above: the other production-only rules are satisfied so this test
+      // asserts on the broker rule alone.
+      ALLOWED_ORIGINS: "https://app.example.com",
       IDEMPOTENCY_STORE: "redis",
       REDIS_URL: "redis://localhost:6379",
       DISTRIBUTED_LOCK: "redlock",
@@ -713,5 +717,47 @@ describe("envSchema — outbound HTTP resilience", () => {
     ["HTTP_REQUEST_DEADLINE_MS", "not-a-number"],
   ])("refuses %s=%s at boot rather than at the first outbound call", (key, value) => {
     expect(() => envSchema.parse({ ...BASE_ENV, [key]: value })).toThrow();
+  });
+});
+
+describe("envSchema — security headers and CORS", () => {
+  it("boots a clean clone with no security configuration at all", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.ALLOWED_ORIGINS).toBe("*");
+    expect(env.CORS_ALLOW_CREDENTIALS).toBe(true);
+    expect(env.HSTS_MAX_AGE_SECONDS).toBe(63_072_000);
+    expect(env.HSTS_PRELOAD).toBe(true);
+  });
+
+  it("applies the security refinements as part of the one validation pass", () => {
+    // The rules themselves are covered in `common/security/security.env.spec.ts`;
+    // what matters here is that they are wired into the schema the application
+    // actually boots on, rather than living in a module nothing calls.
+    expect(() =>
+      envSchema.parse({ ...BASE_ENV, ALLOWED_ORIGINS: "https://app.example.com/" }),
+    ).toThrow(/is not an origin/);
+
+    expect(() =>
+      envSchema.parse({ ...BASE_ENV, NODE_ENV: "production", ALLOWED_ORIGINS: "*" }),
+    ).toThrow(/ALLOWED_ORIGINS=\* is refused in production/);
+
+    expect(() => envSchema.parse({ ...BASE_ENV, HSTS_MAX_AGE_SECONDS: "600" })).toThrow(
+      /HSTS preload list requires/,
+    );
+  });
+
+  it("accepts a production deployment that names its origins", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      NODE_ENV: "production",
+      ALLOWED_ORIGINS: "https://app.example.com,https://admin.example.com",
+      STORAGE_ADAPTER: "local",
+      IDEMPOTENCY_STORE: "redis",
+      DISTRIBUTED_LOCK: "redlock",
+      REDIS_URL: "redis://localhost:6379",
+    });
+
+    expect(env.ALLOWED_ORIGINS).toBe("https://app.example.com,https://admin.example.com");
   });
 });

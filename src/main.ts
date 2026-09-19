@@ -14,6 +14,7 @@ import { IdempotencyInterceptor } from "./common/idempotency";
 import { EntityTagInterceptor } from "./common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "./common/immutable";
 import { setupSwagger } from "./common/swagger/setup-swagger";
+import { applySecurity, securityEnvFrom } from "./common/security";
 import { ConfigService } from "@nestjs/config";
 import { WsAdapter } from "@nestjs/platform-ws";
 import { TelemetryLogger } from "./telemetry";
@@ -74,10 +75,18 @@ async function bootstrap() {
     new EntityTagInterceptor(),
   );
 
-  app.enableCors({
-    origin: config.get("ALLOWED_ORIGINS", "*"),
-    credentials: true,
-  });
+  // Security headers and the CORS allowlist, bound before anything routes.
+  // `enableCors` used to be called here with `origin: ALLOWED_ORIGINS` passed
+  // straight through, which compared the `Origin` header against the entire
+  // comma-separated string — so a second origin in the list disabled the first
+  // — and answered `Access-Control-Allow-Origin: *` alongside
+  // `Allow-Credentials: true`, a pair every browser rejects outright. Both are
+  // in `buildCorsOptions` now, under test. See `docs/security-headers.md`.
+  //
+  // `ConfigService` is handed the already-parsed environment, so everything
+  // read here has been through `envSchema`: a malformed origin or an HSTS
+  // preload promise that cannot be honoured has already failed the boot.
+  applySecurity(app, securityEnvFrom(config));
 
   setupSwagger(app);
 

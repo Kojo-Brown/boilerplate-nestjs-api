@@ -15,6 +15,7 @@ import { EntityTagInterceptor } from "./common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "./common/immutable";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { applySecurity, securityEnvFrom } from "./common/security";
+import { mtls, readMtlsEnv } from "./common/mtls";
 import { ConfigService } from "@nestjs/config";
 import { WsAdapter } from "@nestjs/platform-ws";
 import { TelemetryLogger } from "./telemetry";
@@ -22,7 +23,16 @@ import { TelemetryLogger } from "./telemetry";
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  // Before the application, because the TLS options are an argument to it.
+  // `readMtlsEnv` parses the same shape `envSchema` will a moment later — see
+  // `common/mtls/mtls.env.ts` for why it is read twice — and loading the
+  // material here means a certificate that does not match its key, or does not
+  // chain to the trust bundle mounted beside it, is a boot failure naming the
+  // file rather than a handshake alert in four callers' logs. `undefined` when
+  // MTLS_ENABLED is off, which is the plain-HTTP listener this repo defaults to.
+  const httpsOptions = mtls.start(readMtlsEnv());
+
+  const app = await NestFactory.create(AppModule, { bufferLogs: true, httpsOptions });
   // What `bufferLogs: true` was always for: the buffered lines are replayed
   // through this logger, so the boot sequence reaches the logs pipeline too
   // rather than only the lines written once the application is up.
@@ -90,6 +100,11 @@ async function bootstrap() {
 
   setupSwagger(app);
 
+  // Rotation, now that there is a server to rotate. New connections get the new
+  // certificate; existing ones keep the context they negotiated, which is why a
+  // revocation is not finished until they end. See `docs/mtls.md`.
+  if (httpsOptions !== undefined) mtls.attachTo(app.getHttpServer());
+
   // NestJS lifecycle hooks (OnApplicationShutdown) on SIGTERM/SIGINT
   app.enableShutdownHooks();
 
@@ -110,8 +125,12 @@ async function bootstrap() {
       // hardest to observe any other way. Never rejects — see `TelemetryHandle`.
       .then(() => {
         logger.log(`Application closed cleanly on ${signal}`);
-        return telemetry.shutdown();
+        // After `app.close()` for the same reason the telemetry flush is: the
+        // outbox relay's last drain and the consumer's last commit are outbound
+        // calls, and closing their dispatchers first would abort them.
+        return mtls.stop();
       })
+      .then(() => telemetry.shutdown())
       .then(() => process.exit(0));
   };
 
@@ -119,8 +138,9 @@ async function bootstrap() {
   process.once("SIGINT", () => forceExit("SIGINT"));
 
   await app.listen(port);
-  logger.log(`API running on http://localhost:${port}/v1`);
-  logger.log(`Swagger UI  http://localhost:${port}/docs`);
+  const scheme = httpsOptions === undefined ? "http" : "https";
+  logger.log(`API running on ${scheme}://localhost:${port}/v1`);
+  logger.log(`Swagger UI  ${scheme}://localhost:${port}/docs`);
 }
 
 void bootstrap();

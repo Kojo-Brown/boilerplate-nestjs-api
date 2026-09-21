@@ -29,6 +29,7 @@ import { QueueModule } from "./queue/queue.module";
 import { WorkersModule } from "./workers/workers.module";
 import { ShutdownModule } from "./common/shutdown/shutdown.module";
 import { ProxyAwareThrottlerGuard } from "./common/guards/throttler.guard";
+import { MtlsModule } from "./common/mtls";
 import { envSchema } from "./config/env.schema";
 
 @Module({
@@ -37,6 +38,11 @@ import { envSchema } from "./config/env.schema";
       isGlobal: true,
       validate: (config) => envSchema.parse(config),
     }),
+    // Before ThrottlerModule, because global guards are consulted in the order
+    // their modules are registered and "is this caller a peer we talk to at
+    // all" is a cheaper and more fundamental question than a rate limit or a
+    // token signature. A pass-through when MTLS_ENABLED is off.
+    MtlsModule,
     ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 100 }]),
     PrismaModule,
     AppCacheModule,

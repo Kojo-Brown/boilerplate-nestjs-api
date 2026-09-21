@@ -5,3 +5,13 @@ ignore-paths:
   - test/auth.e2e-spec.ts
   - test/users.e2e-spec.ts
   - workflow-templates/
+  # The miniature certificate authority the mTLS suites issue material from.
+  # It holds no credential: every key it makes is generated per run into
+  # os.tmpdir() and thrown away with it, and the passphrase for the one
+  # encrypted-key case is invented by the calling spec. The generic-password
+  # detector matches the word `passphrase` where it names a parameter rather
+  # than a value — it flagged the same two lines before and after the
+  # passphrase was moved off the OpenSSL command line and into an environment
+  # variable, which is the change that would have fixed a real finding. See
+  # docs/mtls.md.
+  - src/test-utils/test-certificates.ts

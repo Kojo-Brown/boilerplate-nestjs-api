@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { setTimeout as sleep } from "node:timers/promises";
+import { mtls } from "@/common/mtls/mtls-runtime";
 import { HTTP_RESILIENCE_OPTIONS } from "./http-resilience";
 import type { ResilientHttpOptions } from "./http-resilience";
 import { ResilientHttpClient } from "./resilient-http.client";
@@ -45,6 +46,13 @@ export function httpResilienceOptions(config: ConfigService): ResilientHttpOptio
     // or, stepping forwards, expires a request that has been running for a
     // millisecond.
     now: () => performance.now(),
+    // The outbound half of mutual TLS. Returns `undefined` for every URL when
+    // mTLS is off or the call is to a third party, which is the global
+    // dispatcher and therefore exactly the behaviour this client had before.
+    //
+    // Read from the process-wide runtime rather than injected because it is
+    // started by `main.ts` before the injector exists — see `mtls-runtime.ts`.
+    dispatcherFor: (url) => mtls.dispatcherFor(url),
   };
 }
 

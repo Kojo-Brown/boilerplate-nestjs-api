@@ -7,6 +7,7 @@ import {
 import { ResilientHttpClient } from "./resilient-http.client";
 import type { ResilientHttpOptions } from "./http-resilience";
 import type { BulkheadPolicy, BulkheadStats } from "@/common/bulkhead";
+import { Agent } from "undici";
 
 const realFetch = global.fetch;
 
@@ -761,6 +762,48 @@ describe("ResilientHttpClient", () => {
       upstream.release();
       await held;
       local.client.onApplicationShutdown();
+    });
+  });
+  describe("mutual TLS", () => {
+    /**
+     * `fetch` carries no TLS options of its own — the client certificate lives
+     * on the dispatcher — so this is the whole outbound half of mTLS as far as
+     * this client is concerned: ask which dispatcher a URL needs and put it on
+     * the request.
+     */
+    it("sends a peer's request through the dispatcher that URL resolves to", async () => {
+      const dispatcher = new Agent();
+      const local = buildClient({
+        dispatcherFor: (url) => (url.includes("internal") ? dispatcher : undefined),
+      });
+      const fetchMock = respondWith(json(200, { ok: true }));
+
+      await local.client.request("orders", "https://orders.internal/v1/orders", { method: "GET" });
+      await local.client.request("stripe", "https://api.test/v1/things", { method: "GET" });
+
+      expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ dispatcher });
+      // And a third party gets no dispatcher at all, which is the global one:
+      // our private anchors say nothing about api.test, and pinning them here
+      // would break the integration rather than secure it.
+      expect(fetchMock.mock.calls[1]?.[1]).not.toHaveProperty("dispatcher");
+
+      local.client.onApplicationShutdown();
+      await dispatcher.close();
+    });
+
+    it("resolves the dispatcher once per call, so a retry presents what its first attempt did", async () => {
+      const dispatcher = new Agent();
+      const dispatcherFor = jest.fn(() => dispatcher);
+      const local = buildClient({ dispatcherFor });
+      const fetchMock = respondWith(json(503), json(200));
+
+      await local.client.request("orders", "https://orders.internal/v1/orders", { method: "GET" });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(dispatcherFor).toHaveBeenCalledTimes(1);
+
+      local.client.onApplicationShutdown();
+      await dispatcher.close();
     });
   });
 });

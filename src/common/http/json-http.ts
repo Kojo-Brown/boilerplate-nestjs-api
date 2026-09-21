@@ -21,6 +21,29 @@
  * "every outbound call is protected" is only true if there is one way out.
  */
 
+import type { Dispatcher } from "undici";
+
+/**
+ * Bridges the two copies of undici's type declarations that any Node project
+ * using the `undici` package has.
+ *
+ * `@types/node` declares `RequestInit.dispatcher` against the `undici-types`
+ * package it bundles (8.x), while the `Agent` this project constructs for
+ * mutual TLS comes from the `undici` package it depends on (7.x, the line whose
+ * dispatch protocol the bundled `fetch` in Node 22 and 24 actually speaks).
+ * The two describe the same runtime object and differ in one handler
+ * signature, so the assertion is about the declarations rather than about the
+ * value — and it is the *runtime* pairing that is load-bearing here, which is
+ * why `test/mtls.e2e-spec.ts` sends real requests through a real agent to a
+ * real TLS server rather than trusting either declaration.
+ *
+ * Deliberately the only place either type is crossed: the rest of the codebase
+ * passes `Dispatcher` around, and `fetch` sees it exactly once.
+ */
+function asFetchDispatcher(dispatcher: Dispatcher): NonNullable<RequestInit["dispatcher"]> {
+  return dispatcher as unknown as NonNullable<RequestInit["dispatcher"]>;
+}
+
 /** Anything slower than this is a failed request, not a slow one. */
 export const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
 
@@ -50,8 +73,13 @@ export async function requestJson(
   url: string,
   init: RequestInit,
   timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS,
+  dispatcher?: Dispatcher,
 ): Promise<HttpJsonResponse> {
-  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  const response = await fetch(url, {
+    ...init,
+    signal: AbortSignal.timeout(timeoutMs),
+    ...(dispatcher === undefined ? {} : { dispatcher: asFetchDispatcher(dispatcher) }),
+  });
   const text = await response.text();
 
   let body: unknown = null;

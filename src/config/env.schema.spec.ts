@@ -761,3 +761,46 @@ describe("envSchema — security headers and CORS", () => {
     expect(env.ALLOWED_ORIGINS).toBe("https://app.example.com,https://admin.example.com");
   });
 });
+
+describe("envSchema — mutual TLS", () => {
+  it("boots a clean clone on plain HTTP with no mTLS configuration at all", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.MTLS_ENABLED).toBe(false);
+    expect(env.MTLS_PEERS).toBe("");
+    expect(env.MTLS_EXEMPT_PREFIXES).toBe("/v1/health,/metrics");
+  });
+
+  it("applies the mTLS refinements as part of the one validation pass", () => {
+    // The rules are covered in `common/mtls/mtls.env.spec.ts`; what matters
+    // here is that they are wired into the schema the application boots on —
+    // and `main.ts` reads the same shape a second time, before ConfigService
+    // exists, so a rule that lived only in one of the two would be a boot that
+    // fails in one place and not the other.
+    expect(() => envSchema.parse({ ...BASE_ENV, MTLS_ENABLED: "true" })).toThrow(
+      /MTLS_CERT_FILE is required/,
+    );
+
+    expect(() =>
+      envSchema.parse({
+        ...BASE_ENV,
+        MTLS_PEERS: "https://orders.internal=spiffe://cluster.local/ns/prod/sa/orders",
+      }),
+    ).toThrow(/MTLS_PEERS is set while MTLS_ENABLED is off/);
+  });
+
+  it("accepts a deployment that mounts its material and names its peers", () => {
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      MTLS_ENABLED: "true",
+      MTLS_CERT_FILE: "/tls/tls.crt",
+      MTLS_KEY_FILE: "/tls/tls.key",
+      MTLS_CA_FILE: "/tls/ca.crt",
+      MTLS_ALLOWED_CLIENTS: "spiffe://cluster.local/ns/prod/sa/web",
+      MTLS_PEERS: "https://orders.internal:8443=spiffe://cluster.local/ns/prod/sa/orders",
+    });
+
+    expect(env.MTLS_ENABLED).toBe(true);
+    expect(env.MTLS_RELOAD_INTERVAL_MS).toBe(300_000);
+  });
+});

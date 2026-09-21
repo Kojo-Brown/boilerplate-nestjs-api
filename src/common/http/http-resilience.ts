@@ -1,3 +1,4 @@
+import type { Dispatcher } from "undici";
 import type { BackoffPolicy } from "@/common/backoff";
 import type { BulkheadPolicy } from "@/common/bulkhead";
 
@@ -78,7 +79,31 @@ export interface ResilientHttpOptions extends HttpResiliencePolicy {
    * costs nothing.
    */
   readonly now: () => number;
+  /**
+   * The dispatcher to send a request to `url` through, when that URL names a
+   * peer this service talks to over mutual TLS.
+   *
+   * `fetch` carries no TLS options of its own — the client certificate lives on
+   * the dispatcher — so this is the seam mutual TLS needs, and it is a function
+   * of the URL because it is per peer: an internal service gets our certificate
+   * and our private trust anchors, Stripe gets the public trust store and no
+   * certificate at all. `undefined` means the global dispatcher, which is what
+   * every call made before this option existed already used.
+   *
+   * Consulted per attempt rather than cached, so a rotation takes effect on the
+   * next request rather than the next deployment. See `docs/mtls.md`.
+   */
+  readonly dispatcherFor?: (url: string) => HttpDispatcher | undefined;
 }
+
+/**
+ * The connection pool a request is sent through.
+ *
+ * undici's own `Dispatcher`, because that is what `new Agent(...)` produces and
+ * what carries the client certificate; `json-http` is the one place it meets
+ * `fetch`'s declaration of the same thing. See `asFetchDispatcher` there.
+ */
+export type HttpDispatcher = Dispatcher;
 
 /** Injection token for {@link ResilientHttpOptions}. */
 export const HTTP_RESILIENCE_OPTIONS = Symbol("HTTP_RESILIENCE_OPTIONS");

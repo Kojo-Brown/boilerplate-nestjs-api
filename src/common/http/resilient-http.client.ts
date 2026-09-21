@@ -15,6 +15,7 @@ import {
   HTTP_RESILIENCE_OPTIONS,
   isRetryableStatus,
   isSafeMethod,
+  type HttpDispatcher,
   type HttpRequestOptions,
   type ResilientHttpOptions,
 } from "./http-resilience";
@@ -41,7 +42,12 @@ export interface HttpDependencySnapshot {
 }
 
 /** The arguments the breaker's action takes, in `fire()` order. */
-type Attempt = [url: string, init: RequestInit, timeoutMs: number];
+type Attempt = [
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  dispatcher: HttpDispatcher | undefined,
+];
 
 /** Everything one dependency name owns. Created together, so they cannot diverge. */
 interface Dependency {
@@ -137,6 +143,11 @@ export class ResilientHttpClient implements OnApplicationShutdown {
     options: HttpRequestOptions = {},
   ): Promise<HttpJsonResponse> {
     const { breaker, bulkhead } = this.dependencyFor(dependency);
+    // Resolved once per call rather than per attempt: a rotation mid-ladder
+    // would otherwise send two attempts of one request through two dispatchers,
+    // and the material a retry presents should be the material its first
+    // attempt did. The next call picks up the new one.
+    const dispatcher = this.options.dispatcherFor?.(url);
     const attemptTimeoutMs = options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
     const budgetMs = options.deadlineMs ?? this.options.deadlineMs;
     const deadline = this.options.now() + budgetMs;
@@ -181,7 +192,7 @@ export class ResilientHttpClient implements OnApplicationShutdown {
           // which throws `ERR_OUT_OF_RANGE` on a fractional delay — and a
           // monotonic clock reads in fractions of a millisecond.
           const timeoutMs = Math.max(1, Math.floor(Math.min(attemptTimeoutMs, attemptBudgetMs)));
-          return breaker.fire(url, init, timeoutMs);
+          return breaker.fire(url, init, timeoutMs, dispatcher);
         }, remainingMs);
       } catch (caught) {
         // The budget is spent, and the ladder is not a way to get more of it.
@@ -342,8 +353,9 @@ async function attemptRequest(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  dispatcher: HttpDispatcher | undefined,
 ): Promise<HttpJsonResponse> {
-  const response = await requestJson(url, init, timeoutMs);
+  const response = await requestJson(url, init, timeoutMs, dispatcher);
   if (!response.ok && isRetryableStatus(response.status)) {
     throw new RetryableResponseError(response);
   }

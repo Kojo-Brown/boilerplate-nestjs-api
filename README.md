@@ -239,6 +239,16 @@ docker-compose up        # postgres + redis + api
   on `style-src` and nothing on `script-src`, and why the
   HSTS preload combination is checked by the config module instead of by
   hstspreload.org.
+- [docs/mtls.md](./docs/mtls.md) — mutual TLS for service-to-service calls:
+  why the peer's identity is a SAN and never a common name, the certificate
+  whose single DNS value contains the text of another entry (and what Node does
+  about it), why authentication by the trust anchor is not authorisation, what
+  `MTLS_ALLOW_UNAUTHENTICATED_PROBES` really costs, why the outbound half needs
+  a dispatcher per peer, why a SPIFFE identity skips the hostname check, and
+  the rotation notes — why the files are polled rather than watched, why a
+  half-written rotation keeps the material in use, why a rotation reaches the
+  next connection and not the current ones, and the three-step order for
+  rotating a CA without an outage.
 
 ## Testing
 

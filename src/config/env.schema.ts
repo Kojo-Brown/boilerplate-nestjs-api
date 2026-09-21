@@ -6,6 +6,7 @@ import { MESSAGE_BROKER_NAMES } from "@/messaging/ports";
 import { OUTBOX_PUBLISHER_NAMES } from "@/outbox/ports";
 import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
+import { refineMtlsEnv, mtlsEnvShape } from "@/common/mtls/mtls.env";
 import { refineSecurityEnv, securityEnvShape } from "@/common/security/security.env";
 import { refineTelemetryEnv, telemetryEnvShape } from "@/telemetry/telemetry.env";
 import { WORKER_POOL_NAMES } from "@/workers/ports";
@@ -691,6 +692,14 @@ export const envSchema = z
      * header. See `docs/security-headers.md`.
      */
     ...securityEnvShape,
+
+    /**
+     * Mutual TLS, spread in for the third time on the same argument: the rules
+     * about what a peer identity is belong next to the code that checks one,
+     * and `main.ts` reads these variables before `ConfigService` exists — so
+     * the declaration has to be shareable. See `docs/mtls.md`.
+     */
+    ...mtlsEnvShape,
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -711,6 +720,11 @@ export const envSchema = z
     // (preload against max-age, a wildcard allowlist against credentials) and
     // every one of them fails silently at runtime rather than loudly.
     refineSecurityEnv(env, env.NODE_ENV, ctx);
+
+    // The mTLS rules, for a sharper version of the same reason: a wrong value
+    // here fails during a handshake, on somebody else's socket, as an alert
+    // that names neither the file nor the setting that is wrong.
+    refineMtlsEnv(env, env.NODE_ENV, ctx);
 
     /**
      * Selecting S3 without its credentials is a deployment that boots happily

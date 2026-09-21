@@ -9,6 +9,7 @@ export {
 export { HTTP_RESILIENCE_OPTIONS, isRetryableStatus, isSafeMethod } from "./http-resilience";
 export type {
   CircuitBreakerPolicy,
+  HttpDispatcher,
   HttpRequestOptions,
   HttpResiliencePolicy,
   ResilientHttpOptions,

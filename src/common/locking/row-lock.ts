@@ -17,7 +17,12 @@ import { DeadlockDetectedError, LockUnavailableError } from "./locking.errors";
  * right choice whenever the locked row's *key* columns are not being changed.
  *
  * `update` is still correct — and required — when the row itself may be
- * deleted, which is why the refresh-token store uses it.
+ * deleted. Concretely again: `refresh_tokens` references
+ * `refresh_token_families`, so locking a family row `FOR UPDATE` to revoke it
+ * would block the insert of the successor token that rotation is issuing into
+ * it. The refresh-token store therefore takes `no-key-update` on both rows it
+ * locks — it marks a token spent and a family revoked, and neither write
+ * touches a key column.
  */
 export type RowLockStrength = "update" | "no-key-update" | "share" | "key-share";
 

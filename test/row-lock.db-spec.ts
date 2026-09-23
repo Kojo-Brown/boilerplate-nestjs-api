@@ -48,8 +48,14 @@ describe("lockRows (Postgres)", () => {
 
   async function seedToken(token: string): Promise<string> {
     const user = await client.user.create({ data: { email: uniqueEmail("lock") } });
+    const family = await client.refreshTokenFamily.create({ data: { userId: user.id } });
     await client.refreshToken.create({
-      data: { token, userId: user.id, expiresAt: new Date(Date.now() + 3_600_000) },
+      data: {
+        token,
+        userId: user.id,
+        familyId: family.id,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
     });
     return user.id;
   }
@@ -244,6 +250,12 @@ describe("lockRows (Postgres)", () => {
       strength: "update" | "no-key-update",
     ): Promise<boolean> {
       const user = await client.user.create({ data: { email: uniqueEmail("fk") } });
+      // Created before the lock is taken, and deliberately so: a refresh-token
+      // family is *also* a child of `users`, so creating one while the parent
+      // is held would be blocked by the very lock this measures — and the
+      // measurement would then be of the family insert rather than of the
+      // token insert.
+      const family = await client.refreshTokenFamily.create({ data: { userId: user.id } });
 
       let release!: () => void;
       let acquired!: () => void;
@@ -269,6 +281,7 @@ describe("lockRows (Postgres)", () => {
           data: {
             token: `child-${strength}`,
             userId: user.id,
+            familyId: family.id,
             expiresAt: new Date(Date.now() + 3_600_000),
           },
         })

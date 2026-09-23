@@ -81,7 +81,15 @@ await lockRows(tx, { table: "users", keyColumn: "id", keys: [id], strength: "no-
 Both statements are asserted against a real server in `test/row-lock.db-spec.ts`.
 **Prefer `no-key-update` when locking a row you are not deleting and whose key
 columns you are not changing** — which is almost always. Reach for `update` when
-the row may be deleted, as the refresh-token store does.
+the row may be deleted.
+
+The refresh-token store is the worked example of getting this wrong and then
+right. It used `update`, correctly, while a claim was a `DELETE`. Now that a
+claim marks `consumedAt` and a revocation marks `revokedAt`, neither lock's row
+is deleted or rekeyed — and the family row it also locks is the parent of
+`refresh_tokens`, so `FOR UPDATE` there would have blocked the insert of the
+successor token that the same rotation is about to issue. Both locks are
+`no-key-update`.
 
 ### Waiting
 
@@ -111,31 +119,44 @@ a retry.
 ## Where it is used: refresh-token rotation
 
 `POST /v1/auth/refresh` spends the presented token and issues a new pair. Only
-one caller may spend a given token, so `RefreshTokenStore.consume` is defined to
-claim it atomically:
+one caller may spend a given token, and the caller who loses has to be told
+something truthful, so `RefreshTokenStore.consume` is defined to decide both
+atomically:
 
 ```ts
-consume(token: string): Promise<ConsumedRefreshToken | null>;
+consume(token: string): Promise<RefreshTokenClaim>;
 ```
 
-`PrismaRefreshTokenStore` implements it as lock → read → delete in one
-transaction. It locks on `token` rather than on the primary key deliberately:
-the id is not known until the row is read, so locking by id would need an
-unlocked read first — and every caller would race in the gap between them.
+`PrismaRefreshTokenStore` implements it as lock token → read → lock family →
+decide → write, in one transaction. It locks on `token` rather than on the
+primary key deliberately: the id is not known until the row is read, so locking
+by id would need an unlocked read first — and every caller would race in the gap
+between them.
+
+Two locks, because two different collisions have to be ruled out. The **token**
+lock serialises callers presenting the same token; the **family** lock
+serialises callers presenting different tokens of the same family, which is how
+two replays can otherwise both find a live family and both revoke it. They are
+always taken in that order, so no two callers can hold one each and wait for the
+other's.
 
 This replaced a read-then-delete. Both requests found the row, and only the
 `DELETE` separated them, by raising `P2025` on a row the winner had already
 removed. Nothing maps that to a status, so **the loser was answered 500** where
-the truthful answer is 401. The token was single-use throughout, so this was not
+the truthful answer is 401. The token was single-use throughout, so that was not
 a replay hole — but the property lived in whichever statement happened to be
-last rather than anywhere it could be stated or tested, and `deleteMany`
-(which `logout` already uses, and which reports a count instead of raising)
-would have quietly turned one token into two live families.
+last rather than anywhere it could be stated or tested.
+
+What changed since is what the loser is _told_. Spent tokens are now kept rather
+than deleted, so a second presentation is recognisable as a replay instead of
+being answered "unknown token" — which is also the answer a typo gets. That is
+the reuse detection, and `docs/refresh-token-rotation.md` is the document for
+it.
 
 Expiry deliberately stays in `AuthService`, not the store: the store decides
 _who_ gets the row, and whether the credential is still acceptable is policy.
 An expired token is therefore spent on presentation — it is of no use to anyone,
-and leaving it behind only means writing a sweeper for rows nobody can claim.
+and leaving it claimable would only be a second chance nobody wanted to give.
 
 ## Testing this
 
@@ -158,9 +179,10 @@ The store is a port for the same reason. `RefreshTokenStore`'s contract lives in
 `src/auth/refresh-token-store.contract.ts` and runs twice: against Postgres in
 `test/refresh-token-store.db-spec.ts`, and against the in-memory double in
 `src/auth/refresh-token-store.contract.spec.ts`. The double serialises claims
-through a per-token promise chain so that it satisfies the same exclusion
-honestly — within one process, which is why it is a test double and not a
-deployable store.
+through a per-_family_ promise chain so that it satisfies the same exclusion
+honestly — keyed on the family rather than the token for the same reason the
+adapter takes the second lock, and within one process only, which is why it is a
+test double and not a deployable store.
 
 ## What this does not do
 
@@ -170,7 +192,8 @@ deployable store.
 - **No advisory locks.** `pg_advisory_xact_lock` serialises on an arbitrary
   key rather than a row, and is what you want when the thing being protected
   has no row to lock.
-- **Nothing but `refresh_tokens` uses it yet.** `lockRows` is table-agnostic;
-  the one call site is `PrismaRefreshTokenStore`.
+- **Nothing but the refresh-token tables uses it yet.** `lockRows` is
+  table-agnostic; the one call site is `PrismaRefreshTokenStore`, which locks
+  `refresh_tokens` and `refresh_token_families`.
 - **No automatic retry on deadlock.** Deliberate: a deadlock here means two
   lock orders exist, and retrying hides that.

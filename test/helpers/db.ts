@@ -56,7 +56,11 @@ export function asPrismaService(client: PrismaClient): PrismaService {
 
 /** Deletes every row, respecting the cascade from users to refresh tokens. */
 export async function truncateAll(client: PrismaClient): Promise<void> {
+  // Tokens before families before users: each is the child of the next, and
+  // deleting in this order means the cascade never has to be relied on for
+  // something a suite is about to assert the absence of.
   await client.refreshToken.deleteMany({});
+  await client.refreshTokenFamily.deleteMany({});
   await client.user.deleteMany({});
 }
 

@@ -156,6 +156,10 @@ recognisable change of format rather than a table that suddenly fails to verify.
 
 `AUDIT_ACTIONS` and `DomainEventPayloads` overlap today — both know about
 `user.registered` and `user.deleted` — and they are still separate on purpose.
+`auth.refresh_token_reuse_detected` is the case that shows why: nothing
+subscribes to a replayed refresh token, and the reason to record one is that
+somebody will ask about it long after every message queue has been drained.
+See `docs/refresh-token-rotation.md`.
 
 A domain event is an announcement, and its payload is a contract with
 subscribers: it is consumed, and the outbox row behind it is eventually pruned.

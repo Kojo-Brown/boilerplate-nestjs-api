@@ -22,6 +22,7 @@
 export const AUDIT_ACTIONS = {
   "user.registered": "user",
   "user.deleted": "user",
+  "auth.refresh_token_reuse_detected": "refresh_token_family",
 } as const satisfies Record<string, string>;
 
 export type AuditActionName = keyof typeof AUDIT_ACTIONS;
@@ -38,6 +39,7 @@ export type AuditActionName = keyof typeof AUDIT_ACTIONS;
 export interface AuditActionDetails {
   "user.registered": UserRegisteredAudit;
   "user.deleted": UserDeletedAudit;
+  "auth.refresh_token_reuse_detected": RefreshTokenReuseAudit;
 }
 
 /** An account was created, by whatever route. */
@@ -56,6 +58,32 @@ export interface UserRegisteredAudit {
  */
 export interface UserDeletedAudit {
   readonly email: string;
+}
+
+/**
+ * A spent refresh token was presented again, and its whole family was revoked.
+ *
+ * The resource is the *family*, not the user: it is the thing that was revoked,
+ * and "everything that happened to this session" is the question an
+ * investigator asks next. The account is here in the details instead, because
+ * an entry naming the user as its resource would sit in the same index as the
+ * things that user did — and this is a thing done *to* them, quite possibly by
+ * somebody else.
+ *
+ * For the same reason the entry is recorded with no actor. Two parties held
+ * this token by the time it came back, and nothing in the request says which
+ * one presented it; naming the account holder would be recording a guess as
+ * evidence.
+ */
+export interface RefreshTokenReuseAudit {
+  /** The account the revoked session belonged to. */
+  readonly userId: string;
+  /**
+   * How many unspent tokens the revocation took away — the size of the
+   * disruption to the legitimate client, and the one number that says whether
+   * a live chain was cut or a dead one was tidied up.
+   */
+  readonly revokedTokens: number;
 }
 
 /**

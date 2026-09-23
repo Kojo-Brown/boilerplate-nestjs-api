@@ -66,7 +66,11 @@ export class AuthController {
   @ApiOperation({
     summary: "Rotate refresh token",
     description:
-      "Exchanges a valid refresh token for a new token pair. The submitted token is immediately invalidated (single-use).",
+      "Exchanges a valid refresh token for a new token pair. The submitted token is immediately " +
+      "invalidated (single-use), and presenting an already-exchanged one revokes the whole " +
+      "session — including the replacement issued in its place. Clients must store the new " +
+      "refresh token before treating the request as complete, and must never retry a refresh " +
+      "with a token they have already exchanged. See docs/refresh-token-rotation.md.",
   })
   @ApiOkResponse({ type: ApiEnvelopeOf(AuthTokensDto), description: "Tokens rotated successfully" })
   @ApiCommonErrors()
@@ -79,8 +83,13 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiJwtAuth()
-  @ApiOperation({ summary: "Log out", description: "Revokes the provided refresh token." })
-  @ApiNoContentResponse({ description: "Token revoked — session ended" })
+  @ApiOperation({
+    summary: "Log out",
+    description:
+      "Ends the session the token belongs to. Every token in the chain — the one presented and " +
+      "every one it was rotated from — stops being accepted.",
+  })
+  @ApiNoContentResponse({ description: "Session ended" })
   logout(@Body() dto: RefreshTokenDto) {
     return this.auth.logout(dto.refreshToken);
   }

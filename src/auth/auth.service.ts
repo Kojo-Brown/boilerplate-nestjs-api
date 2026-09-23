@@ -1,4 +1,10 @@
-import { Inject, Injectable, UnauthorizedException, ConflictException } from "@nestjs/common";
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { CommandBus, QueryBus } from "@nestjs/cqrs";
@@ -11,7 +17,7 @@ import { TransactionalOutbox } from "@/outbox";
 import { AuditLog } from "@/audit";
 import { UNCONDITIONAL } from "@/common/concurrency";
 import { REFRESH_TOKEN_STORE } from "./ports";
-import type { RefreshTokenStore } from "./ports";
+import type { RefreshTokenReuse, RefreshTokenStore } from "./ports";
 import type { Role, User } from "@prisma/client";
 import type { RegisterDto } from "./dto/register.dto";
 import type { LoginDto } from "./dto/login.dto";
@@ -31,6 +37,8 @@ import type { GoogleProfile } from "./strategies/google.strategy";
  */
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly commands: CommandBus,
     private readonly queries: QueryBus,
@@ -69,34 +77,101 @@ export class AuthService {
   }
 
   /**
-   * Rotates a refresh token: the presented one is spent, a new pair is issued.
+   * Rotates a refresh token: the presented one is spent, a new pair is issued
+   * into the same family.
    *
-   * The claim is delegated to the store because it has to be atomic, and this
-   * used to read the row, check it, and then delete it by id. Two requests
-   * carrying the same token — a client retrying over a flaky connection, most
-   * often — both passed the check, and only the `DELETE` separated them, by
-   * raising `P2025` on a row the winner had already removed. Nothing maps that
-   * to a status, so the loser was answered **500** where the truthful answer is
-   * 401: the token really was spent, just not by them.
+   * Every rejection answers "Invalid refresh token", whatever the store found.
+   * The four outcomes are worth telling apart *here* — one of them revokes a
+   * session and writes to the audit log — and are worth nothing to the caller:
+   * a client cannot act on the difference, and an attacker probing stolen
+   * tokens would read "revoked" as confirmation that the token was real and
+   * "unknown" as confirmation that it was not. The expired case keeps its own
+   * message because it is the one failure a legitimate client causes by simply
+   * waiting, and telling it apart is the difference between "sign in again" and
+   * a support ticket.
    *
-   * The token stayed single-use throughout, so this is a fix to what a losing
-   * client is told rather than to a replay hole. What has changed is where the
-   * property lives: it was an incidental consequence of `delete`-by-id, and it
-   * is now the store's stated contract, asserted against every implementation.
-   *
-   * Expiry stays here rather than in the store. The store decides *who* gets
-   * the row; whether the credential is still acceptable is this service's
-   * policy, and an expired token is spent on presentation either way — it is
-   * of no further use to anyone, and leaving it behind would only mean writing
-   * a sweeper for rows nobody can use.
+   * `reused` is the case this method exists for. By the time a spent token is
+   * presented again, two parties have held it and nothing in the request says
+   * which one is presenting it now — so the family is already revoked by the
+   * time this runs, including the successor the legitimate client is holding.
+   * That is the trade `docs/refresh-token-rotation.md` argues for and states
+   * the cost of: a client that retries a refresh over a flaky connection
+   * without persisting the new token first will be signed out.
    */
   async refresh(token: string) {
-    const claimed = await this.refreshTokens.consume(token);
-    if (!claimed) throw new UnauthorizedException("Invalid refresh token");
-    if (claimed.expiresAt < new Date()) throw new UnauthorizedException("Refresh token expired");
-    return this.issueTokens(claimed.userId, claimed.email, claimed.role);
+    const claim = await this.refreshTokens.consume(token);
+
+    switch (claim.outcome) {
+      case "unknown":
+      case "revoked":
+        throw new UnauthorizedException("Invalid refresh token");
+      case "reused":
+        await this.recordReuse(claim.reuse);
+        throw new UnauthorizedException("Invalid refresh token");
+      case "claimed": {
+        if (claim.token.expiresAt < new Date()) {
+          throw new UnauthorizedException("Refresh token expired");
+        }
+        return this.issueTokens(
+          claim.token.userId,
+          claim.token.email,
+          claim.token.role,
+          claim.token.familyId,
+        );
+      }
+    }
   }
 
+  /**
+   * Leaves evidence that a session was revoked as a replay, without letting
+   * that failing turn a 401 into a 500.
+   *
+   * The security response has already happened — the store revoked the family
+   * inside the transaction that detected the replay, and nothing here can undo
+   * or complete it. What is left is the record, and a record that cannot be
+   * written must not take the rejection down with it: the caller would get a
+   * 500, which reads as "try again" to a client and as "this endpoint is
+   * fragile" to an attacker. So the append is attempted, and its failure is
+   * logged at `error` with the same facts the entry would have carried, which
+   * is the fallback an operator can still find.
+   *
+   * Recorded with no actor, and in its own transaction: there is no unit of
+   * work to join here, because the write this is evidence of committed in the
+   * store before this method was reached. See `RefreshTokenReuseAudit` for why
+   * the account is not named as the actor.
+   */
+  private async recordReuse(reuse: RefreshTokenReuse): Promise<void> {
+    this.logger.warn(
+      `Refresh-token reuse detected: family=${reuse.familyId} user=${reuse.userId} ` +
+        `revokedTokens=${reuse.revokedTokens}. The session has been revoked.`,
+    );
+
+    try {
+      await this.transactions.run((tx) =>
+        this.audit.record(
+          tx,
+          "auth.refresh_token_reuse_detected",
+          reuse.familyId,
+          { userId: reuse.userId, revokedTokens: reuse.revokedTokens },
+          { actor: null },
+        ),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to record refresh-token reuse for family=${reuse.familyId} ` +
+          `user=${reuse.userId}: the session was still revoked.`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  /**
+   * Ends the session, not just the token.
+   *
+   * `revoke` takes the whole family down, which is what signing out means: the
+   * chain is finished with, and every token in it — including the spent ones,
+   * which are now kept rather than deleted — must stop being a credential.
+   */
   async logout(token: string): Promise<void> {
     await this.refreshTokens.revoke(token);
   }
@@ -189,13 +264,21 @@ export class AuthService {
     );
   }
 
-  private async issueTokens(userId: string, email: string, role: Role) {
+  /**
+   * Mints a pair, continuing `familyId` when this is a rotation and starting a
+   * family when it is a fresh sign-in.
+   *
+   * The distinction is the whole mechanism: a rotation that started a new
+   * family every time would leave every previous token in a chain of its own,
+   * with nothing for a replay to revoke but the one token that was replayed.
+   */
+  private async issueTokens(userId: string, email: string, role: Role, familyId?: string) {
     const payload = { sub: userId, email, role };
     const accessToken = this.jwt.sign(payload);
     const refreshExpiry = this.config.get("JWT_REFRESH_EXPIRY", "7d");
     const expiresAt = new Date(Date.now() + ms(refreshExpiry));
     const refreshToken = crypto.randomUUID();
-    await this.refreshTokens.issue({ token: refreshToken, userId, expiresAt });
+    await this.refreshTokens.issue({ token: refreshToken, userId, expiresAt, familyId });
     return { accessToken, refreshToken, expiresIn: 900 };
   }
 }

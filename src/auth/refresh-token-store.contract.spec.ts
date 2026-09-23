@@ -18,9 +18,10 @@ const ADA: TokenOwner = { id: "user-1", email: "ada@example.test", role: Role.US
  *
  * `PrismaRefreshTokenStore` is held to the same contract by
  * `test/refresh-token-store.db-spec.ts`, which needs a real Postgres: the
- * exclusion it provides *is* `SELECT … FOR UPDATE`, and no fake `PrismaService`
- * could stand in for it without reimplementing the property under test. The
- * adapter's absence from this suite is deliberate, not an omission.
+ * exclusion it provides *is* `SELECT … FOR NO KEY UPDATE`, and no fake
+ * `PrismaService` could stand in for it without reimplementing the property
+ * under test. The adapter's absence from this suite is deliberate, not an
+ * omission.
  */
 describeRefreshTokenStoreContract("InMemoryRefreshTokenStore", () =>
   Promise.resolve({ store: storeWithOwner(ADA).store, owner: ADA }),
@@ -38,17 +39,42 @@ describe("InMemoryRefreshTokenStore", () => {
     expect(store.has("t")).toBe(false);
   });
 
-  it("resolves with null, and drops the token, when its owner is gone", async () => {
+  it("reports why a family was revoked", async () => {
+    // The reason is what tells an operator reading the table apart a sign-out
+    // from an attack, so the double has to carry it too — the e2e suite runs
+    // the whole application on this store and would otherwise be unable to see
+    // the difference at all.
+    const { store } = storeWithOwner(ADA);
+    await store.issue({ token: "t", userId: ADA.id, expiresAt: expiresAt() });
+
+    expect(store.revocationOf("t")).toBeNull();
+    await store.consume("t");
+    await store.consume("t");
+    expect(store.revocationOf("t")).toBe("REUSE_DETECTED");
+  });
+
+  it("keeps the first revocation reason when a sign-out follows a replay", async () => {
+    const { store } = storeWithOwner(ADA);
+    await store.issue({ token: "t", userId: ADA.id, expiresAt: expiresAt() });
+    await store.consume("t");
+    await store.consume("t");
+
+    await store.revoke("t");
+
+    expect(store.revocationOf("t")).toBe("REUSE_DETECTED");
+  });
+
+  it("resolves with unknown, and drops the family, when its owner is gone", async () => {
     const { store, owners } = storeWithOwner(ADA);
     await store.issue({ token: "t", userId: ADA.id, expiresAt: expiresAt() });
 
     owners.delete(ADA.id);
 
-    await expect(store.consume("t")).resolves.toBeNull();
+    await expect(store.consume("t")).resolves.toEqual({ outcome: "unknown" });
     expect(store.has("t")).toBe(false);
   });
 
-  it("drops the claim chain for a token once it drains", async () => {
+  it("drops the claim chain for a family once it drains", async () => {
     const { store } = storeWithOwner(ADA);
 
     await store.consume("absent-1");
@@ -59,8 +85,8 @@ describe("InMemoryRefreshTokenStore", () => {
     // synchronously.
     await new Promise((resolve) => setImmediate(resolve));
 
-    // A per-token entry that outlives its claim is an unbounded leak on a store
-    // that sees a new token on every login.
+    // A per-family entry that outlives its claim is an unbounded leak on a
+    // store that sees a new family on every login.
     const claims = (store as unknown as { claims: Map<string, unknown> }).claims;
     expect(claims.size).toBe(0);
   });

@@ -40,6 +40,17 @@ function makeMockUserCreate(result?: Partial<User>) {
     }));
 }
 
+/**
+ * The family delegate the factory reaches for first.
+ *
+ * A token has to name a family that exists — the foreign key says so — so the
+ * factory creates one before the token. Stubbing it here keeps these
+ * assertions about what is passed to `refreshToken.create`.
+ */
+function mockFamily() {
+  return { create: jest.fn().mockResolvedValue({ id: "mock-family-id" }) };
+}
+
 function makeMockRefreshTokenCreate(result?: Partial<RefreshToken>) {
   return jest
     .fn()
@@ -228,22 +239,23 @@ describe("RefreshTokenFactory", () => {
   describe("createRefreshToken", () => {
     it("calls prisma.refreshToken.create with the built data", async () => {
       const mockCreate = makeMockRefreshTokenCreate();
-      const prisma = { refreshToken: { create: mockCreate } };
+      const prisma = { refreshToken: { create: mockCreate }, refreshTokenFamily: mockFamily() };
 
       const rt = await createRefreshToken(prisma, TEST_USER_ID);
 
       expect(mockCreate).toHaveBeenCalledTimes(1);
-      const call = firstCallArg<{ data: { token: string; userId: string; expiresAt: Date } }>(
-        mockCreate,
-      );
+      const call = firstCallArg<{
+        data: { token: string; userId: string; familyId: string; expiresAt: Date };
+      }>(mockCreate);
       expect(call.data.userId).toBe(TEST_USER_ID);
+      expect(call.data.familyId).toBe("mock-family-id");
       expect(typeof call.data.token).toBe("string");
       expect(rt.id).toBe("mock-rt-id");
     });
 
     it("does not pass id or createdAt to prisma", async () => {
       const mockCreate = makeMockRefreshTokenCreate();
-      const prisma = { refreshToken: { create: mockCreate } };
+      const prisma = { refreshToken: { create: mockCreate }, refreshTokenFamily: mockFamily() };
 
       await createRefreshToken(prisma, TEST_USER_ID);
 
@@ -254,7 +266,7 @@ describe("RefreshTokenFactory", () => {
 
     it("passes token override through to prisma", async () => {
       const mockCreate = makeMockRefreshTokenCreate();
-      const prisma = { refreshToken: { create: mockCreate } };
+      const prisma = { refreshToken: { create: mockCreate }, refreshTokenFamily: mockFamily() };
       const customToken = "custom-refresh-token-value";
 
       await createRefreshToken(prisma, TEST_USER_ID, { token: customToken });

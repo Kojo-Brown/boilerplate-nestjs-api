@@ -4,6 +4,7 @@ import { createTestApp, type RecordingEmailQueue, type TestApp } from "./helpers
 import type { InMemoryPrismaService } from "./helpers/in-memory-prisma";
 import type { InMemoryRefreshTokenStore } from "@/test-utils/in-memory-refresh-token.store";
 import type { InMemoryOutboxStore } from "@/test-utils/in-memory-outbox.store";
+import type { InMemoryAuditLogStore } from "@/test-utils/in-memory-audit-log.store";
 import { OutboxRelayService } from "@/outbox";
 
 describe("Auth (e2e)", () => {
@@ -12,6 +13,7 @@ describe("Auth (e2e)", () => {
   let emails: RecordingEmailQueue;
   let refreshTokens: InMemoryRefreshTokenStore;
   let outbox: InMemoryOutboxStore;
+  let auditLog: InMemoryAuditLogStore;
   let drainOutbox: TestApp["drainOutbox"];
   let relay: OutboxRelayService;
 
@@ -25,6 +27,7 @@ describe("Auth (e2e)", () => {
     emails = fixture.emails;
     refreshTokens = fixture.refreshTokens;
     outbox = fixture.outbox;
+    auditLog = fixture.auditLog;
     drainOutbox = fixture.drainOutbox;
     relay = app.get(OutboxRelayService);
   });
@@ -38,6 +41,7 @@ describe("Auth (e2e)", () => {
     emails.reset();
     refreshTokens.reset();
     outbox.reset();
+    auditLog.reset();
   });
 
   const TEST_EMAIL = "e2e@example.com";
@@ -313,6 +317,103 @@ describe("Auth (e2e)", () => {
       expect(refreshTokens.has("expired-and-spent")).toBe(false);
     });
 
+    it("revokes the whole family when a spent token is presented again", async () => {
+      // The item this endpoint's hardening is for, over HTTP: rotate once, let
+      // the old token come back, and the successor the honest client is
+      // holding stops working too. There is no way to tell the honest client
+      // from the thief at this point, and leaving a chain the thief may have
+      // stolen alive is the worse of the two mistakes.
+      const rotated = await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(200);
+      const successor = rotated.body.data.refreshToken as string;
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(401);
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken: successor })
+        .expect(401);
+      expect(refreshTokens.revocationOf(successor)).toBe("REUSE_DETECTED");
+    });
+
+    it("records the replay in the audit log, with no actor", async () => {
+      const rotated = await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(200);
+      expect(rotated.body.data.refreshToken).toBeTruthy();
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(401);
+
+      const entries = auditLog.entries.filter(
+        (entry) => entry.action === "auth.refresh_token_reuse_detected",
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        resourceType: "refresh_token_family",
+        details: { revokedTokens: 1 },
+        actorId: null,
+      });
+    });
+
+    it("leaves the account's other sessions signed in", async () => {
+      // One session was compromised, not the account. Signing every device out
+      // is a bigger response than the evidence supports.
+      const other = await request(app.getHttpServer())
+        .post("/v1/auth/login")
+        .send({ email: TEST_EMAIL, password: TEST_PASSWORD })
+        .expect(200);
+      const otherToken = other.body.data.refreshToken as string;
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(200);
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(401);
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken: otherToken })
+        .expect(200);
+    });
+
+    it("reports one replay however many times the token comes back", async () => {
+      // An attacker who keeps presenting a dead token must not be able to
+      // write one audit entry per request.
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(401);
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(401);
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(401);
+
+      expect(
+        auditLog.entries.filter((entry) => entry.action === "auth.refresh_token_reuse_detected"),
+      ).toHaveLength(1);
+    });
+
     it("answers the loser of a concurrent rotation with 401, not 500", async () => {
       // Both requests are in flight before either is awaited. Exactly one may
       // rotate; the other has to be told its token is invalid. Reading the row
@@ -325,6 +426,19 @@ describe("Auth (e2e)", () => {
 
       const statuses = responses.map((response) => response.status).sort();
       expect(statuses).toEqual([200, 401]);
+    });
+
+    it("treats the loser of that race as a replay, because it cannot know better", async () => {
+      // The honest cost of the strict reading, stated where it is felt: a
+      // client that retries a refresh before it has stored the new token is
+      // signed out. `docs/refresh-token-rotation.md` says what a client has to
+      // do instead, and why no grace window is offered.
+      await Promise.all([
+        request(app.getHttpServer()).post("/v1/auth/refresh").send({ refreshToken }),
+        request(app.getHttpServer()).post("/v1/auth/refresh").send({ refreshToken }),
+      ]);
+
+      expect(refreshTokens.revocationOf(refreshToken)).toBe("REUSE_DETECTED");
     });
   });
 
@@ -349,8 +463,32 @@ describe("Auth (e2e)", () => {
         .send({ refreshToken })
         .expect(204);
 
-      // Token is now gone from the store
+      // The token is no longer a credential — and the reason is recorded as a
+      // sign-out, not as an attack.
       expect(refreshTokens.has(refreshToken)).toBe(false);
+      expect(refreshTokens.revocationOf(refreshToken)).toBe("LOGOUT");
+    });
+
+    it("ends the session, so an earlier token in the chain is dead too", async () => {
+      const rotated = await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(200);
+      const successor = rotated.body.data.refreshToken as string;
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/logout")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ refreshToken: successor })
+        .expect(204);
+
+      await request(app.getHttpServer())
+        .post("/v1/auth/refresh")
+        .send({ refreshToken })
+        .expect(401);
+      // And a token replayed after a sign-out is not reported as an attack:
+      // the family was already over.
+      expect(refreshTokens.revocationOf(successor)).toBe("LOGOUT");
     });
 
     it("returns 401 without a bearer token", async () => {

@@ -4,7 +4,13 @@ import type { RefreshToken } from "@prisma/client";
 interface RefreshTokenCreateData {
   token: string;
   userId: string;
+  familyId: string;
   expiresAt: Date;
+  consumedAt: Date | null;
+}
+
+interface RefreshTokenFamilyDelegate {
+  create(args: { data: { userId: string } }): Promise<{ id: string }>;
 }
 
 interface PrismaRefreshTokenDelegate {
@@ -13,6 +19,7 @@ interface PrismaRefreshTokenDelegate {
 
 interface RefreshTokenPrismaClient {
   refreshToken: PrismaRefreshTokenDelegate;
+  refreshTokenFamily: RefreshTokenFamilyDelegate;
 }
 
 function randomCuid(): string {
@@ -25,6 +32,9 @@ export interface RefreshTokenOverrides {
   expiresAt?: Date;
   id?: string;
   createdAt?: Date;
+  familyId?: string;
+  /** Set it to build a token that has already been rotated away — a replay. */
+  consumedAt?: Date | null;
 }
 
 export function buildRefreshToken(
@@ -35,7 +45,12 @@ export function buildRefreshToken(
     id: randomCuid(),
     token: faker.string.uuid(),
     userId,
+    // A family of its own by default: a built token stands for a fresh
+    // sign-in, and two unrelated fixtures sharing a family would make a replay
+    // of one revoke the other.
+    familyId: randomCuid(),
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    consumedAt: null,
     createdAt: new Date(),
     ...overrides,
   };
@@ -57,5 +72,10 @@ export async function createRefreshToken(
   overrides: RefreshTokenOverrides = {},
 ): Promise<RefreshToken> {
   const { id: _id, createdAt: _c, ...data } = buildRefreshToken(userId, overrides);
-  return prisma.refreshToken.create({ data });
+  // The family comes first, and is real: a token whose `familyId` names nothing
+  // is refused by the foreign key at the call site, with a constraint name
+  // instead of an explanation.
+  const familyId =
+    overrides.familyId ?? (await prisma.refreshTokenFamily.create({ data: { userId } })).id;
+  return prisma.refreshToken.create({ data: { ...data, familyId } });
 }

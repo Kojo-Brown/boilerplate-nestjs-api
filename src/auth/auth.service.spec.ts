@@ -363,28 +363,61 @@ describe("AuthService", () => {
   });
 
   describe("refresh", () => {
-    it("throws UnauthorizedException when the token could not be claimed", async () => {
-      mockRefreshTokens.consume.mockResolvedValue(null);
+    const live = (familyId = "family-1") => ({
+      outcome: "claimed" as const,
+      token: {
+        userId: "user-1",
+        email: mockUser.email,
+        role: Role.USER,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        familyId,
+      },
+    });
+
+    it("throws UnauthorizedException when the token is unknown", async () => {
+      mockRefreshTokens.consume.mockResolvedValue({ outcome: "unknown" });
 
       await expect(service.refresh("bad-token")).rejects.toThrow(UnauthorizedException);
     });
 
-    it("issues nothing when the claim came back empty", async () => {
+    it("issues nothing when the token could not be claimed", async () => {
       // A rejected refresh must not mint a replacement — the losing side of a
       // rotation race lands here, and handing it a token family would be the
       // exact bug `consume` exists to prevent.
-      mockRefreshTokens.consume.mockResolvedValue(null);
+      mockRefreshTokens.consume.mockResolvedValue({ outcome: "unknown" });
 
       await expect(service.refresh("bad-token")).rejects.toThrow(UnauthorizedException);
       expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
     });
 
+    it("throws UnauthorizedException for a token whose family is revoked", async () => {
+      mockRefreshTokens.consume.mockResolvedValue({ outcome: "revoked" });
+
+      await expect(service.refresh("dead-session")).rejects.toThrow(UnauthorizedException);
+      expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
+    });
+
+    it("says the same thing for an unknown token as for a revoked one", async () => {
+      // Telling them apart would confirm to whoever is probing that a token
+      // they hold was real. A client can act on neither.
+      mockRefreshTokens.consume.mockResolvedValue({ outcome: "unknown" });
+      const unknown = await service.refresh("a").catch((error: Error) => error.message);
+      mockRefreshTokens.consume.mockResolvedValue({ outcome: "revoked" });
+      const revoked = await service.refresh("b").catch((error: Error) => error.message);
+
+      expect(unknown).toBe(revoked);
+    });
+
     it("throws UnauthorizedException for an expired token", async () => {
       mockRefreshTokens.consume.mockResolvedValue({
-        userId: "user-1",
-        email: mockUser.email,
-        role: Role.USER,
-        expiresAt: new Date(Date.now() - 1_000),
+        outcome: "claimed",
+        token: {
+          userId: "user-1",
+          email: mockUser.email,
+          role: Role.USER,
+          expiresAt: new Date(Date.now() - 1_000),
+          familyId: "family-1",
+        },
       });
 
       await expect(service.refresh("expired")).rejects.toThrow(UnauthorizedException);
@@ -392,12 +425,7 @@ describe("AuthService", () => {
     });
 
     it("claims the presented token and issues a new one (rotation)", async () => {
-      mockRefreshTokens.consume.mockResolvedValue({
-        userId: "user-1",
-        email: mockUser.email,
-        role: Role.USER,
-        expiresAt: new Date(Date.now() + 86_400_000),
-      });
+      mockRefreshTokens.consume.mockResolvedValue(live());
 
       const result = await service.refresh("valid-token");
 
@@ -408,17 +436,77 @@ describe("AuthService", () => {
       );
     });
 
+    it("issues the replacement into the family the spent token came from", async () => {
+      // The chain is the unit a replay revokes. A rotation that started a new
+      // family each time would leave every previous token unreachable from the
+      // one that was replayed, and the detection would revoke nothing.
+      mockRefreshTokens.consume.mockResolvedValue(live("family-42"));
+
+      await service.refresh("valid-token");
+
+      expect(mockRefreshTokens.issue).toHaveBeenCalledWith(
+        expect.objectContaining({ familyId: "family-42" }),
+      );
+    });
+
     it("issues a token that is not the one just spent", async () => {
-      mockRefreshTokens.consume.mockResolvedValue({
-        userId: "user-1",
-        email: mockUser.email,
-        role: Role.USER,
-        expiresAt: new Date(Date.now() + 86_400_000),
-      });
+      mockRefreshTokens.consume.mockResolvedValue(live());
 
       const result = await service.refresh("valid-token");
 
       expect(result.refreshToken).not.toBe("valid-token");
+    });
+
+    describe("when the store reports a replay", () => {
+      const reused = {
+        outcome: "reused" as const,
+        reuse: { familyId: "family-1", userId: "user-1", revokedTokens: 1 },
+      };
+
+      it("refuses the request and issues nothing", async () => {
+        mockRefreshTokens.consume.mockResolvedValue(reused);
+
+        await expect(service.refresh("replayed")).rejects.toThrow(UnauthorizedException);
+        expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
+      });
+
+      it("records the detection in the audit log", async () => {
+        mockRefreshTokens.consume.mockResolvedValue(reused);
+
+        await expect(service.refresh("replayed")).rejects.toThrow(UnauthorizedException);
+
+        expect(recorded()).toEqual([
+          {
+            action: "auth.refresh_token_reuse_detected",
+            resourceId: "family-1",
+            details: { userId: "user-1", revokedTokens: 1 },
+            // No actor: two parties held this token by the time it came back,
+            // and naming the account holder would record a guess as evidence.
+            actorId: null,
+            actorRole: null,
+          },
+        ]);
+      });
+
+      it("still refuses the request when the audit append fails", async () => {
+        // The family was revoked inside the store's transaction, before this
+        // service saw anything. Losing the record must not turn the rejection
+        // into a 500, which reads as "try again".
+        mockRefreshTokens.consume.mockResolvedValue(reused);
+        jest.spyOn(auditStore, "append").mockRejectedValue(new Error("audit log unavailable"));
+
+        await expect(service.refresh("replayed")).rejects.toThrow(UnauthorizedException);
+      });
+
+      it("announces nothing on the event bus", async () => {
+        // A replay is evidence, not an announcement: the outbox is delivered
+        // at-least-once and swept, and this has to be readable years later.
+        mockRefreshTokens.consume.mockResolvedValue(reused);
+
+        await expect(service.refresh("replayed")).rejects.toThrow(UnauthorizedException);
+
+        expect(staged()).toEqual([]);
+      });
     });
   });
 

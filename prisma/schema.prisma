@@ -25,22 +25,82 @@ model User {
   /// allowed to overwrite a change it never saw.
   version Int @default(0)
 
-  refreshTokens RefreshToken[]
-  orders        Order[]
+  refreshTokens         RefreshToken[]
+  refreshTokenFamilies  RefreshTokenFamily[]
+  orders                Order[]
 
   @@map("users")
+}
+
+/// One sign-in, and every refresh token it has rotated through.
+///
+/// The family exists so that a *replay* has something to revoke. Rotation on
+/// its own protects nothing once a token has been stolen: the thief and the
+/// owner both hold a usable credential, and whichever presents it second is
+/// merely told "unknown token" and logs in again — so the thief keeps a live
+/// chain and nobody is any the wiser. Detection is the other half, and it
+/// needs two things this row provides: spent tokens that are *kept* rather
+/// than deleted (a deleted token replays as "unknown", which is
+/// indistinguishable from a typo), and one place to record that the whole
+/// chain is finished. See docs/refresh-token-rotation.md.
+model RefreshTokenFamily {
+  id     String @id @default(cuid())
+  userId String
+
+  createdAt DateTime @default(now())
+
+  /// When the family was killed, or null while it is live. Revocation is one
+  /// flag here rather than a column on every token, so revoking is a single
+  /// write that cannot half-apply and cannot race a token being issued
+  /// alongside it.
+  revokedAt     DateTime?
+  revokedReason RefreshTokenRevocation?
+
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokens RefreshToken[]
+
+  /// "End every session this account has" — the read behind an account-wide
+  /// revocation, and the one an operator makes after a breach.
+  @@index([userId, revokedAt])
+  @@map("refresh_token_families")
+}
+
+enum RefreshTokenRevocation {
+  /// A spent token was presented again. Treated as theft, because from here it
+  /// is indistinguishable from it.
+  REUSE_DETECTED
+  /// The account signed out. Ends the session for the same reason: a token the
+  /// user has finished with must not be usable if it leaked.
+  LOGOUT
 }
 
 model RefreshToken {
   id        String   @id @default(cuid())
   token     String   @unique
   userId    String
+  familyId  String
   expiresAt DateTime
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// When this token was exchanged for its successor, or null while it is
+  /// still the family's live one.
+  ///
+  /// The row survives being spent, and that is the whole mechanism: a second
+  /// presentation of a token with this column set is a replay, and the only
+  /// honest reading of a replay is that two parties hold the same credential.
+  /// Deleting the row on rotation — which is what this table used to do —
+  /// throws away the one fact the detection is made of.
+  consumedAt DateTime?
+
+  user   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  family RefreshTokenFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  /// Counting a family's live tokens, and cascading a delete from the family.
+  @@index([familyId])
+  /// `prune` deletes by expiry across every family; without this it is a
+  /// sequential scan over a table that only ever grows.
+  @@index([expiresAt])
   @@map("refresh_tokens")
 }
 

@@ -249,6 +249,15 @@ docker-compose up        # postgres + redis + api
   half-written rotation keeps the material in use, why a rotation reaches the
   next connection and not the current ones, and the three-step order for
   rotating a CA without an outage.
+- [docs/refresh-token-rotation.md](./docs/refresh-token-rotation.md) — refresh
+  token families and reuse detection: why rotation on its own shortens the life
+  of a token and not of a compromise, why a spent token is kept rather than
+  deleted (a deleted one replays as "unknown", which is what a typo looks like),
+  why a replay revokes the whole chain including the successor the honest client
+  is holding, why no grace window is offered and what a client has to do
+  instead, why the detection is reported once per family and recorded with no
+  actor, why signing out ends the session rather than the token, and why
+  retention is now something you have to schedule.
 
 ## Testing
 

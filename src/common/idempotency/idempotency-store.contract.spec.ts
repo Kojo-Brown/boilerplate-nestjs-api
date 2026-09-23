@@ -2,6 +2,7 @@ import { Redis } from "ioredis";
 import { describeIdempotencyStoreContract } from "./idempotency-store.contract";
 import { InMemoryIdempotencyStore } from "./stores/in-memory-idempotency.store";
 import { RedisIdempotencyStore } from "./stores/redis-idempotency.store";
+import { REDIS_TEST_DATABASES } from "@/test-utils/redis-test-databases";
 
 /**
  * One contract, both backends.
@@ -33,7 +34,7 @@ describeIdempotencyStoreContract("InMemoryIdempotencyStore", () => {
 const REDIS_URL = process.env["REDIS_URL"];
 
 /** Kept away from db 0, which the cache and BullMQ share in a dev environment. */
-const CONTRACT_DB = 15;
+const CONTRACT_DB = REDIS_TEST_DATABASES.idempotencyContract;
 
 if (REDIS_URL) {
   const client = new Redis(REDIS_URL, { db: CONTRACT_DB, maxRetriesPerRequest: 1 });

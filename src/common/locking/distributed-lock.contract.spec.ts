@@ -5,6 +5,7 @@ import { InMemoryDistributedLock } from "./in-memory-distributed-lock";
 import { RedlockService } from "./redlock.service";
 import { SystemLockClock } from "./ports";
 import { parseRedlockNodes } from "./locking.module";
+import { REDIS_TEST_DATABASES } from "@/test-utils/redis-test-databases";
 
 /**
  * One contract, every implementation — and, for Redlock, every topology worth
@@ -38,17 +39,18 @@ describeDistributedLockContract("InMemoryDistributedLock", () => {
 const NODE_URLS = parseRedlockNodes(process.env["REDLOCK_NODES"] ?? process.env["REDIS_URL"] ?? "");
 
 /**
- * Kept away from db 0, which the cache and BullMQ share in a dev environment,
- * and away from db 15, which `idempotency-store.contract.spec.ts` uses.
+ * This suite's own database, from the one place they are handed out.
  *
  * The separation has to be a database rather than a key prefix: `reset()` here
- * is a `FLUSHDB`, which knows nothing about prefixes, and Jest runs the two
- * contract suites in parallel workers against the same server. Sharing db 15
- * made this suite delete the idempotency suite's records mid-test — which is
- * how it failed in CI while passing locally, where the two happened not to
- * overlap.
+ * is a `FLUSHDB`, which knows nothing about prefixes, and Jest runs suites in
+ * parallel workers against the same server. Picking a number here rather than
+ * reading it from {@link REDIS_TEST_DATABASES} is what put this suite on db 14
+ * alongside `redis-idempotency.store.spec.ts`, whose `flushdb` then deleted
+ * the Redlock fencing counter between two acquisitions — so a token that must
+ * be strictly greater than the one before it came back as 1 again, on
+ * whichever CI leg the two workers happened to overlap on.
  */
-const CONTRACT_DB = 14;
+const CONTRACT_DB = REDIS_TEST_DATABASES.distributedLockContract;
 
 function connect(url: string): Redis {
   return new Redis(url, {

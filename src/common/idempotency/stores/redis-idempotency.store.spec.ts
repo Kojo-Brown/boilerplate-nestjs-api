@@ -2,6 +2,7 @@ import { Logger } from "@nestjs/common";
 import { Redis } from "ioredis";
 import { RedisIdempotencyStore, parseRecord } from "./redis-idempotency.store";
 import type { InFlightRecord } from "../ports";
+import { REDIS_TEST_DATABASES } from "@/test-utils/redis-test-databases";
 
 /**
  * What the shared contract cannot reach: what this store does with values the
@@ -70,8 +71,13 @@ describe("RedisIdempotencyStore", () => {
   }
 
   describe("against a real Redis", () => {
-    /** Kept off db 0 and off the contract's db 15. */
-    const client = new Redis(REDIS_URL, { db: 14, maxRetriesPerRequest: 1 });
+    // Its own database, from the one place they are handed out — this suite
+    // flushes, and db 14 (which this line used to name) belongs to
+    // `distributed-lock.contract.spec.ts`.
+    const client = new Redis(REDIS_URL, {
+      db: REDIS_TEST_DATABASES.redisIdempotencyStore,
+      maxRetriesPerRequest: 1,
+    });
     const store = new RedisIdempotencyStore(client);
 
     beforeEach(async () => {

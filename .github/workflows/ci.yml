@@ -160,6 +160,12 @@ jobs:
         run: |
           printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           printf 'JWT_REFRESH_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          # Field encryption runs on the local key provider here: the same
+          # envelope and the same refusals as KMS, without an AWS account. It is
+          # generated per run rather than committed for the reason every secret
+          # in this step is — and the db-specs create their own besides, so
+          # nothing reads a row written by an earlier run.
+          printf 'ENCRYPTION_LOCAL_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

@@ -40,7 +40,7 @@ pnpm install
 # Start Postgres + Redis
 docker-compose up postgres redis -d
 
-cp .env.example .env   # fill in JWT_SECRET and DATABASE_URL
+cp .env.example .env   # fill in JWT_SECRET, ENCRYPTION_LOCAL_MASTER_KEY and DATABASE_URL
 
 pnpm db:generate
 pnpm db:migrate
@@ -258,6 +258,16 @@ docker-compose up        # postgres + redis + api
   instead, why the detection is reported once per family and recorded with no
   actor, why signing out ends the session rather than the token, and why
   retention is now something you have to schedule.
+- [docs/field-encryption.md](./docs/field-encryption.md) — field-level encryption
+  at rest for the order lines: why `pgcrypto` puts the key in the one place it
+  must not be, what the envelope holds and why the wrapped key travels with the
+  value rather than in a key table, the two layers of authenticated data and
+  which attack each closes, why `KeyId` is pinned on every KMS `Decrypt`, the
+  materials cache and the two different budgets that bound it, why the local key
+  provider warns in production instead of being refused there, what you give up
+  by encrypting a column you can no longer query, how a key is rotated without
+  re-encrypting anything, and the three-step cutover for a deployment that
+  already has rows.
 
 ## Testing
 

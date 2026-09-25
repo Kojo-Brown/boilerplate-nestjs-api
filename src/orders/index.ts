@@ -3,7 +3,7 @@ export { CheckoutSaga, CHECKOUT_SAGA } from "./checkout.saga";
 export type { CheckoutSagaState } from "./checkout.saga";
 export { CATALOGUE_CURRENCY, PRODUCT_CATALOGUE, UnknownSkuError, priceOrder } from "./catalogue";
 export type { CatalogueEntry, PricedOrder } from "./catalogue";
-export { PrismaOrderStore } from "./prisma-order.store";
+export { ORDER_ITEMS_FIELD, PrismaOrderStore } from "./prisma-order.store";
 export { InMemoryInventoryService, SEED_STOCK } from "./services/in-memory-inventory.service";
 export { InMemoryShippingService, SERVICED_COUNTRIES } from "./services/in-memory-shipping.service";
 export {

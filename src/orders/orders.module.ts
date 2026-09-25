@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { PaymentsModule } from "@/payments/payments.module";
+import { CryptoModule } from "@/crypto";
 import { CheckoutSaga } from "./checkout.saga";
 import { OrdersController } from "./orders.controller";
 import { PrismaOrderStore } from "./prisma-order.store";
@@ -12,8 +13,11 @@ import { ORDERS_COMMAND_HANDLERS } from "./write";
 /**
  * The orders module: one saga definition, its participants, and the HTTP edge.
  *
- * It imports `PaymentsModule` for the gateway factory and nothing else. The
- * saga engine, the outbox and the transaction runner are all global, so the
+ * It imports `PaymentsModule` for the gateway factory and `CryptoModule` for
+ * the field encryption `PrismaOrderStore` applies to the order lines — and that
+ * second import edge is worth reading as documentation: the modules that import
+ * `CryptoModule` are exactly the places in this codebase where plaintext meets a
+ * key. The saga engine, the outbox and the transaction runner are all global, so the
  * checkout is wired by depending on tokens rather than by importing modules —
  * which is what lets `CheckoutSaga` be the only file that knows the order of
  * the steps.
@@ -24,7 +28,7 @@ import { ORDERS_COMMAND_HANDLERS } from "./write";
  * all talk to `INVENTORY_SERVICE` and `SHIPPING_SERVICE`.
  */
 @Module({
-  imports: [PaymentsModule],
+  imports: [PaymentsModule, CryptoModule],
   controllers: [OrdersController],
   providers: [
     CheckoutSaga,

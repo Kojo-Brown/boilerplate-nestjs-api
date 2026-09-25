@@ -8,6 +8,7 @@ import { PAYMENT_PROVIDER_NAMES } from "@/payments/ports";
 import { STORAGE_ADAPTER_NAMES } from "@/storage/ports";
 import { refineMtlsEnv, mtlsEnvShape } from "@/common/mtls/mtls.env";
 import { refineSecurityEnv, securityEnvShape } from "@/common/security/security.env";
+import { cryptoEnvShape, refineCryptoEnv } from "@/crypto/crypto.env";
 import { refineTelemetryEnv, telemetryEnvShape } from "@/telemetry/telemetry.env";
 import { WORKER_POOL_NAMES } from "@/workers/ports";
 
@@ -700,6 +701,15 @@ export const envSchema = z
      * the declaration has to be shareable. See `docs/mtls.md`.
      */
     ...mtlsEnvShape,
+
+    /**
+     * Field-level encryption, spread in for the fourth time — and here the
+     * argument is the sharpest it gets: a wrong key does not fail, it encrypts
+     * perfectly and cannot read a single row written under the right one. The
+     * rules about what a usable master key is belong next to the code that
+     * decodes one. See `docs/field-encryption.md`.
+     */
+    ...cryptoEnvShape,
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -725,6 +735,11 @@ export const envSchema = z
     // here fails during a handshake, on somebody else's socket, as an alert
     // that names neither the file nor the setting that is wrong.
     refineMtlsEnv(env, env.NODE_ENV, ctx);
+
+    // The field-encryption rules. Sharper again: a wrong value here does not
+    // fail at all until something tries to read a row back, and by then the
+    // rows exist.
+    refineCryptoEnv(env, env.NODE_ENV, ctx);
 
     /**
      * Selecting S3 without its credentials is a deployment that boots happily

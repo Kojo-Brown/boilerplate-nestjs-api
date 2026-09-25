@@ -1,8 +1,11 @@
 import { randomUUID } from "crypto";
 import type { PrismaClient } from "@prisma/client";
 import { PrismaTransactionRunner } from "@/common/prisma/prisma-transaction.runner";
+import { FieldDecryptionError } from "@/crypto";
 import { PrismaOrderStore } from "@/orders";
 import type { OrderStore } from "@/orders";
+import { createTestFieldEncryption } from "@/test-utils/test-field-encryption";
+import type { FieldEncryptionService } from "@/crypto/field-encryption.service";
 import { asPrismaService, createClient, uniqueEmail } from "./helpers/db";
 
 /**
@@ -13,18 +16,27 @@ import { asPrismaService, createClient, uniqueEmail } from "./helpers/db";
  * ever written by the saga that owns it, and that contention is settled once in
  * `PrismaSagaStore`. What is worth asking a real server is narrower and not
  * checkable anywhere else: that the migration produced the table the client
- * expects, that `items` survives a `jsonb` round trip as an array of lines, and
- * that the cursor pages over a stable order.
+ * expects, that the lines survive a round trip through an encrypted `bytea`
+ * column, and that the cursor pages over a stable order.
+ *
+ * The encryption is the real thing, on the local key provider — the same
+ * envelope, the same authenticated data, the same refusals as the KMS path, with
+ * no network. So the last three specs below are asserting properties of what
+ * production does: that the column holds no plaintext, that a value moved to
+ * another row will not decrypt there, and that an edited byte is refused rather
+ * than read.
  */
 describe("PrismaOrderStore (Postgres)", () => {
   let client: PrismaClient;
   let store: OrderStore;
   let transactions: PrismaTransactionRunner;
+  let cipher: FieldEncryptionService;
   let userId: string;
 
   beforeAll(async () => {
     client = createClient();
-    store = new PrismaOrderStore(asPrismaService(client));
+    cipher = createTestFieldEncryption();
+    store = new PrismaOrderStore(asPrismaService(client), cipher);
     transactions = new PrismaTransactionRunner(asPrismaService(client));
   });
 
@@ -57,7 +69,7 @@ describe("PrismaOrderStore (Postgres)", () => {
       }),
     );
 
-  it("round-trips the lines through jsonb, in order", async () => {
+  it("round-trips the lines through the encrypted column, in order", async () => {
     const created = await create();
 
     const read = await store.find(created.id);
@@ -147,6 +159,88 @@ describe("PrismaOrderStore (Postgres)", () => {
     });
 
     expect(await store.listForUser({ userId: other.id, limit: 10 })).toEqual([]);
+  });
+
+  it("stores no plaintext a `SELECT` or a backup would show", async () => {
+    // The whole point, and the one assertion that cannot be made anywhere but
+    // against a real column: what is on disk. `store.find` proves a round trip
+    // and would look identical if the column were still jsonb.
+    const created = await create();
+
+    const row = await client.order.findUniqueOrThrow({
+      where: { id: created.id },
+      select: { itemsCiphertext: true },
+    });
+    const stored = Buffer.from(row.itemsCiphertext);
+
+    expect(stored.includes("SKU-DESK-01")).toBe(false);
+    expect(stored.includes("34900")).toBe(false);
+    expect(stored.toString("utf8")).not.toContain("sku");
+    // And it is an envelope rather than something that merely is not the
+    // plaintext: format version 1, then a wrapped data key.
+    expect(stored.readUInt8(0)).toBe(1);
+    expect(stored.readUInt16BE(1)).toBeGreaterThan(0);
+  });
+
+  it("will not decrypt a value moved to another order's row", async () => {
+    // The attack the record binding closes: whoever can write this table copies
+    // a victim's ciphertext onto a row they own and asks the API to render it.
+    // Postgres accepts the write — it is just bytes — and the read refuses.
+    const victim = await create();
+    const attacker = await create();
+    const stolen = await client.order.findUniqueOrThrow({
+      where: { id: victim.id },
+      select: { itemsCiphertext: true },
+    });
+
+    await client.order.update({
+      where: { id: attacker.id },
+      data: { itemsCiphertext: stolen.itemsCiphertext },
+    });
+
+    await expect(store.find(attacker.id)).rejects.toThrow(FieldDecryptionError);
+    // The victim's own row is untouched and still reads.
+    expect((await store.find(victim.id))?.items).toHaveLength(2);
+  });
+
+  it("will not read a value with a byte changed", async () => {
+    const created = await create();
+    const row = await client.order.findUniqueOrThrow({
+      where: { id: created.id },
+      select: { itemsCiphertext: true },
+    });
+    const tampered = Buffer.from(row.itemsCiphertext);
+    tampered.writeUInt8(tampered.readUInt8(tampered.length - 1) ^ 0x01, tampered.length - 1);
+
+    await client.order.update({
+      where: { id: created.id },
+      data: { itemsCiphertext: new Uint8Array(tampered) },
+    });
+
+    await expect(store.find(created.id)).rejects.toThrow(FieldDecryptionError);
+  });
+
+  it("cannot be read by a deployment holding another master key", async () => {
+    // What makes rotating the master key a migration rather than an edit, and
+    // what a stolen backup buys without the key: nothing.
+    const created = await create();
+    const elsewhere = new PrismaOrderStore(asPrismaService(client), createTestFieldEncryption());
+
+    await expect(elsewhere.find(created.id)).rejects.toThrow(FieldDecryptionError);
+  });
+
+  it("reads a page of rows written under one data key", async () => {
+    // Every row on the page carries the wrapped key it was written under, and the
+    // materials cache coalesces them, so this is one unwrap rather than three.
+    await create();
+    await create();
+    await create();
+    cipher.clearKeyCache();
+
+    const page = await store.listForUser({ userId, limit: 10 });
+
+    expect(page).toHaveLength(3);
+    expect(page.every((order) => order.items.length === 2)).toBe(true);
   });
 
   it("goes with the account, because the row is theirs", async () => {

@@ -8,6 +8,11 @@ import { telemetryEnvSchema } from "./telemetry.env";
 const BASE_ENV = {
   DATABASE_URL: "postgresql://user:pw@localhost:5432/db",
   JWT_SECRET: "0".repeat(32),
+  // Required for the same reason JWT_SECRET is: field encryption defaults to the
+  // local key provider and refuses to invent a master key, because one generated
+  // at boot makes every row written before the next restart unreadable. 32
+  // obviously-fake bytes.
+  ENCRYPTION_LOCAL_MASTER_KEY: Buffer.alloc(32, 7).toString("base64"),
 } as const;
 
 describe("telemetryEnvSchema", () => {

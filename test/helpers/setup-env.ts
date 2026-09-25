@@ -7,6 +7,14 @@ process.env["JWT_SECRET"] = randomBytes(32).toString("hex");
 process.env["JWT_ACCESS_EXPIRY"] = "15m";
 process.env["JWT_REFRESH_EXPIRY"] = "7d";
 process.env["ALLOWED_ORIGINS"] = "*";
+
+// Field encryption boots on the local key provider, which needs a master key and
+// refuses to invent one — see src/crypto/crypto.env.ts on why a
+// generated-per-boot key is the one default that must not exist. Random per run
+// rather than fixed: the e2e suites override ORDER_STORE with an in-memory
+// double, so nothing here reads a row written by an earlier run, and a fixed key
+// in a repository is a key somebody eventually uses.
+process.env["ENCRYPTION_LOCAL_MASTER_KEY"] = randomBytes(32).toString("base64");
 process.env["PORT"] = "0";
 
 // The outbox relay is driven explicitly by `TestApp.drainOutbox()` rather than

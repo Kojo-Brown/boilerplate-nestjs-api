@@ -184,10 +184,27 @@ model Order {
   id     String @id @default(cuid())
   userId String
 
-  /// Denormalised onto the order rather than joined from a catalogue, because
-  /// an order is a record of what was agreed at the time: a price that later
-  /// changes must not rewrite an order already placed.
-  items Json
+  /// The order lines, AES-256-GCM encrypted under a KMS-wrapped data key.
+  ///
+  /// Denormalised onto the order rather than joined from a catalogue, because an
+  /// order is a record of what was agreed at the time: a price that later
+  /// changes must not rewrite an order already placed. That is also what makes
+  /// it the column in this schema worth encrypting — it is the one that holds
+  /// what a named customer bought, it is kept forever, and nothing ever filters,
+  /// sorts or joins on it.
+  ///
+  /// `Bytes`, not `Json`, and the type change is the honest consequence of
+  /// encrypting it: the database can no longer see inside this column, so
+  /// `items->>'sku'`, a GIN index and a `jsonb` containment query are all gone.
+  /// A column you can still query is a column that is not encrypted.
+  ///
+  /// The stored bytes are a self-describing envelope — format version, the
+  /// wrapped data key, the IV and the GCM tag, then the ciphertext — so a
+  /// rotation re-wraps keys without re-encrypting rows, and a row restored from
+  /// an old backup still names the key it needs. The order's own id is bound
+  /// into the authenticated data, so these bytes decrypt on this row and nowhere
+  /// else. See docs/field-encryption.md.
+  itemsCiphertext Bytes
 
   /// Integer minor units — cents, pence, sen — the same representation
   /// `src/payments/money.ts` uses everywhere. A `Decimal` would be

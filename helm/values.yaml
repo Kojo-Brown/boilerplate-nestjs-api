@@ -97,6 +97,14 @@ env:
   NODE_ENV: production
   PORT: "3000"
   API_VERSION: v1
+  # Field-level encryption for orders.itemsCiphertext. `kms` because this chart
+  # deploys to production: the `local` provider boots there but keeps the master
+  # key in the pod's environment, with no per-use audit trail and no rotation
+  # without a redeploy. Set secret.ENCRYPTION_KMS_KEY_ID below — the boot fails
+  # naming it if you do not — and give the service account a role that may
+  # kms:GenerateDataKey and kms:Decrypt with that key. See
+  # docs/field-encryption.md.
+  ENCRYPTION_KEY_PROVIDER: kms
 
 # Sensitive values — override via --set or external secret manager
 secret:
@@ -110,6 +118,16 @@ secret:
   AWS_SECRET_ACCESS_KEY: ""
   AWS_S3_BUCKET: ""
   AWS_REGION: ""
+  # Not a secret — a key id or an alias is not sensitive — but listed here
+  # because this block is the one whose empty entries are omitted rather than
+  # rendered as "", and an absent variable produces a boot error that names it
+  # while an empty one would look configured. An alias is usually right:
+  # re-pointing it rotates the key with no deploy.
+  ENCRYPTION_KMS_KEY_ID: ""
+  # Only for ENCRYPTION_KEY_PROVIDER=local. 32 bytes, base64. Rotating it is a
+  # re-encryption pass, not an edit: rows written under the old key stop being
+  # readable.
+  ENCRYPTION_LOCAL_MASTER_KEY: ""
 
 postgresql:
   enabled: false

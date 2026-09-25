@@ -6,6 +6,7 @@ import { ListOrdersHandler, ListOrdersQuery } from "@/orders/read";
 import { CHECKOUT_SAGA } from "@/orders/checkout.saga";
 import { PrismaSagaStore, SagaLoaders, SagaRegistry, defineSaga } from "@/saga";
 import type { SagaState } from "@/saga";
+import { createTestFieldEncryption } from "@/test-utils/test-field-encryption";
 import { measureQueryGrowth } from "@/test-utils/n-plus-one";
 import type { CallRecorder } from "@/test-utils/n-plus-one";
 import { asPrismaService, createClient, uniqueEmail } from "./helpers/db";
@@ -52,10 +53,15 @@ describe("ListOrdersHandler (Postgres)", () => {
     recorder = probed.recorder;
 
     transactions = new PrismaTransactionRunner(asPrismaService(client));
-    seedOrders = new PrismaOrderStore(asPrismaService(client));
+    // One cipher for both stores, not one each: two services would hold two
+    // random master keys, and the seeded rows would then be unreadable by the
+    // handler — a failure that arrives as "could not decrypt" several
+    // assertions later rather than as a wiring mistake here.
+    const cipher = createTestFieldEncryption();
+    seedOrders = new PrismaOrderStore(asPrismaService(client), cipher);
     seedSagas = new PrismaSagaStore(asPrismaService(client));
     handler = new ListOrdersHandler(
-      new PrismaOrderStore(asPrismaService(probed.client)),
+      new PrismaOrderStore(asPrismaService(probed.client), cipher),
       new SagaLoaders(new PrismaSagaStore(asPrismaService(probed.client))),
       registry,
     );

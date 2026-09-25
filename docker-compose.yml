@@ -182,6 +182,18 @@ services:
       OUTBOX_PUBLISHER: ${OUTBOX_PUBLISHER:-broker}
       MESSAGE_BROKER: ${MESSAGE_BROKER:-kafka}
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      # Field-level encryption. The local key provider, because this stack has no
+      # KMS — it produces the same envelope, and the compose file is a
+      # development stack that happens to run NODE_ENV=production, not a model of
+      # a real deployment. On a real one set ENCRYPTION_KEY_PROVIDER=kms with
+      # ENCRYPTION_KMS_KEY_ID; see docs/field-encryption.md.
+      #
+      # The default master key below is fixed rather than generated, and that is
+      # the right way round here: a key generated per `up` would make every order
+      # written by the previous container unreadable. It is obviously fake, and it
+      # is 32 base64 bytes because anything else is refused at boot.
+      ENCRYPTION_KEY_PROVIDER: ${ENCRYPTION_KEY_PROVIDER:-local}
+      ENCRYPTION_LOCAL_MASTER_KEY: ${ENCRYPTION_LOCAL_MASTER_KEY:-Y29tcG9zZS1kZXYtb25seS1mYWtlLW1hc3RlcmtleSE=}
       # JWT — override JWT_SECRET in production; default is only for local dev
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-min-32-chars!!}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}

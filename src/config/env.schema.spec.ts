@@ -3,6 +3,11 @@ import { envSchema } from "./env.schema";
 const BASE_ENV = {
   DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/app_db",
   JWT_SECRET: "test-secret-that-is-at-least-32-chars",
+  // Required for the same reason JWT_SECRET is, and required at all for the
+  // reason `refineCryptoEnv` gives: the one default that must not exist is a
+  // master key invented at boot, because it makes every row written before the
+  // next restart unreadable and says nothing about it. 32 obviously-fake bytes.
+  ENCRYPTION_LOCAL_MASTER_KEY: Buffer.alloc(32, 7).toString("base64"),
 };
 
 describe("envSchema — payments", () => {
@@ -802,5 +807,100 @@ describe("envSchema — mutual TLS", () => {
 
     expect(env.MTLS_ENABLED).toBe(true);
     expect(env.MTLS_RELOAD_INTERVAL_MS).toBe(300_000);
+  });
+});
+
+describe("envSchema — field encryption", () => {
+  it("defaults to the local provider with budgets a laptop can boot on", () => {
+    const env = envSchema.parse(BASE_ENV);
+
+    expect(env.ENCRYPTION_KEY_PROVIDER).toBe("local");
+    expect(env.ENCRYPTION_DATA_KEY_TTL_SECONDS).toBe(300);
+    expect(env.ENCRYPTION_DATA_KEY_MAX_USES).toBe(10_000);
+    expect(env.ENCRYPTION_DATA_KEY_CACHE_SIZE).toBe(500);
+  });
+
+  it("refuses the local provider with no master key", () => {
+    const { ENCRYPTION_LOCAL_MASTER_KEY: _unused, ...withoutKey } = BASE_ENV;
+
+    expect(() => envSchema.parse(withoutKey)).toThrow(
+      /ENCRYPTION_LOCAL_MASTER_KEY is required when ENCRYPTION_KEY_PROVIDER=local/,
+    );
+  });
+
+  it.each([
+    ["too short", Buffer.alloc(16, 7).toString("base64")],
+    ["too long", Buffer.alloc(64, 7).toString("base64")],
+    // Base64 decoding ignores characters outside its alphabet, so this decodes to
+    // *something*: accepting it means encrypting under a key nobody meant, which
+    // reads back as corruption rather than as a typo.
+    ["not base64 at all", "please use this as my encryption key, thanks!!"],
+    // What an unexpanded placeholder or a truncated secret produces.
+    ["all zeroes", Buffer.alloc(32).toString("base64")],
+  ])("refuses a master key that is %s", (_case, key) => {
+    expect(() => envSchema.parse({ ...BASE_ENV, ENCRYPTION_LOCAL_MASTER_KEY: key })).toThrow(
+      /ENCRYPTION_LOCAL_MASTER_KEY is not 32 bytes of base64/,
+    );
+  });
+
+  it("accepts the local provider in production rather than refusing it", () => {
+    // Unlike STORAGE_ADAPTER=memory, which is refused there. The difference is
+    // what the alternative is: a deployment refused a memory store configures a
+    // real one, and a deployment refused a master key in its environment ships a
+    // plaintext column. `selectKeyProvider` warns at boot instead — see
+    // src/crypto/key-provider.factory.spec.ts.
+    const env = envSchema.parse({
+      ...BASE_ENV,
+      NODE_ENV: "production",
+      ALLOWED_ORIGINS: "https://app.example.com",
+      STORAGE_ADAPTER: "local",
+      IDEMPOTENCY_STORE: "redis",
+      DISTRIBUTED_LOCK: "redlock",
+      REDIS_URL: "redis://localhost:6379",
+    });
+
+    expect(env.ENCRYPTION_KEY_PROVIDER).toBe("local");
+  });
+
+  it("refuses KMS without a key id", () => {
+    expect(() => envSchema.parse({ ...BASE_ENV, ENCRYPTION_KEY_PROVIDER: "kms" })).toThrow(
+      /ENCRYPTION_KMS_KEY_ID is required when ENCRYPTION_KEY_PROVIDER=kms/,
+    );
+  });
+
+  it("accepts KMS with a key id, and stops asking for a local master key", () => {
+    const { ENCRYPTION_LOCAL_MASTER_KEY: _unused, ...withoutKey } = BASE_ENV;
+
+    const env = envSchema.parse({
+      ...withoutKey,
+      NODE_ENV: "production",
+      ENCRYPTION_KEY_PROVIDER: "kms",
+      ENCRYPTION_KMS_KEY_ID: "alias/orders-field-key",
+      // The rest of what production refuses by default, so this test asserts on
+      // the encryption rules alone.
+      ALLOWED_ORIGINS: "https://app.example.com",
+      STORAGE_ADAPTER: "local",
+      IDEMPOTENCY_STORE: "redis",
+      DISTRIBUTED_LOCK: "redlock",
+      REDIS_URL: "redis://localhost:6379",
+    });
+
+    expect(env.ENCRYPTION_KEY_PROVIDER).toBe("kms");
+    expect(env.ENCRYPTION_KMS_KEY_ID).toBe("alias/orders-field-key");
+  });
+
+  it("caps the data-key TTL, because it is how long a revoked grant still works", () => {
+    expect(() =>
+      envSchema.parse({ ...BASE_ENV, ENCRYPTION_DATA_KEY_TTL_SECONDS: "86400" }),
+    ).toThrow(/ENCRYPTION_DATA_KEY_TTL_SECONDS is capped at 3600/);
+  });
+
+  it("caps the per-key use budget at the GCM limit", () => {
+    // 2^32 invocations under one key with a random IV, per NIST SP 800-38D. Past
+    // it a repeated 96-bit IV stops being negligible, and in GCM that costs the
+    // authentication subkey rather than one plaintext.
+    expect(() =>
+      envSchema.parse({ ...BASE_ENV, ENCRYPTION_DATA_KEY_MAX_USES: String(2 ** 33) }),
+    ).toThrow(/ENCRYPTION_DATA_KEY_MAX_USES is capped at 4294967296/);
   });
 });

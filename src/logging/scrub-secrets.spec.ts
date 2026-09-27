@@ -1,3 +1,4 @@
+import { fakeJwt } from "@/test-utils/fake-jwt";
 import { REDACTED } from "./log-event";
 import { MAX_STRING_LENGTH, scrubSecrets } from "./scrub-secrets";
 
@@ -47,8 +48,7 @@ describe("scrubSecrets", () => {
 
   describe("bearer credentials", () => {
     it("removes a JWT and keeps nothing of it", () => {
-      const jwt =
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NSJ9.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1g";
+      const jwt = fakeJwt();
       const scrubbed = scrubSecrets(`token ${jwt} rejected`);
       expect(scrubbed).toBe(`token ${REDACTED} rejected`);
       expect(scrubbed).not.toContain("eyJ");
@@ -110,8 +110,7 @@ describe("scrubSecrets", () => {
      * job is to remove it.
      */
     it("removes a credential that sits beyond the length cap", () => {
-      const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI5OTkifQ.Zm9vYmFyYmF6";
-      const scrubbed = scrubSecrets(`${"padding ".repeat(400)}${jwt}`);
+      const scrubbed = scrubSecrets(`${"padding ".repeat(400)}${fakeJwt()}`);
       expect(scrubbed).not.toContain("eyJ");
     });
 

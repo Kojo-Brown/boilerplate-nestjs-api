@@ -2,6 +2,7 @@ import request from "supertest";
 import type { Server } from "http";
 import { REDACTED } from "@/logging";
 import { TelemetryLogger } from "@/telemetry";
+import { fakeJwt } from "@/test-utils/fake-jwt";
 import { installInMemoryTelemetry, type TelemetryProbe } from "@/test-utils/in-memory-telemetry";
 import { createTestApp, type TestApp } from "./helpers/create-test-app";
 
@@ -158,8 +159,7 @@ describe("PII redaction (e2e)", () => {
    * is replayable by whoever reads the line.
    */
   it("does not log an Authorization header", async () => {
-    const token =
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1LTEifQ.8tat9Rr7aVmQ0qFvQXGvBPE0Kx3Yl";
+    const token = fakeJwt("u-1");
 
     await request(server).get("/v1/auth/me").set("Authorization", `Bearer ${token}`);
 

@@ -11,3 +11,9 @@ coverage
 # Default STORAGE_LOCAL_ROOT for STORAGE_ADAPTER=local. Real uploaded files;
 # never a build artifact, and never something to commit.
 /storage/
+
+# Redis writes this wherever it was started from, so running a local
+# `redis-server` for the db suites drops one in the repository root. An empty
+# snapshot of a test database is not a build artifact and not something to
+# commit; it arrived in a PR once before this line existed.
+dump.rdb

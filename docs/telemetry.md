@@ -164,7 +164,14 @@ The trace ids on a log record are stamped by the SDK from the active context
 rather than written by this class. Setting them by hand would produce the same
 three fields under names of our own invention, which no backend joins on.
 
-The access log in `LoggingInterceptor` is the exception and does it explicitly:
+Every record goes through the redaction processors before it reaches either
+sink — an allowlist of field paths, plus a credential scrubber on the free-text
+message. That is why a log line is written as `logger.log({ message, …fields })`
+rather than as an interpolated string: a field can be reasoned about and a
+sentence cannot. See `docs/log-redaction.md`.
+
+The access log in `LoggingInterceptor` is the exception to the trace-id rule and
+does it explicitly:
 
 ```json
 { "correlationId": "…", "method": "GET", "statusCode": 200, "trace_id": "…", "span_id": "…" }

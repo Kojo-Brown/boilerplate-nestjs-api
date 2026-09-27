@@ -2,6 +2,7 @@ import {
   LoggingInterceptor,
   CORRELATION_ID_ATTRIBUTE,
   CORRELATION_ID_HEADER,
+  splitTarget,
 } from "./logging.interceptor";
 import type { ExecutionContext, CallHandler } from "@nestjs/common";
 import { Logger } from "@nestjs/common";
@@ -12,6 +13,7 @@ import { installInMemoryTelemetry, type TelemetryProbe } from "@/test-utils/in-m
 function makeContext(overrides?: {
   correlationId?: string;
   user?: { id: string; email: string; role: string };
+  url?: string;
 }): {
   context: ExecutionContext;
   resHeaders: Record<string, string>;
@@ -26,7 +28,7 @@ function makeContext(overrides?: {
     switchToHttp: () => ({
       getRequest: () => ({
         method: "GET",
-        url: "/v1/users",
+        url: overrides?.url ?? "/v1/users",
         headers: reqHeaders,
         user: overrides?.user,
       }),
@@ -48,6 +50,18 @@ function makeHandler(data: unknown = { ok: true }): CallHandler {
 
 function makeErrorHandler(err: Error): CallHandler {
   return { handle: () => throwError(() => err) } as unknown as CallHandler;
+}
+
+/**
+ * The fields of the single access-log call.
+ *
+ * The interceptor hands the logger an object rather than a serialised string,
+ * which is what makes the line redactable: a processor chain that walks fields
+ * cannot see inside a string. So this reads the argument directly instead of
+ * parsing it.
+ */
+function loggedFields(logSpy: jest.SpyInstance): Record<string, unknown> {
+  return logSpy.mock.calls[0]?.[0] as Record<string, unknown>;
 }
 
 describe("LoggingInterceptor", () => {
@@ -81,7 +95,7 @@ describe("LoggingInterceptor", () => {
     const { context } = makeContext();
     await firstValueFrom(interceptor.intercept(context, makeHandler()));
     expect(logSpy).toHaveBeenCalledTimes(1);
-    const logged = JSON.parse(logSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+    const logged = loggedFields(logSpy);
     expect(logged.method).toBe("GET");
     expect(logged.path).toBe("/v1/users");
     expect(logged.statusCode).toBe(200);
@@ -92,7 +106,7 @@ describe("LoggingInterceptor", () => {
   it("logs userId when the request carries an authenticated user", async () => {
     const { context } = makeContext({ user: { id: "user-42", email: "a@b.com", role: "USER" } });
     await firstValueFrom(interceptor.intercept(context, makeHandler()));
-    const logged = JSON.parse(logSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+    const logged = loggedFields(logSpy);
     expect(logged.userId).toBe("user-42");
   });
 
@@ -123,8 +137,101 @@ describe("LoggingInterceptor", () => {
     });
 
     expect(logSpy).toHaveBeenCalledTimes(1);
-    const logged = JSON.parse(logSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+    const logged = loggedFields(logSpy);
     expect(logged.statusCode).toBe(200);
+  });
+
+  /**
+   * The defect this replaced. `req.url` is the request *target*, query string
+   * included, and it was logged whole as `path` — so
+   * `GET /v1/auth/google/callback?code=…` wrote a single-use OAuth
+   * authorisation code, exchangeable for that person's access and refresh
+   * tokens, to stdout and to the logs pipeline on every successful Google
+   * sign-in.
+   *
+   * As one string it could only be kept or dropped. Split into named
+   * parameters it becomes a set of fields the allowlist decides on
+   * individually, which is what lets `query.page` survive while `query.code`
+   * does not — without anyone having had to predict `code`.
+   */
+  describe("the request target", () => {
+    it("logs the path without its query string", async () => {
+      const { context } = makeContext({ url: "/v1/users?page=2&limit=50" });
+
+      await firstValueFrom(interceptor.intercept(context, makeHandler()));
+
+      expect(loggedFields(logSpy)["path"]).toBe("/v1/users");
+    });
+
+    it("logs the query parameters as named fields", async () => {
+      const { context } = makeContext({ url: "/v1/users?page=2&limit=50" });
+
+      await firstValueFrom(interceptor.intercept(context, makeHandler()));
+
+      expect(loggedFields(logSpy)["query"]).toEqual({ page: "2", limit: "50" });
+    });
+
+    it("separates the OAuth authorisation code into a field the allowlist redacts", async () => {
+      const { context } = makeContext({
+        url: "/v1/auth/google/callback?code=4%2F0AXhV9kcQr7Tg&scope=email+profile",
+      });
+
+      await firstValueFrom(interceptor.intercept(context, makeHandler()));
+
+      const logged = loggedFields(logSpy);
+      expect(logged["path"]).toBe("/v1/auth/google/callback");
+      // Decoded, and still a field rather than part of the path — so
+      // `DEFAULT_ALLOWLIST`, which names no query parameter but the pagination
+      // ones, replaces it. The end-to-end proof is in `test/log-redaction.e2e-spec.ts`.
+      expect(logged["query"]).toEqual({ code: "4/0AXhV9kcQr7Tg", scope: "email profile" });
+    });
+
+    it("reports an empty query object when there is no query string", async () => {
+      const { context } = makeContext({ url: "/v1/users" });
+
+      await firstValueFrom(interceptor.intercept(context, makeHandler()));
+
+      expect(loggedFields(logSpy)["query"]).toEqual({});
+    });
+  });
+
+  describe("splitTarget", () => {
+    it.each([
+      ["/v1/users", "/v1/users", {}],
+      ["/v1/users?", "/v1/users", {}],
+      ["/v1/users?page=2", "/v1/users", { page: "2" }],
+      ["/v1/users?flag", "/v1/users", { flag: "" }],
+      ["/v1/users?a=", "/v1/users", { a: "" }],
+      ["/v1/users?a=1&&b=2", "/v1/users", { a: "1", b: "2" }],
+      ["/v1/users?a=b=c", "/v1/users", { a: "b=c" }],
+      ["/v1/users?q=%20spaced", "/v1/users", { q: " spaced" }],
+      ["/v1/users?q=a+b", "/v1/users", { q: "a b" }],
+      // A `#` is not special in an origin-form target: it is a legal byte in a
+      // query value and there is no fragment to separate.
+      ["/v1/users?q=a#b", "/v1/users", { q: "a#b" }],
+    ])("parses %s", (target, path, query) => {
+      expect(splitTarget(target)).toEqual({ path, query });
+    });
+
+    it("keeps every value of a repeated parameter", () => {
+      expect(splitTarget("/v1/users?tag=a&tag=b&tag=c").query).toEqual({
+        tag: ["a", "b", "c"],
+      });
+    });
+
+    /**
+     * `decodeURIComponent` throws `URIError` on a lone `%`, which a caller can
+     * send deliberately. Thrown from inside the access log it would cost the
+     * line that records the request happened, so the raw form is kept instead —
+     * and redacted like any other value.
+     */
+    it("keeps a malformed escape rather than throwing", () => {
+      expect(splitTarget("/v1/users?q=100%").query).toEqual({ q: "100%" });
+    });
+
+    it("survives a malformed key as well as a malformed value", () => {
+      expect(() => splitTarget("/v1/users?%=x")).not.toThrow();
+    });
   });
 
   /**
@@ -140,7 +247,7 @@ describe("LoggingInterceptor", () => {
 
       await firstValueFrom(interceptor.intercept(context, makeHandler()));
 
-      const logged = JSON.parse(logSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+      const logged = loggedFields(logSpy);
       expect(logged["trace_id"]).toBeNull();
       expect(logged["span_id"]).toBeNull();
     });
@@ -165,7 +272,7 @@ describe("LoggingInterceptor", () => {
         );
         span.end();
 
-        const logged = JSON.parse(logSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+        const logged = loggedFields(logSpy);
         expect(logged["trace_id"]).toBe(span.spanContext().traceId);
         expect(logged["span_id"]).toBe(span.spanContext().spanId);
       });

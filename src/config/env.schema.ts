@@ -10,6 +10,7 @@ import { refineMtlsEnv, mtlsEnvShape } from "@/common/mtls/mtls.env";
 import { refineSecurityEnv, securityEnvShape } from "@/common/security/security.env";
 import { cryptoEnvShape, refineCryptoEnv } from "@/crypto/crypto.env";
 import { refineTelemetryEnv, telemetryEnvShape } from "@/telemetry/telemetry.env";
+import { loggingEnvShape, refineLoggingEnv } from "@/logging";
 import { WORKER_POOL_NAMES } from "@/workers/ports";
 
 export const envSchema = z
@@ -686,6 +687,15 @@ export const envSchema = z
     ...telemetryEnvShape,
 
     /**
+     * Log redaction, spread in on the same argument as the telemetry shape and
+     * read twice for the same reason: `TelemetryLogger` is installed before
+     * `ConfigService` exists, because `bufferLogs: true` replays the boot
+     * sequence through it and those lines need redacting too. See
+     * `docs/log-redaction.md`.
+     */
+    ...loggingEnvShape,
+
+    /**
      * The response-header and CORS settings, spread in for the same reason the
      * telemetry shape above is: an operator should get one validation pass over
      * the whole environment, and the rules about what a valid origin or a
@@ -740,6 +750,12 @@ export const envSchema = z
     // fail at all until something tries to read a row back, and by then the
     // rows exist.
     refineCryptoEnv(env, env.NODE_ENV, ctx);
+
+    // The redaction rules. Sharper still in one direction: a wrong value here
+    // fails nothing, ever. The service runs, answers every request and writes
+    // more than it should to a log store that keeps it — so the only moment it
+    // can be caught is this one.
+    refineLoggingEnv(env, env.NODE_ENV, ctx);
 
     /**
      * Selecting S3 without its credentials is a deployment that boots happily

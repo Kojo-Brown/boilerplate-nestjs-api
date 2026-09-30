@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
 import { CommandBus, QueryBus } from "@nestjs/cqrs";
 import {
   ApiCreatedResponse,
@@ -7,7 +7,6 @@ import {
   ApiParam,
   ApiTags,
 } from "@nestjs/swagger";
-import { JwtAuthGuard } from "@/auth/guards/jwt-auth.guard";
 import { CurrentUser } from "@/common/decorators/current-user.decorator";
 import { ApiEnvelopeOf } from "@/common/dto/response-envelope.dto";
 import { CursorPageOf } from "@/common/pagination";
@@ -38,7 +37,6 @@ import { PlaceOrderCommand } from "./write";
  */
 @ApiTags("orders")
 @ApiJwtAuth()
-@UseGuards(JwtAuthGuard)
 @Controller("orders")
 export class OrdersController {
   constructor(

@@ -1,7 +1,6 @@
-import { Controller, Headers, Query, Sse, UseGuards, type MessageEvent } from "@nestjs/common";
+import { Controller, Headers, Query, Sse, type MessageEvent } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiProduces, ApiTags } from "@nestjs/swagger";
 import type { Observable } from "rxjs";
-import { JwtAuthGuard } from "@/auth/guards/jwt-auth.guard";
 import { CurrentUser } from "@/common/decorators/current-user.decorator";
 import { SkipResponseEnvelope } from "@/common/decorators/skip-response-envelope.decorator";
 import { ApiJwtAuth } from "@/common/swagger/api-jwt-auth.decorator";
@@ -12,7 +11,6 @@ import { EventStreamQueryDto } from "./dto/event-stream-query.dto";
 
 @ApiTags("events")
 @ApiJwtAuth()
-@UseGuards(JwtAuthGuard)
 @Controller("events")
 export class EventStreamController {
   constructor(private readonly hub: EventStreamHub) {}

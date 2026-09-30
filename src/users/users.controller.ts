@@ -11,7 +11,6 @@ import {
   Post,
   Query,
   UploadedFile,
-  UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
 import { CommandBus, QueryBus } from "@nestjs/cqrs";
@@ -47,12 +46,10 @@ import {
   UpdateUserProfileCommand,
 } from "./write";
 import { UpdateUserDto } from "./dto/update-user.dto";
-import { UserResponseDto } from "./dto/user-response.dto";
+import { UserResponseDto, toUserResponse } from "./dto/user-response.dto";
 import { UserPreferencesDto } from "./dto/user-preferences.dto";
 import { UpdateUserPreferencesDto } from "./dto/update-user-preferences.dto";
 import { ListUsersQueryDto } from "./dto/list-users-query.dto";
-import { JwtAuthGuard } from "@/auth/guards/jwt-auth.guard";
-import { RolesGuard } from "@/auth/guards/roles.guard";
 import { Roles } from "@/common/decorators/roles.decorator";
 import { CurrentUser } from "@/common/decorators/current-user.decorator";
 import { ApiJwtAuth } from "@/common/swagger/api-jwt-auth.decorator";
@@ -81,7 +78,6 @@ const AVATAR_MAX_SIZE_BYTES = 5 * 1024 * 1024;
  */
 @ApiTags("users")
 @ApiJwtAuth()
-@UseGuards(JwtAuthGuard)
 @Controller("users")
 export class UsersController {
   constructor(
@@ -90,7 +86,6 @@ export class UsersController {
   ) {}
 
   @Get()
-  @UseGuards(RolesGuard)
   @Roles("ADMIN")
   @UseInterceptors(HttpCacheInterceptor)
   @CacheKey(USERS_LIST_CACHE_KEY)
@@ -102,8 +97,9 @@ export class UsersController {
   @ApiOkResponse({ type: CursorPageOf(UserResponseDto) })
   @ApiForbiddenRole()
   @ApiCommonErrors()
-  listUsers(@Query() query: ListUsersQueryDto) {
-    return this.queries.execute(new ListUsersQuery(query));
+  async listUsers(@Query() query: ListUsersQueryDto) {
+    const page = await this.queries.execute(new ListUsersQuery(query));
+    return { ...page, items: page.items.map(toUserResponse) };
   }
 
   @Get(":id")
@@ -121,7 +117,7 @@ export class UsersController {
   @ApiCommonErrors()
   async findOne(@Param("id") id: string) {
     const user = await this.queries.execute(new GetUserQuery(id));
-    return versioned(user, user.version);
+    return versioned(toUserResponse(user), user.version);
   }
 
   @Patch(":id")
@@ -145,7 +141,7 @@ export class UsersController {
     const user = await this.commands.execute(
       new UpdateUserProfileCommand(requester, id, dto, expected),
     );
-    return versioned(user, user.version);
+    return versioned(toUserResponse(user), user.version);
   }
 
   @Post(":id/avatar")
@@ -200,11 +196,10 @@ export class UsersController {
     const user = await this.commands.execute(
       new UpdateUserAvatarCommand(requester, id, file, expected),
     );
-    return versioned(user, user.version);
+    return versioned(toUserResponse(user), user.version);
   }
 
   @Delete(":id")
-  @UseGuards(RolesGuard)
   @Roles("ADMIN")
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: "Delete user (admin)" })

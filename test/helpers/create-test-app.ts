@@ -3,7 +3,7 @@ import { Reflector } from "@nestjs/core";
 import { WsAdapter } from "@nestjs/platform-ws";
 import { Test } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
-import { ThrottlerStorage } from "@nestjs/throttler";
+import { ThrottlerStorage, ThrottlerStorageService } from "@nestjs/throttler";
 import type { ThrottlerStorageRecord } from "@nestjs/throttler/dist/throttler-storage-record.interface";
 import { AppModule } from "@/app.module";
 import { QueueModule } from "@/queue/queue.module";
@@ -119,7 +119,38 @@ export interface TestApp {
   recoverSagas: (now?: Date) => Promise<RecoveryReport>;
 }
 
-export async function createTestApp(): Promise<TestApp> {
+/**
+ * The two pieces of the application a spec may need built differently.
+ *
+ * Both defaults are what every existing suite wants, and both alternatives exist
+ * for one reason: `test/owasp-api-top10.e2e-spec.ts` asserts that a mitigation
+ * holds *and* that the assertion has teeth, and an assertion about a rate limit
+ * or a response header can only be shown to have teeth against an application
+ * built without it. A guard or a policy can be neutralised in place for the
+ * length of one test; middleware bound before `init()` cannot.
+ */
+export interface TestAppOptions {
+  /**
+   * `"neutralised"` (the default) reports every request as the first hit, so a
+   * suite that makes more auth calls per minute than any real client is not
+   * 429ed from its tenth spec onwards.
+   *
+   * `"real"` binds the production storage, so the limits in `AppModule` and the
+   * per-route `@Throttle()` overrides apply as deployed. An app built this way
+   * is only good for as many requests as its limits allow, so it belongs to one
+   * `describe` rather than to a whole suite.
+   */
+  readonly rateLimiting?: "neutralised" | "real";
+  /**
+   * `"applied"` (the default) binds Helmet and the CORS allowlist exactly as
+   * `main.ts` does. `"omitted"` skips them, which is the only way to observe
+   * what those headers are worth.
+   */
+  readonly security?: "applied" | "omitted";
+}
+
+export async function createTestApp(options: TestAppOptions = {}): Promise<TestApp> {
+  const { rateLimiting = "neutralised", security = "applied" } = options;
   const prisma = new InMemoryPrismaService();
   // `PrismaRefreshTokenStore` claims tokens with `SELECT … FOR UPDATE` in an
   // interactive transaction, neither of which `InMemoryPrismaService` has or
@@ -177,14 +208,18 @@ export async function createTestApp(): Promise<TestApp> {
     // first hit is the supported way to neutralise it. Limits themselves are
     // asserted in `throttler.guard.spec.ts`.
     .overrideProvider(ThrottlerStorage)
-    .useValue({
-      increment: async (): Promise<ThrottlerStorageRecord> => ({
-        totalHits: 1,
-        timeToExpire: 60,
-        isBlocked: false,
-        timeToBlockExpire: 0,
-      }),
-    })
+    .useValue(
+      rateLimiting === "real"
+        ? new ThrottlerStorageService()
+        : {
+            increment: async (): Promise<ThrottlerStorageRecord> => ({
+              totalHits: 1,
+              timeToExpire: 60,
+              isBlocked: false,
+              timeToBlockExpire: 0,
+            }),
+          },
+    )
     .compile();
 
   const app = moduleFixture.createNestApplication();
@@ -195,7 +230,7 @@ export async function createTestApp(): Promise<TestApp> {
   // header behind every route. Bound here rather than only in `main.ts` because
   // a missing response header breaks nothing in this process — the e2e suite is
   // the only place its absence is observable at all.
-  applySecurity(app, securityEnvFrom(app.get(ConfigService)));
+  if (security === "applied") applySecurity(app, securityEnvFrom(app.get(ConfigService)));
 
   // Same as main.ts, and for the same reason: `SocketModule` reads the adapter
   // during `init()` below and falls back to `require`-ing

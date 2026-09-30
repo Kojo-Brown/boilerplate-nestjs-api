@@ -2,6 +2,7 @@ import { Controller, Get, Req } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { Request } from "express";
 import { ApiEnvelopeOf } from "@/common/dto/response-envelope.dto";
+import { Public } from "@/common/decorators/public.decorator";
 import { AuditTrailService } from "./audit-trail.service";
 import { ScopeReportDto, ScopedInstanceDto } from "./dto/scope-report.dto";
 import { FeatureFlagCache } from "./feature-flag-cache.service";
@@ -37,6 +38,10 @@ import { SingletonAuditTrail } from "./singleton-audit-trail.service";
  * changes.
  */
 @ApiTags("di-scopes")
+// The class comment above explains why this teaching endpoint discloses nothing
+// worth authenticating. `@Public()` is what makes that an assertion rather than
+// an omission, now that authentication is the default.
+@Public()
 @Controller("di-scopes")
 export class DiScopesController {
   constructor(

@@ -29,6 +29,8 @@ import { QueueModule } from "./queue/queue.module";
 import { WorkersModule } from "./workers/workers.module";
 import { ShutdownModule } from "./common/shutdown/shutdown.module";
 import { ProxyAwareThrottlerGuard } from "./common/guards/throttler.guard";
+import { JwtAuthGuard } from "./auth/guards/jwt-auth.guard";
+import { RolesGuard } from "./auth/guards/roles.guard";
 import { MtlsModule } from "./common/mtls";
 import { envSchema } from "./config/env.schema";
 
@@ -122,6 +124,29 @@ import { envSchema } from "./config/env.schema";
     // docs/di-scopes.md. Safe to delete along with `src/di-scopes`.
     DiScopesModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ProxyAwareThrottlerGuard }],
+  // Order is the order they run in: Nest consults global guards in the order
+  // their providers are declared.
+  //
+  // Authentication is global and opted *out* of, not opted in to. It used to be
+  // opted in to — every protected controller carried its own
+  // `@UseGuards(JwtAuthGuard)` — and `@Public()` existed, honoured by the guard,
+  // applied to nothing, because a guard that is not registered globally has
+  // nothing to be excused from. That arrangement fails silently in one
+  // direction: a controller added without the decorator is reachable by anyone,
+  // and nothing in a review diff or a test run says so. Reversing the default
+  // makes the same mistake fail in the safe direction — a route whose author
+  // forgot to think about authentication answers 401 — and makes every public
+  // route a line somebody wrote on purpose. `test/owasp-api-top10.e2e-spec.ts`
+  // pins the resulting list, so adding to it is a decision a reviewer sees.
+  //
+  // `RolesGuard` is global for the same reason and passes through on any handler
+  // carrying no `@Roles()`: the failure it removes is `@Roles("ADMIN")` written
+  // next to a forgotten `@UseGuards(RolesGuard)`, which is a role requirement
+  // that reads as enforced and is not.
+  providers: [
+    { provide: APP_GUARD, useClass: ProxyAwareThrottlerGuard },
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+  ],
 })
 export class AppModule {}

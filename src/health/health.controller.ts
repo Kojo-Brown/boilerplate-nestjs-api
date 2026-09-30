@@ -13,12 +13,18 @@ import {
 } from "@nestjs/terminus";
 import { PrismaHealthIndicator } from "./indicators/prisma.health-indicator";
 import { SkipResponseEnvelope } from "@/common/decorators/skip-response-envelope.decorator";
+import { Public } from "@/common/decorators/public.decorator";
 
 const MEMORY_HEAP_THRESHOLD = 300 * 1024 * 1024; // 300 MB
 const MEMORY_RSS_THRESHOLD = 500 * 1024 * 1024; // 500 MB
 const DISK_THRESHOLD_PERCENT = 0.9; // 90%
 
 @ApiTags("health")
+// Public: a liveness probe is issued by the orchestrator, which holds no token,
+// and a health endpoint that needs one cannot report the outage where the token
+// service is what is down. What it discloses is bounded to the indicator names
+// and up/down — see the response shape below.
+@Public()
 @Controller("health")
 export class HealthController {
   constructor(

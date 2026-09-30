@@ -10,6 +10,7 @@ import {
   UpdateUserPreferencesCommand,
   UpdateUserProfileCommand,
 } from "./write";
+import { toUserResponse } from "./dto/user-response.dto";
 import { versioned } from "@/common/concurrency";
 import type { ExpectedVersion } from "@/common/concurrency";
 import type { AuthenticatedUser } from "@/auth/strategies/jwt.strategy";
@@ -101,7 +102,10 @@ describe("UsersController", () => {
       const result = await controller.listUsers(query as never);
 
       expect(dispatched(mockQueryBus)).toEqual(new ListUsersQuery(query as never));
-      expect(result).toBe(page);
+      // The page's paging fields are passed through; its items are projected.
+      // `toBe(page)` held here until the projection was added, which is the
+      // point: the admin list was handing out password hashes too.
+      expect(result).toEqual({ ...page, items: [toUserResponse(mockUser)] });
     });
   });
 
@@ -112,7 +116,7 @@ describe("UsersController", () => {
       const result = await controller.findOne("user-1");
 
       expect(dispatched(mockQueryBus)).toEqual(new GetUserQuery("user-1"));
-      expect(result).toEqual(versioned(mockUser, 0));
+      expect(result).toEqual(versioned(toUserResponse(mockUser), 0));
     });
   });
 
@@ -127,7 +131,7 @@ describe("UsersController", () => {
       expect(dispatched(mockCommandBus)).toEqual(
         new UpdateUserProfileCommand(requester, "user-1", dto, ifMatch(0)),
       );
-      expect(result).toEqual(versioned(updated, updated.version));
+      expect(result).toEqual(versioned(toUserResponse(updated), updated.version));
     });
 
     it("wraps the result so the response carries the version it wrote", async () => {
@@ -136,6 +140,40 @@ describe("UsersController", () => {
       await expect(controller.update("user-1", {}, requester, ifMatch(3))).resolves.toMatchObject({
         version: 4,
       });
+    });
+  });
+
+  // What the projection is for. `mockUser` carries a `password` and a
+  // `providerAccountId` exactly as a real row does, so an endpoint that returned
+  // the row straight through — which all four of these did — fails here.
+  describe("the user projection", () => {
+    it.each([
+      ["findOne", () => controller.findOne("user-1")],
+      ["update", () => controller.update("user-1", {}, requester, ifMatch(0))],
+    ])("keeps the row's secret columns out of the %s response", async (_name, call) => {
+      mockQueryBus.execute.mockResolvedValue(mockUser);
+      mockCommandBus.execute.mockResolvedValue(mockUser);
+
+      const { body } = await call();
+
+      expect(mockUser).toHaveProperty("password");
+      expect(body).not.toHaveProperty("password");
+      expect(body).not.toHaveProperty("providerAccountId");
+      // `preferences` has its own owner-checked endpoint. Serving it here as
+      // well answered any authenticated caller with what that check refuses.
+      expect(body).not.toHaveProperty("preferences");
+    });
+
+    it("keeps them out of the admin list too", async () => {
+      mockQueryBus.execute.mockResolvedValue({
+        items: [mockUser],
+        hasNextPage: false,
+        nextCursor: null,
+      });
+
+      const { items } = await controller.listUsers({ limit: 20 } as never);
+
+      expect(items[0]).not.toHaveProperty("password");
     });
   });
 

@@ -1,10 +1,9 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, HttpCode, HttpStatus, Post } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { StorageService } from "./storage.service";
 import { RequestPresignedGetUrlDto } from "./dto/request-presigned-get-url.dto";
 import { RequestPresignedPutUrlDto } from "./dto/request-presigned-put-url.dto";
 import { PresignedUrlDto } from "./dto/presigned-url.dto";
-import { JwtAuthGuard } from "@/auth/guards/jwt-auth.guard";
 import { ApiJwtAuth } from "@/common/swagger/api-jwt-auth.decorator";
 import { ApiCommonErrors } from "@/common/swagger/api-error-responses.decorator";
 import { ApiEnvelopeOf } from "@/common/dto/response-envelope.dto";
@@ -26,7 +25,6 @@ function ApiNotImplementedForAdapter(): MethodDecorator {
 
 @ApiTags("storage")
 @ApiJwtAuth()
-@UseGuards(JwtAuthGuard)
 @Controller("storage")
 export class StorageController {
   constructor(private readonly storage: StorageService) {}

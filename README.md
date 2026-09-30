@@ -226,6 +226,18 @@ docker-compose up        # postgres + redis + api
   batch read is handed to it directly, why a loader is created per operation
   rather than injected as a request-scoped provider, and why the N+1 detector
   measures how the read count _grows_ rather than how long a page takes.
+- [docs/owasp-api-top10.md](./docs/owasp-api-top10.md) — the OWASP API Security
+  Top 10 (2023), risk by risk, and the paired test behind each mitigation: why
+  every assertion has a negative control that removes exactly one thing and
+  watches the same attack land, what the exercise found (`GET /v1/users/:id` was
+  publishing argon2 password hashes to any authenticated caller, and `@Public()`
+  existed while authentication was still opt-in, so a controller added without
+  `@UseGuards` was reachable by anyone), which eight routes answer an
+  unauthenticated caller and why each one has to, how the route inventory is read
+  off the router the process will actually match rather than off the decorators,
+  and the two rows the checklist cannot claim are closed — presigned object keys
+  that are not scoped to the caller, and the user directory that any
+  authenticated caller may read.
 - [docs/security-headers.md](./docs/security-headers.md) — the response
   security headers and the CORS allowlist: the two silent defects in the
   `enableCors` call this replaced (a comma-separated list compared with `===`,

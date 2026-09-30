@@ -14,6 +14,7 @@ import {
 } from "@nestjs/swagger";
 import type { Response } from "express";
 import { SkipResponseEnvelope } from "@/common/decorators/skip-response-envelope.decorator";
+import { Public } from "@/common/decorators/public.decorator";
 import { PROMETHEUS_CONTENT_TYPE, type MetricsScrapeSource } from "@/telemetry";
 import { METRICS_SCRAPE_SOURCE } from "./metrics.tokens";
 
@@ -32,6 +33,11 @@ import { METRICS_SCRAPE_SOURCE } from "./metrics.tokens";
  * parseable by anything that scrapes.
  */
 @ApiTags("metrics")
+// Public for the reason `/health` is: a Prometheus scraper presents no bearer
+// token. An exposition still names routes and status codes, so this endpoint
+// belongs on the mesh-internal listener rather than the public one — deployment
+// keeps it off the ingress; see docs/telemetry.md.
+@Public()
 @Controller({ path: "metrics", version: VERSION_NEUTRAL })
 export class MetricsController {
   constructor(@Inject(METRICS_SCRAPE_SOURCE) private readonly source: MetricsScrapeSource | null) {}

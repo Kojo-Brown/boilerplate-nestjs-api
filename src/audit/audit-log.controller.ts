@@ -1,7 +1,5 @@
-import { Controller, Get, Inject, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Inject, Query } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
-import { JwtAuthGuard } from "@/auth/guards/jwt-auth.guard";
-import { RolesGuard } from "@/auth/guards/roles.guard";
 import { Roles } from "@/common/decorators/roles.decorator";
 import { ApiJwtAuth } from "@/common/swagger/api-jwt-auth.decorator";
 import { ApiCommonErrors, ApiForbiddenRole } from "@/common/swagger/api-error-responses.decorator";
@@ -26,7 +24,6 @@ import { ListAuditLogQueryDto } from "./dto/list-audit-log-query.dto";
  */
 @ApiTags("audit")
 @ApiJwtAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
 @Roles("ADMIN")
 @Controller("audit-log")
 export class AuditLogController {

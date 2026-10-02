@@ -78,7 +78,12 @@ describe("AuthController", () => {
 
   describe("me()", () => {
     it("returns the user from the JWT payload as-is", () => {
-      const user: AuthenticatedUser = { id: "u1", email: "user@example.com", role: "USER" };
+      const user: AuthenticatedUser = {
+        id: "u1",
+        email: "user@example.com",
+        role: "USER",
+        tenantId: "default",
+      };
 
       const result = controller.me(user);
 

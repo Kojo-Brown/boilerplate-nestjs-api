@@ -6,7 +6,12 @@ function upgrade(headers: IncomingHttpHeaders, url = "/v1/realtime"): HandshakeR
   return { url, headers };
 }
 
-const validClaims = { sub: "user-1", email: "person@example.test", role: "USER" };
+const validClaims = {
+  sub: "user-1",
+  email: "person@example.test",
+  role: "USER",
+  tid: "default",
+};
 
 /** Verifies exactly one token and rejects everything else, like a signing key. */
 function verifierFor(token: string, claims: unknown = validClaims): HandshakeTokenVerifier {
@@ -112,7 +117,7 @@ describe("authenticateHandshake", () => {
 
     expect(result).toEqual({
       ok: true,
-      user: { id: "user-1", email: "person@example.test", role: "USER" },
+      user: { id: "user-1", email: "person@example.test", role: "USER", tenantId: "default" },
       source: "authorization-header",
     });
   });
@@ -131,9 +136,14 @@ describe("authenticateHandshake", () => {
     // so anything else signed with JWT_SECRET would otherwise become a
     // principal with `id: undefined`.
     for (const claims of [
-      { sub: "user-1", email: "person@example.test" },
-      { sub: "", email: "person@example.test", role: "USER" },
-      { sub: 42, email: "person@example.test", role: "USER" },
+      { sub: "user-1", email: "person@example.test", tid: "default" },
+      { sub: "", email: "person@example.test", role: "USER", tid: "default" },
+      { sub: 42, email: "person@example.test", role: "USER", tid: "default" },
+      // No tenant, and a tenant that cannot be one: a socket fans out this
+      // tenant's domain events, so there is nothing sensible to default to. The
+      // HTTP side refuses the same two tokens in `JwtStrategy.validate`.
+      { sub: "user-1", email: "person@example.test", role: "USER" },
+      { sub: "user-1", email: "person@example.test", role: "USER", tid: "Acme" },
       "a bare string",
       null,
     ]) {

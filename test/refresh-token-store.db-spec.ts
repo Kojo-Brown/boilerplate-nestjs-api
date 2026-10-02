@@ -1,9 +1,9 @@
 import { Role } from "@prisma/client";
-import type { PrismaClient } from "@prisma/client";
 import type { RefreshTokenClaim } from "@/auth/ports";
 import { PrismaRefreshTokenStore } from "@/auth/prisma-refresh-token.store";
 import { describeRefreshTokenStoreContract } from "@/auth/refresh-token-store.contract";
 import { asPrismaService, createClient, truncateAll, uniqueEmail } from "./helpers/db";
+import type { PrismaService } from "@/common/prisma/prisma.service";
 
 /**
  * `PrismaRefreshTokenStore` against a real Postgres.
@@ -19,7 +19,7 @@ import { asPrismaService, createClient, truncateAll, uniqueEmail } from "./helpe
  * connections racing a replay, and the rows the detection is actually made of.
  */
 describe("PrismaRefreshTokenStore (Postgres)", () => {
-  let client: PrismaClient;
+  let client: PrismaService;
 
   beforeAll(() => {
     client = createClient();
@@ -39,7 +39,7 @@ describe("PrismaRefreshTokenStore (Postgres)", () => {
   });
 
   describe("rotation under real contention", () => {
-    let other: PrismaClient;
+    let other: PrismaService;
 
     beforeAll(() => {
       // A second connection, so the two transactions are genuinely concurrent

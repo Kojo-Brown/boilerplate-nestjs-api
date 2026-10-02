@@ -6,8 +6,61 @@ datasource db {
   provider = "postgresql"
 }
 
+/// One customer organisation, and the unit every policy in
+/// `20261002000000_add_multi_tenancy` compares against. See docs/multi-tenancy.md.
+///
+/// The primary key is the slug an operator chooses when the tenant is
+/// provisioned — `acme`, not `clp7x…` — and that is a deliberate trade. It is
+/// what lets a request's tenant be resolved from `acme.api.example.com` or an
+/// `X-Tenant-Id` header with no database round trip on the hot path, and it is
+/// what lets an RLS predicate compare a column against a value taken straight
+/// from the request. The price is that a tenant cannot be renamed: the id is in
+/// every row, in every URL and in every issued token, so a rename is a new
+/// tenant and a data migration. A surrogate key plus a mutable slug would buy
+/// the rename back and cost a lookup — cached, invalidated, and wrong for as
+/// long as the cache is stale — on the path that decides which tenant's data a
+/// request may see. `CHECK` keeps the shape in the database rather than only in
+/// `isTenantId`, because the id travels in a `Host` header and an id with a dot
+/// in it would resolve two ways.
+model Tenant {
+  id   String @id
+  /// For display. Nothing resolves on it, so it is free to change.
+  name String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users  User[]
+  orders Order[]
+
+  @@map("tenants")
+}
+
 model User {
   id        String   @id @default(cuid())
+
+  /// Which tenant this account belongs to.
+  ///
+  /// `dbgenerated` rather than a value the application passes: the column's
+  /// default is `require_tenant_id()`, which reads the tenant the current
+  /// transaction set and raises if there is none. That is what makes every
+  /// existing write path tenant-correct without a `tenantId` argument threaded
+  /// through it — and what makes a write with no tenant context a loud failure
+  /// instead of a row quietly attributed to whoever the first tenant was. The
+  /// row-level-security policy's `WITH CHECK` refuses an explicit value that
+  /// disagrees with the session, so the default being overridable is not a way
+  /// around it.
+  tenantId  String   @default(dbgenerated("require_tenant_id()"))
+
+  /// Globally unique, not unique per tenant.
+  ///
+  /// An account therefore belongs to exactly one tenant, which is the model
+  /// most B2B products actually want: one identity, one home, and an invitation
+  /// to a second organisation is a second account. The alternative —
+  /// `@@unique([tenantId, email])` — is a real design and is written up in
+  /// docs/multi-tenancy.md, including the two reads it changes: a login would
+  /// have to name the tenant it is authenticating against before it can look
+  /// the address up at all.
   email     String   @unique
   password  String?
   name      String?
@@ -25,10 +78,16 @@ model User {
   /// allowed to overwrite a change it never saw.
   version Int @default(0)
 
+  tenant                Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   refreshTokens         RefreshToken[]
   refreshTokenFamilies  RefreshTokenFamily[]
   orders                Order[]
 
+  /// Every statement against this table carries `tenant_id = …` once the policy
+  /// is on, so the tenant belongs at the front of the index the admin list
+  /// actually uses (`ORDER BY "createdAt" ASC`). Without it the planner filters
+  /// a tenant out of a scan over every tenant's rows.
+  @@index([tenantId, createdAt])
   @@map("users")
 }
 
@@ -182,6 +241,17 @@ enum OutboxStatus {
 /// it. See docs/saga.md.
 model Order {
   id     String @id @default(cuid())
+
+  /// The tenant this order belongs to, filled and checked exactly as
+  /// `users.tenantId` is.
+  ///
+  /// Denormalised rather than reached through `userId`, and the duplication is
+  /// the point: a policy that had to join `users` to find the tenant would be
+  /// evaluated for every candidate row, would need its own policy on `users` to
+  /// be visible to the join, and would make the index on this table useless.
+  /// A tenant column on every tenant-owned table is what keeps the predicate a
+  /// single equality the planner can use.
+  tenantId String @default(dbgenerated("require_tenant_id()"))
   userId String
 
   /// The order lines, AES-256-GCM encrypted under a KMS-wrapped data key.
@@ -230,10 +300,14 @@ model Order {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
   /// `GET /v1/orders` is "this customer's orders, newest first".
   @@index([userId, createdAt])
+  /// The tenant-wide reads an operator and a back-office screen make — and the
+  /// index the policy's predicate can use when the query names no user.
+  @@index([tenantId, createdAt])
   @@map("orders")
 }
 

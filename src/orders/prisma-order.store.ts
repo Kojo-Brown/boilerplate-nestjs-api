@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { OnApplicationBootstrap } from "@nestjs/common";
 import type { Order } from "@prisma/client";
-import { PrismaService } from "@/common/prisma/prisma.service";
+import { PrismaService, type ExtendedPrismaClient } from "@/common/prisma/prisma.service";
 import { requirePrismaTransaction } from "@/common/prisma/prisma-transaction.runner";
 import type { TransactionContext } from "@/common/prisma/transaction.port";
 import { encryptedField, fieldName, FieldEncryptionService } from "@/crypto";
@@ -39,10 +39,23 @@ export const ORDER_ITEMS_FIELD = encryptedField("orders", "itemsCiphertext");
 export class PrismaOrderStore implements OrderStore, OnApplicationBootstrap {
   private readonly logger = new Logger(PrismaOrderStore.name);
 
+  /**
+   * The tenant-scoped client the two reads below use.
+   *
+   * The writes do not need it — they run inside the caller's transaction, which
+   * `PrismaTransactionRunner` has already told which tenant it belongs to — but a
+   * read on the pooled client is its own implicit transaction and carries no
+   * setting, so under the policies it would match no row. Same reasoning, and the
+   * same one-line fix, as `PrismaUsersRepository.scoped`.
+   */
+  private readonly scoped: ExtendedPrismaClient;
+
   constructor(
-    private readonly prisma: PrismaService,
+    prisma: PrismaService,
     private readonly cipher: FieldEncryptionService,
-  ) {}
+  ) {
+    this.scoped = prisma.withExtensions();
+  }
 
   /**
    * Mints this column's data key at startup rather than during the first
@@ -122,12 +135,12 @@ export class PrismaOrderStore implements OrderStore, OnApplicationBootstrap {
   }
 
   async find(id: string): Promise<OrderRecord | null> {
-    const row = await this.prisma.order.findUnique({ where: { id } });
+    const row = await this.scoped.order.findUnique({ where: { id } });
     return row ? this.toRecord(row) : null;
   }
 
   async listForUser(criteria: ListOrdersCriteria): Promise<readonly OrderRecord[]> {
-    const rows = await this.prisma.order.findMany({
+    const rows = await this.scoped.order.findMany({
       where: { userId: criteria.userId },
       // Newest first, and `id` breaks the tie — two orders placed in the same
       // millisecond would otherwise have no stable order, and a cursor over an

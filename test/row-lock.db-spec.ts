@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { DeadlockDetectedError, LockUnavailableError, lockRows } from "@/common/locking";
 import { createClient, truncateAll, uniqueEmail } from "./helpers/db";
+import type { PrismaService } from "@/common/prisma/prisma.service";
 
 /**
  * The Postgres behaviour `lockRows` is built on, pinned against a real server.
@@ -13,8 +14,8 @@ import { createClient, truncateAll, uniqueEmail } from "./helpers/db";
  * covers the statement building; none of it can cover this.
  */
 describe("lockRows (Postgres)", () => {
-  let client: PrismaClient;
-  let other: PrismaClient;
+  let client: PrismaService;
+  let other: PrismaService;
 
   /** Resolves once `hold` has the lock; call `release` to end its transaction. */
   function holdLock(

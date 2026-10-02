@@ -15,6 +15,7 @@ import { EntityTagInterceptor } from "./common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "./common/immutable";
 import { setupSwagger } from "./common/swagger/setup-swagger";
 import { applySecurity, securityEnvFrom } from "./common/security";
+import { applyTenantContext, tenancyEnvFrom } from "./tenancy";
 import { mtls, readMtlsEnv } from "./common/mtls";
 import { ConfigService } from "@nestjs/config";
 import { WsAdapter } from "@nestjs/platform-ws";
@@ -84,6 +85,14 @@ async function bootstrap() {
     new ResponseEnvelopeInterceptor(reflector),
     new EntityTagInterceptor(),
   );
+
+  // The tenant context, bound before anything else that looks at a request.
+  // It has to be first: authentication reads the tenant (a user row is only
+  // visible inside its own tenant), and every statement the request goes on to
+  // make carries the tenant this installs. `applySecurity` below is next because
+  // a response that never gets its headers is better than one that gets them and
+  // the wrong tenant's body.
+  applyTenantContext(app, tenancyEnvFrom(config));
 
   // Security headers and the CORS allowlist, bound before anything routes.
   // `enableCors` used to be called here with `origin: ALLOWED_ORIGINS` passed

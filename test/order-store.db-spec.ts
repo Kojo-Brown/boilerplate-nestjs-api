@@ -6,7 +6,9 @@ import { PrismaOrderStore } from "@/orders";
 import type { OrderStore } from "@/orders";
 import { createTestFieldEncryption } from "@/test-utils/test-field-encryption";
 import type { FieldEncryptionService } from "@/crypto/field-encryption.service";
-import { asPrismaService, createClient, uniqueEmail } from "./helpers/db";
+import { TEST_TENANT_ID, asPrismaService, createClient, uniqueEmail } from "./helpers/db";
+import type { PrismaService } from "@/common/prisma/prisma.service";
+import { runInTenant } from "@/tenancy";
 
 /**
  * `PrismaOrderStore` against a real Postgres.
@@ -26,8 +28,28 @@ import { asPrismaService, createClient, uniqueEmail } from "./helpers/db";
  * another row will not decrypt there, and that an edited byte is refused rather
  * than read.
  */
+/**
+ * `it`, with the suite's tenant in scope for the body.
+ *
+ * `PrismaOrderStore` reads through a tenant-scoped client, which refuses to run with no
+ * tenant in scope — and a read that did reach Postgres without one would be filtered
+ * to nothing by the policies anyway. This suite is about the encrypted column and the SQL under it, so it runs
+ * as the one tenant its rows belong to; `test/tenant-isolation.db-spec.ts` is where
+ * the policies themselves are asked.
+ *
+ * A wrapper rather than a `beforeEach`, and that is not a style choice: an
+ * `AsyncLocalStorage` scope belongs to the execution context that opens it, and a
+ * jest hook's context is not an ancestor of the test's once more than one suite
+ * shares the process. A tenant entered in a hook is visible in that hook and gone by
+ * the time the body runs — which fails loudly here, and is worth knowing about
+ * anywhere else the same shortcut is reached for.
+ */
+function tenantedIt(name: string, body: () => Promise<void>): void {
+  it(name, () => runInTenant(TEST_TENANT_ID, body));
+}
+
 describe("PrismaOrderStore (Postgres)", () => {
-  let client: PrismaClient;
+  let client: PrismaService;
   let store: OrderStore;
   let transactions: PrismaTransactionRunner;
   let cipher: FieldEncryptionService;
@@ -69,7 +91,7 @@ describe("PrismaOrderStore (Postgres)", () => {
       }),
     );
 
-  it("round-trips the lines through the encrypted column, in order", async () => {
+  tenantedIt("round-trips the lines through the encrypted column, in order", async () => {
     const created = await create();
 
     const read = await store.find(created.id);
@@ -81,7 +103,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(read?.status).toBe("PENDING");
   });
 
-  it("discards the order when the unit of work fails", async () => {
+  tenantedIt("discards the order when the unit of work fails", async () => {
     // The property `PlaceOrderHandler` depends on: an order that commits without
     // the saga that drives it is an order nothing will ever advance.
     const id = randomUUID();
@@ -102,7 +124,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(await store.find(id)).toBeNull();
   });
 
-  it("records a cancellation with its reason", async () => {
+  tenantedIt("records a cancellation with its reason", async () => {
     const created = await create();
 
     const cancelled = await transactions.run((tx) =>
@@ -116,7 +138,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(cancelled.failureReason).toBe('No carrier serves "AQ"');
   });
 
-  it("clears the reason on a transition that does not name one", async () => {
+  tenantedIt("clears the reason on a transition that does not name one", async () => {
     // A transition that does not mention a reason is clearing one; otherwise an
     // order cancelled, retried and confirmed would keep the failure text of the
     // attempt that did not happen.
@@ -132,13 +154,13 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(confirmed.failureReason).toBeNull();
   });
 
-  it("rejects a transition for an order that is not there", async () => {
+  tenantedIt("rejects a transition for an order that is not there", async () => {
     await expect(
       transactions.run((tx) => store.transition(tx, randomUUID(), { status: "CONFIRMED" })),
     ).rejects.toThrow();
   });
 
-  it("lists newest first and pages over a stable order", async () => {
+  tenantedIt("lists newest first and pages over a stable order", async () => {
     const first = await create();
     const second = await create();
     const third = await create();
@@ -152,7 +174,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(next.map((order) => order.id)).toEqual([first.id]);
   });
 
-  it("shows one customer nothing of another's", async () => {
+  tenantedIt("shows one customer nothing of another's", async () => {
     await create();
     const other = await client.user.create({
       data: { email: uniqueEmail("order-store-other"), name: "Someone else" },
@@ -161,7 +183,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(await store.listForUser({ userId: other.id, limit: 10 })).toEqual([]);
   });
 
-  it("stores no plaintext a `SELECT` or a backup would show", async () => {
+  tenantedIt("stores no plaintext a `SELECT` or a backup would show", async () => {
     // The whole point, and the one assertion that cannot be made anywhere but
     // against a real column: what is on disk. `store.find` proves a round trip
     // and would look identical if the column were still jsonb.
@@ -182,7 +204,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(stored.readUInt16BE(1)).toBeGreaterThan(0);
   });
 
-  it("will not decrypt a value moved to another order's row", async () => {
+  tenantedIt("will not decrypt a value moved to another order's row", async () => {
     // The attack the record binding closes: whoever can write this table copies
     // a victim's ciphertext onto a row they own and asks the API to render it.
     // Postgres accepts the write — it is just bytes — and the read refuses.
@@ -203,7 +225,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect((await store.find(victim.id))?.items).toHaveLength(2);
   });
 
-  it("will not read a value with a byte changed", async () => {
+  tenantedIt("will not read a value with a byte changed", async () => {
     const created = await create();
     const row = await client.order.findUniqueOrThrow({
       where: { id: created.id },
@@ -220,7 +242,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     await expect(store.find(created.id)).rejects.toThrow(FieldDecryptionError);
   });
 
-  it("cannot be read by a deployment holding another master key", async () => {
+  tenantedIt("cannot be read by a deployment holding another master key", async () => {
     // What makes rotating the master key a migration rather than an edit, and
     // what a stolen backup buys without the key: nothing.
     const created = await create();
@@ -229,7 +251,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     await expect(elsewhere.find(created.id)).rejects.toThrow(FieldDecryptionError);
   });
 
-  it("reads a page of rows written under one data key", async () => {
+  tenantedIt("reads a page of rows written under one data key", async () => {
     // Every row on the page carries the wrapped key it was written under, and the
     // materials cache coalesces them, so this is one unwrap rather than three.
     await create();
@@ -243,7 +265,7 @@ describe("PrismaOrderStore (Postgres)", () => {
     expect(page.every((order) => order.items.length === 2)).toBe(true);
   });
 
-  it("goes with the account, because the row is theirs", async () => {
+  tenantedIt("goes with the account, because the row is theirs", async () => {
     // `onDelete: Cascade`. An order that outlived its owner is a row nobody can
     // read and nobody can delete through the API.
     const created = await create();

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { Prisma } from "@prisma/client";
+import { setTransactionTenant } from "@/tenancy/tenant-prisma";
 import { PrismaService } from "./prisma.service";
 import type { TransactionContext, TransactionRunner } from "./transaction.port";
 
@@ -69,6 +70,18 @@ export class PrismaTransactionRunner implements TransactionRunner {
     try {
       return await this.prisma.$transaction(
         async (client) => {
+          // The first statement of every transaction, before the callback can
+          // write anything: it tells the policies which tenant this unit of work
+          // belongs to, and it is what makes every adapter in this codebase
+          // tenant-correct without any of them mentioning a tenant. The setting is
+          // local to this transaction and ends with it — see `setTransactionTenant`.
+          //
+          // A transaction opened with no tenant in scope is allowed and sets
+          // nothing. That is what the outbox relay and the saga poller do: they
+          // run under no request, they write only to tables with no tenant
+          // column, and the policies refuse them anything else.
+          await setTransactionTenant(client);
+
           const tx: PrismaTransactionContext = {
             backend: "prisma",
             client,

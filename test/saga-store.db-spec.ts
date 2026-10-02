@@ -5,6 +5,7 @@ import { PrismaSagaStore } from "@/saga";
 import type { SagaStore } from "@/saga";
 import { describeSagaStoreContract } from "@/saga/saga-store.contract";
 import { asPrismaService, createClient } from "./helpers/db";
+import type { PrismaService } from "@/common/prisma/prisma.service";
 
 /**
  * `PrismaSagaStore` against a real Postgres.
@@ -22,8 +23,8 @@ import { asPrismaService, createClient } from "./helpers/db";
  * behaves correctly while never having asked it.
  */
 describe("PrismaSagaStore (Postgres)", () => {
-  let client: PrismaClient;
-  let other: PrismaClient;
+  let client: PrismaService;
+  let other: PrismaService;
 
   beforeAll(() => {
     client = createClient();

@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { PrismaService, ExtendedPrismaClient } from "@/common/prisma/prisma.service";
 import { requirePrismaTransaction } from "@/common/prisma/prisma-transaction.runner";
 import type { TransactionContext } from "@/common/prisma/transaction.port";
+import { setTransactionTenant } from "@/tenancy/tenant-prisma";
 import { Prisma } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { VersionConflictError, isSatisfiedBy } from "@/common/concurrency";
@@ -27,26 +28,49 @@ import type {
  */
 @Injectable()
 export class PrismaUsersRepository implements UserReader, UserWriter, UserPreferencesStore {
-  private readonly extended: ExtendedPrismaClient;
+  /**
+   * The tenant-scoped client, and the only one this class reads or writes
+   * through.
+   *
+   * Every statement below used to go to `this.prisma` directly. Under the
+   * policies that would not be a subtle degradation: a `users` read on the pooled
+   * client runs in its own implicit transaction, where the transaction-local
+   * tenant setting from somebody else's transaction does not apply, so the
+   * predicate sees NULL and the row count is zero. The scoped client is what puts
+   * the setting and the query in one transaction — see `tenantScopeExtension`.
+   *
+   * Built once in the constructor and reused: the tenant is read per operation
+   * from the `AsyncLocalStorage`, not captured here, so one long-lived client
+   * serves every request.
+   */
+  private readonly scoped: ExtendedPrismaClient;
 
   constructor(private readonly prisma: PrismaService) {
-    this.extended = prisma.withExtensions();
+    this.scoped = prisma.withExtensions();
   }
 
-  findById(id: string): Promise<User | null> {
-    return this.prisma.user.findUnique({ where: { id } });
+  // Every read below is `async` and awaits inside, rather than handing the caller
+  // Prisma's promise to await later. The difference is where the statement runs: a
+  // `PrismaPromise` is lazy, so an operation *returned* from here executes in
+  // whatever async context eventually awaits it — and the tenant is read when it
+  // executes. Awaiting here keeps the read inside the caller's tenant scope, where
+  // it was asked for. A promise that escaped its scope would be refused rather than
+  // mis-scoped (see `tenantScopeExtension`), so this is about working rather than
+  // about safety.
+  async findById(id: string): Promise<User | null> {
+    return await this.scoped.user.findUnique({ where: { id } });
   }
 
-  findByEmail(email: string): Promise<User | null> {
-    return this.prisma.user.findUnique({ where: { email } });
+  async findByEmail(email: string): Promise<User | null> {
+    return await this.scoped.user.findUnique({ where: { email } });
   }
 
-  findByProviderAccount(provider: string, providerAccountId: string): Promise<User | null> {
-    return this.prisma.user.findFirst({ where: { provider, providerAccountId } });
+  async findByProviderAccount(provider: string, providerAccountId: string): Promise<User | null> {
+    return await this.scoped.user.findFirst({ where: { provider, providerAccountId } });
   }
 
-  findMany(query: UserListQuery): Promise<User[]> {
-    return this.prisma.user.findMany({
+  async findMany(query: UserListQuery): Promise<User[]> {
+    return await this.scoped.user.findMany({
       take: query.limit + 1,
       cursor: query.cursor ? { id: query.cursor } : undefined,
       skip: query.cursor ? 1 : 0,
@@ -63,7 +87,7 @@ export class PrismaUsersRepository implements UserReader, UserWriter, UserPrefer
   }
 
   create(data: CreateUserData, tx?: TransactionContext): Promise<User> {
-    return this.writer(tx).user.create({ data });
+    return this.write(tx, (client) => client.user.create({ data }));
   }
 
   async update(
@@ -73,10 +97,12 @@ export class PrismaUsersRepository implements UserReader, UserWriter, UserPrefer
     tx?: TransactionContext,
   ): Promise<User> {
     try {
-      return await this.writer(tx).user.update({
-        where: { id, ...versionPredicate(expected) },
-        data: { ...data, version: { increment: 1 } },
-      });
+      return await this.write(tx, (client) =>
+        client.user.update({
+          where: { id, ...versionPredicate(expected) },
+          data: { ...data, version: { increment: 1 } },
+        }),
+      );
     } catch (error) {
       throw await this.explainWriteFailure(id, expected, error);
     }
@@ -84,32 +110,46 @@ export class PrismaUsersRepository implements UserReader, UserWriter, UserPrefer
 
   async delete(id: string, expected: ExpectedVersion, tx?: TransactionContext): Promise<User> {
     try {
-      return await this.writer(tx).user.delete({ where: { id, ...versionPredicate(expected) } });
+      return await this.write(tx, (client) =>
+        client.user.delete({ where: { id, ...versionPredicate(expected) } }),
+      );
     } catch (error) {
       throw await this.explainWriteFailure(id, expected, error);
     }
   }
 
   /**
-   * The client a write should run on: the caller's transaction if there is one,
-   * the pooled client otherwise.
+   * Runs a write in the caller's transaction, or in one opened for it.
    *
-   * `Prisma.TransactionClient` is `PrismaClient` minus `$transaction` and the
-   * other connection-level methods, and the model delegates this class uses are
-   * identical on both — so one helper covers every write without either branch
-   * duplicating the query.
+   * It used to pick a *client* rather than own the call, and the tenant setting is
+   * what changed that: the setting is transaction-local, so a write on the pooled
+   * client outside any transaction has no tenant — the `require_tenant_id()`
+   * default refuses the insert and the policies match no row to update. A write
+   * with no caller transaction therefore opens its own and sets the tenant in it,
+   * which is precisely what `tenantScopeExtension` does for the reads above; it is
+   * written out here instead because `Prisma.TransactionClient` and the extended
+   * client are not the same type, and a helper returning either of them could only
+   * do so through a cast.
    *
-   * The read-back in `explainWriteFailure` deliberately stays on the pooled
-   * client. It runs *after* a failed write, when the caller's transaction is
-   * already doomed, and issuing another statement on an aborted transaction
-   * fails with `25P02` rather than answering the question.
+   * The read-back in `explainWriteFailure` deliberately stays outside this. It
+   * runs *after* a failed write, when the caller's transaction is already doomed,
+   * and issuing another statement on an aborted transaction fails with `25P02`
+   * rather than answering the question.
    */
-  private writer(tx?: TransactionContext): Pick<PrismaService, "user"> {
-    return tx ? requirePrismaTransaction(tx, PrismaUsersRepository.name) : this.prisma;
+  private write<T>(
+    tx: TransactionContext | undefined,
+    work: (client: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    if (tx) return work(requirePrismaTransaction(tx, PrismaUsersRepository.name));
+
+    return this.prisma.$transaction(async (client) => {
+      await setTransactionTenant(client);
+      return work(client);
+    });
   }
 
   getPreferences(id: string): Promise<UserPreferences> {
-    return this.extended.user.getPreferences(id);
+    return this.scoped.user.getPreferences(id);
   }
 
   async setPreferences(
@@ -118,7 +158,7 @@ export class PrismaUsersRepository implements UserReader, UserWriter, UserPrefer
     expected: ExpectedVersion,
   ): Promise<PreferencesWriteResult> {
     try {
-      return await this.extended.user.setPreferences(id, patch, versionPredicate(expected).version);
+      return await this.scoped.user.setPreferences(id, patch, versionPredicate(expected).version);
     } catch (error) {
       throw await this.explainWriteFailure(id, expected, error);
     }
@@ -149,7 +189,7 @@ export class PrismaUsersRepository implements UserReader, UserWriter, UserPrefer
     expected: ExpectedVersion,
     error: unknown,
   ): Promise<unknown> {
-    const current = await this.prisma.user.findUnique({
+    const current = await this.scoped.user.findUnique({
       where: { id },
       select: { version: true },
     });

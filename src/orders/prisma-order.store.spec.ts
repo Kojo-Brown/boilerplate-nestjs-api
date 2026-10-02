@@ -14,7 +14,11 @@ import { ORDER_ITEMS_FIELD, PrismaOrderStore } from "./prisma-order.store";
  * and that decision is invisible in a db-spec.
  */
 describe("PrismaOrderStore bootstrap", () => {
-  const prisma = {} as PrismaService;
+  // The constructor builds its tenant-scoped client and nothing here reaches a
+  // delegate through it, so one method is the whole fake. It is not `{}` any more
+  // because the client is built eagerly — which is the point of building it in the
+  // constructor rather than per call.
+  const prisma = { withExtensions: () => ({}) } as unknown as PrismaService;
 
   it("mints the column's data key before the first checkout can need it", async () => {
     // A KMS round trip inside the transaction `PlaceOrderHandler` opens would

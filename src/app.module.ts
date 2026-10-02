@@ -32,6 +32,7 @@ import { ProxyAwareThrottlerGuard } from "./common/guards/throttler.guard";
 import { JwtAuthGuard } from "./auth/guards/jwt-auth.guard";
 import { RolesGuard } from "./auth/guards/roles.guard";
 import { MtlsModule } from "./common/mtls";
+import { TenancyModule, TenantGuard } from "./tenancy";
 import { envSchema } from "./config/env.schema";
 
 @Module({
@@ -47,6 +48,10 @@ import { envSchema } from "./config/env.schema";
     MtlsModule,
     ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    // After PrismaModule, whose service it asks about the connected role, and
+    // early because what it checks is whether this deployment has tenant
+    // isolation at all. See src/tenancy/rls-enforcement.service.ts.
+    TenancyModule,
     AppCacheModule,
     // Global, and before AspectsModule: `AspectWeaver` installs `@Lock()` from
     // the `DISTRIBUTED_LOCK` this binds, and refuses to boot without it.
@@ -146,6 +151,10 @@ import { envSchema } from "./config/env.schema";
   providers: [
     { provide: APP_GUARD, useClass: ProxyAwareThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    // After JwtAuthGuard, which is what puts the token's tenant on the request,
+    // and before RolesGuard: "is this token even usable in this tenant" comes
+    // before "does this role allow this route". See src/tenancy/tenant.guard.ts.
+    { provide: APP_GUARD, useClass: TenantGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })

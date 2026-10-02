@@ -102,6 +102,14 @@ export class InMemoryPrismaService {
     create: (args: { data: Partial<User> & { email: string } }): Promise<User> => {
       const user: User = {
         id: cuid(),
+        // What `require_tenant_id()` does in Postgres, as far as a fake can: the
+        // column has a default, so `PrismaUsersRepository` passes no tenant and
+        // the row still has one. It cannot be the honest version of that default —
+        // raising when no tenant is in scope is a property of the database, and
+        // the suite that asks for it is `test/tenant-isolation.db-spec.ts`. Every
+        // e2e request runs as the default tenant (see `createTestApp`), so this is
+        // the tenant those rows really belong to.
+        tenantId: "default",
         role: Role.USER,
         provider: null,
         providerAccountId: null,
@@ -147,9 +155,25 @@ export class InMemoryPrismaService {
     },
   };
 
+  /**
+   * The fake's stand-in for the tenant-scoped, preference-extended client.
+   *
+   * It spreads the fake itself rather than returning only `user`, because
+   * `PrismaUsersRepository` reads *everything* through this client now — the
+   * tenant setting and the query have to be in one transaction, so a read on the
+   * pooled client would see no tenant at all. `user` is then overlaid with the two
+   * extension methods on top of the ordinary delegate.
+   *
+   * There is no tenant filtering here. That is deliberate and is the same line
+   * every double in this suite draws: isolation is a property of Postgres
+   * policies, and a fake that filtered by tenant would be reporting that the
+   * policies work while never having asked the database.
+   */
   withExtensions() {
     return {
+      ...this,
       user: {
+        ...this.user,
         // Merged over `DEFAULT_USER_PREFERENCES` rather than over a copy of it,
         // the same way `preferencesExtension` does. A hand-written default here
         // drifts the moment a preference is added, and the fake then answers
@@ -210,11 +234,29 @@ export class InMemoryPrismaService {
    */
   $transaction = <T>(work: (client: InMemoryPrismaService) => Promise<T>): Promise<T> => work(this);
 
+  /**
+   * The tenant settings the application has issued, in order.
+   *
+   * `PrismaTransactionRunner` names the tenant as the first statement of every
+   * transaction it opens, and `PrismaUsersRepository` opens one for a write that
+   * has no caller transaction. The fake records those statements rather than
+   * interpreting them: what they *do* is a property of Postgres, and
+   * `test/tenant-isolation.db-spec.ts` is where that is asserted. Recording them
+   * means an e2e spec can still see that the application asked.
+   */
+  readonly tenantSettings: unknown[] = [];
+
+  $executeRaw = (statement: unknown): Promise<number> => {
+    this.tenantSettings.push(statement);
+    return Promise.resolve(0);
+  };
+
   $connect = () => Promise.resolve();
   $disconnect = () => Promise.resolve();
 
   reset() {
     this._users.clear();
+    this.tenantSettings.length = 0;
   }
 }
 

@@ -7,6 +7,12 @@ import { CommandBus, QueryBus } from "@nestjs/cqrs";
 import { AuthService } from "./auth.service";
 import { CreateUserCommand, UpdateUserCommand } from "@/users/write";
 import { FindUserByEmailQuery, FindUserByProviderAccountQuery } from "@/users/read";
+import {
+  MissingTenantContextError,
+  enterTenant,
+  outsideAnyTenant,
+  runInTenant,
+} from "@/tenancy/tenant-context";
 import { REFRESH_TOKEN_STORE } from "./ports";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
@@ -29,6 +35,7 @@ const argon2 = require("argon2") as { hash: jest.Mock; verify: jest.Mock };
 
 const mockUser: User = {
   id: "user-1",
+  tenantId: "default",
   email: "test@example.com",
   password: "hashed-password",
   name: "Test User",
@@ -151,6 +158,12 @@ describe("AuthService", () => {
 
   beforeEach(async () => {
     jest.resetAllMocks();
+    // Every token this service mints names the tenant the request was addressing,
+    // and it refuses to invent one — so a spec that called `register` with no
+    // tenant in scope would be testing that refusal and nothing else. `enterTenant`
+    // rather than wrapping fifteen calls in `runInTenant`: a test *is* the unit of
+    // work, so there is no scope to leave.
+    enterTenant("default");
     routeBusesToUsersModule();
     mockJwtService.sign.mockReturnValue("mock-access-token");
     mockConfigService.get.mockReturnValue("7d");
@@ -359,6 +372,40 @@ describe("AuthService", () => {
 
       expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
       expect(typeof result.refreshToken).toBe("string");
+    });
+  });
+
+  describe("the tenant a token names", () => {
+    it("stamps the tenant the request was addressing into the access token", async () => {
+      usersModule.findByEmail.mockResolvedValue(mockUser);
+      argon2.verify.mockResolvedValue(true);
+      mockRefreshTokens.issue.mockResolvedValue(undefined);
+
+      await runInTenant("acme", () =>
+        service.login({ email: "test@example.com", password: "password123" }),
+      );
+
+      // The request's tenant, not the user row's: the row was only visible at all
+      // because the policies let this tenant see it. `TenantGuard` refuses the
+      // token anywhere else.
+      expect(mockJwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: mockUser.id, tid: "acme" }),
+      );
+    });
+
+    it("refuses to mint a token with no tenant in scope", async () => {
+      usersModule.findByEmail.mockResolvedValue(mockUser);
+      argon2.verify.mockResolvedValue(true);
+
+      // `outsideAnyTenant` leaves the context the suite's `beforeEach` installed,
+      // because a credential is the last thing to issue on a guess: a token minted
+      // under the wrong tenant reads somebody else's rows for its whole fifteen
+      // minutes.
+      await expect(
+        outsideAnyTenant(() =>
+          service.login({ email: "test@example.com", password: "password123" }),
+        ),
+      ).rejects.toThrow(MissingTenantContextError);
     });
   });
 

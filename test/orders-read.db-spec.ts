@@ -9,8 +9,10 @@ import type { SagaState } from "@/saga";
 import { createTestFieldEncryption } from "@/test-utils/test-field-encryption";
 import { measureQueryGrowth } from "@/test-utils/n-plus-one";
 import type { CallRecorder } from "@/test-utils/n-plus-one";
-import { asPrismaService, createClient, uniqueEmail } from "./helpers/db";
+import { TEST_TENANT_ID, asPrismaService, createClient, uniqueEmail } from "./helpers/db";
 import { probePrismaQueries } from "./helpers/prisma-query-probe";
+import type { PrismaService } from "@/common/prisma/prisma.service";
+import { runInTenant } from "@/tenancy";
 
 /**
  * The orders read path against a real Postgres, counting statements.
@@ -19,12 +21,33 @@ import { probePrismaQueries } from "./helpers/prisma-query-probe";
  * doubles and runs on every push; this is the half that cannot be satisfied by
  * a double whose batch read loops, and the half that would notice the ORM
  * issuing a statement nobody wrote. The numbers below are what a page of orders
- * costs: one statement for the page, one for every saga it names, at any size.
+ * costs: one statement for the page, one for every saga it names, and one to name
+ * the tenant the page is read as — at any size.
  *
  * No skip-if-absent branch, for the reason `test/helpers/db.ts` gives.
  */
+/**
+ * `it`, with the suite's tenant in scope for the body.
+ *
+ * `PrismaOrderStore` reads through a tenant-scoped client, which refuses to run with no
+ * tenant in scope — and a read that did reach Postgres without one would be filtered
+ * to nothing by the policies anyway. This suite is about the read model's SQL, so it runs
+ * as the one tenant its rows belong to; `test/tenant-isolation.db-spec.ts` is where
+ * the policies themselves are asked.
+ *
+ * A wrapper rather than a `beforeEach`, and that is not a style choice: an
+ * `AsyncLocalStorage` scope belongs to the execution context that opens it, and a
+ * jest hook's context is not an ancestor of the test's once more than one suite
+ * shares the process. A tenant entered in a hook is visible in that hook and gone by
+ * the time the body runs — which fails loudly here, and is worth knowing about
+ * anywhere else the same shortcut is reached for.
+ */
+function tenantedIt(name: string, body: () => Promise<void>): void {
+  it(name, () => runInTenant(TEST_TENANT_ID, body));
+}
+
 describe("ListOrdersHandler (Postgres)", () => {
-  let client: PrismaClient;
+  let client: PrismaService;
   let handler: ListOrdersHandler;
   let transactions: PrismaTransactionRunner;
   let seedOrders: PrismaOrderStore;
@@ -100,7 +123,7 @@ describe("ListOrdersHandler (Postgres)", () => {
     }
   };
 
-  it("reads a page and every saga on it", async () => {
+  tenantedIt("reads a page and every saga on it", async () => {
     await seed(3);
     recorder.reset();
 
@@ -112,10 +135,16 @@ describe("ListOrdersHandler (Postgres)", () => {
       "accept-order",
       "accept-order",
     ]);
-    expect(recorder.calls).toEqual(["Order.findMany", "SagaInstance.findMany"]);
+    // Three statements, and the third one is the tenant: `PrismaOrderStore`'s read
+    // goes through the tenant-scoped client, which puts `set_config` and the query in
+    // one transaction (see `tenantScopeExtension`). It is one extra statement per
+    // *operation* and not per row, which is the property this suite is about — the
+    // count below is flat at every page size. The saga read is not scoped because
+    // `saga_instances` has no tenant column and no policy.
+    expect(recorder.calls).toEqual(["Order.findMany", "$raw.$executeRaw", "SagaInstance.findMany"]);
   });
 
-  it("costs the same two statements at any page size", async () => {
+  tenantedIt("costs the same three statements at any page size", async () => {
     const growth = await measureQueryGrowth({
       // Twenty is the default page size and a hundred is the DTO's ceiling, so
       // the largest size here is the worst page the endpoint can be asked for.
@@ -128,21 +157,21 @@ describe("ListOrdersHandler (Postgres)", () => {
       },
     });
 
-    expect(growth.countsBySize).toEqual({ 1: 2, 20: 2, 100: 2 });
+    expect(growth.countsBySize).toEqual({ 1: 3, 20: 3, 100: 3 });
   });
 
-  it("still answers when an order's saga instance has been deleted", async () => {
+  tenantedIt("still answers when an order's saga instance has been deleted", async () => {
     await seed(2);
     await client.sagaInstance.deleteMany({});
     recorder.reset();
 
     const page = await handler.execute(new ListOrdersQuery(userId, { limit: 20 }));
 
-    // Two statements still, and two orders still: a missing instance is an
+    // The same statements still, and two orders still: a missing instance is an
     // empty fulfilment, not a failed page and not a second lookup.
     expect(page.items).toHaveLength(2);
     expect(page.items.map((view) => view.fulfilment.status)).toEqual([null, null]);
-    expect(recorder.calls).toEqual(["Order.findMany", "SagaInstance.findMany"]);
+    expect(recorder.calls).toEqual(["Order.findMany", "$raw.$executeRaw", "SagaInstance.findMany"]);
   });
 });
 

@@ -280,13 +280,24 @@ docker-compose up        # postgres + redis + api
   by encrypting a column you can no longer query, how a key is rotated without
   re-encrypting anything, and the three-step cutover for a deployment that
   already has rows.
+- [docs/multi-tenancy.md](./docs/multi-tenancy.md) — one deployment, several
+  customers, and no query that mentions a tenant: why `where: { tenantId }` is the
+  version that cannot be reviewed, how a request's tenant is resolved from a host or
+  a header with no database round trip and why resolution is not authorisation, the
+  three decisions inside `set_config(…, true)` and why the setting has to be
+  transaction-local and inside a transaction at all, the extra round trip a scoped
+  read costs and the connection-string alternative that removes it, why a token
+  carries `tid` and a token without one is refused, why **a policy does not apply to
+  a superuser** and what `prisma/rls/app-role.sql` is for, which tables are
+  deliberately _not_ covered and what reads them, and why `users.email` stays
+  globally unique.
 
 ## Testing
 
 ```bash
 pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
-pnpm test:db       # row-locking, outbox, saga-, audit-store and query-count suites — needs Postgres and DATABASE_URL
+pnpm test:db       # row-locking, outbox, saga-, audit-store, tenant-isolation and query-count suites — needs Postgres and DATABASE_URL
 
 # The Redlock legs of `pnpm test` need independent Redis nodes. Without
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as

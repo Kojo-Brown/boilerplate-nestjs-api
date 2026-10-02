@@ -7,12 +7,7 @@ import { CommandBus, QueryBus } from "@nestjs/cqrs";
 import { AuthService } from "./auth.service";
 import { CreateUserCommand, UpdateUserCommand } from "@/users/write";
 import { FindUserByEmailQuery, FindUserByProviderAccountQuery } from "@/users/read";
-import {
-  MissingTenantContextError,
-  enterTenant,
-  outsideAnyTenant,
-  runInTenant,
-} from "@/tenancy/tenant-context";
+import { MissingTenantContextError, outsideAnyTenant, runInTenant } from "@/tenancy/tenant-context";
 import { REFRESH_TOKEN_STORE } from "./ports";
 import { TRANSACTION_RUNNER } from "@/common/prisma/transaction.port";
 import { OUTBOX_STORE, TransactionalOutbox } from "@/outbox";
@@ -153,17 +148,30 @@ const mockRefreshTokens = {
   revoke: jest.fn(),
 };
 
+/**
+ * `it`, with a tenant in scope for the body.
+ *
+ * Every token `AuthService` mints names the tenant the request was addressing and it
+ * refuses to invent one, so a test that called `register` with no tenant in scope
+ * would be testing that refusal and nothing else.
+ *
+ * A wrapper rather than an `enterTenant` in `beforeEach`, and the difference is not
+ * cosmetic: an `AsyncLocalStorage` scope belongs to the execution context that opens
+ * it, and a jest hook's context is not reliably an ancestor of the test's. The hook
+ * version passed locally and failed thirteen tests on CI — which is the good version
+ * of that mistake, since the only thing it can cause is this refusal. The same
+ * wrapper is in `test/order-store.db-spec.ts` and `test/orders-read.db-spec.ts` for
+ * the same reason.
+ */
+function tenantedIt(name: string, body: () => Promise<void>): void {
+  it(name, () => runInTenant("default", body));
+}
+
 describe("AuthService", () => {
   let service: AuthService;
 
   beforeEach(async () => {
     jest.resetAllMocks();
-    // Every token this service mints names the tenant the request was addressing,
-    // and it refuses to invent one — so a spec that called `register` with no
-    // tenant in scope would be testing that refusal and nothing else. `enterTenant`
-    // rather than wrapping fifteen calls in `runInTenant`: a test *is* the unit of
-    // work, so there is no scope to leave.
-    enterTenant("default");
     routeBusesToUsersModule();
     mockJwtService.sign.mockReturnValue("mock-access-token");
     mockConfigService.get.mockReturnValue("7d");
@@ -197,7 +205,7 @@ describe("AuthService", () => {
   });
 
   describe("register", () => {
-    it("throws ConflictException when email already in use", async () => {
+    tenantedIt("throws ConflictException when email already in use", async () => {
       usersModule.findByEmail.mockResolvedValue(mockUser);
 
       await expect(
@@ -207,7 +215,7 @@ describe("AuthService", () => {
       expect(usersModule.create).not.toHaveBeenCalled();
     });
 
-    it("hashes password, creates user, and returns tokens", async () => {
+    tenantedIt("hashes password, creates user, and returns tokens", async () => {
       usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       usersModule.create.mockResolvedValue(mockUser);
@@ -226,7 +234,7 @@ describe("AuthService", () => {
       expect(typeof result.refreshToken).toBe("string");
     });
 
-    it("announces user.registered so subscribers need no reference to auth", async () => {
+    tenantedIt("announces user.registered so subscribers need no reference to auth", async () => {
       usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       usersModule.create.mockResolvedValue(mockUser);
@@ -247,7 +255,7 @@ describe("AuthService", () => {
       ]);
     });
 
-    it("records the registration against the account itself", async () => {
+    tenantedIt("records the registration against the account itself", async () => {
       usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       usersModule.create.mockResolvedValue(mockUser);
@@ -268,7 +276,7 @@ describe("AuthService", () => {
       ]);
     });
 
-    it("discards the audit entry when the unit of work fails", async () => {
+    tenantedIt("discards the audit entry when the unit of work fails", async () => {
       usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       usersModule.create.mockRejectedValue(new Error("unique violation"));
@@ -280,7 +288,7 @@ describe("AuthService", () => {
       expect(recorded()).toEqual([]);
     });
 
-    it("writes the row and the event in one unit of work", async () => {
+    tenantedIt("writes the row and the event in one unit of work", async () => {
       usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       usersModule.create.mockResolvedValue(mockUser);
@@ -298,7 +306,7 @@ describe("AuthService", () => {
       );
     });
 
-    it("hashes the password outside the transaction", async () => {
+    tenantedIt("hashes the password outside the transaction", async () => {
       const order: string[] = [];
       usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockImplementation(() => {
@@ -320,18 +328,21 @@ describe("AuthService", () => {
       expect(transactions.started).toBe(1);
     });
 
-    it("stages nothing, and opens no transaction, when the email is already taken", async () => {
-      usersModule.findByEmail.mockResolvedValue(mockUser);
+    tenantedIt(
+      "stages nothing, and opens no transaction, when the email is already taken",
+      async () => {
+        usersModule.findByEmail.mockResolvedValue(mockUser);
 
-      await expect(
-        service.register({ email: "test@example.com", password: "password123" }),
-      ).rejects.toThrow(ConflictException);
+        await expect(
+          service.register({ email: "test@example.com", password: "password123" }),
+        ).rejects.toThrow(ConflictException);
 
-      expect(staged()).toEqual([]);
-      expect(transactions.started).toBe(0);
-    });
+        expect(staged()).toEqual([]);
+        expect(transactions.started).toBe(0);
+      },
+    );
 
-    it("discards the event when the unit of work fails", async () => {
+    tenantedIt("discards the event when the unit of work fails", async () => {
       usersModule.findByEmail.mockResolvedValue(null);
       argon2.hash.mockResolvedValue("hashed-password");
       usersModule.create.mockRejectedValue(new Error("unique violation"));
@@ -346,7 +357,7 @@ describe("AuthService", () => {
   });
 
   describe("login", () => {
-    it("throws UnauthorizedException when user not found", async () => {
+    tenantedIt("throws UnauthorizedException when user not found", async () => {
       usersModule.findByEmail.mockResolvedValue(null);
 
       await expect(
@@ -354,7 +365,7 @@ describe("AuthService", () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
-    it("throws UnauthorizedException when password is wrong", async () => {
+    tenantedIt("throws UnauthorizedException when password is wrong", async () => {
       usersModule.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(false);
 
@@ -363,7 +374,7 @@ describe("AuthService", () => {
       );
     });
 
-    it("returns tokens on valid credentials", async () => {
+    tenantedIt("returns tokens on valid credentials", async () => {
       usersModule.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(true);
       mockRefreshTokens.issue.mockResolvedValue(undefined);
@@ -376,7 +387,7 @@ describe("AuthService", () => {
   });
 
   describe("the tenant a token names", () => {
-    it("stamps the tenant the request was addressing into the access token", async () => {
+    tenantedIt("stamps the tenant the request was addressing into the access token", async () => {
       usersModule.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(true);
       mockRefreshTokens.issue.mockResolvedValue(undefined);
@@ -393,7 +404,7 @@ describe("AuthService", () => {
       );
     });
 
-    it("refuses to mint a token with no tenant in scope", async () => {
+    tenantedIt("refuses to mint a token with no tenant in scope", async () => {
       usersModule.findByEmail.mockResolvedValue(mockUser);
       argon2.verify.mockResolvedValue(true);
 
@@ -421,13 +432,13 @@ describe("AuthService", () => {
       },
     });
 
-    it("throws UnauthorizedException when the token is unknown", async () => {
+    tenantedIt("throws UnauthorizedException when the token is unknown", async () => {
       mockRefreshTokens.consume.mockResolvedValue({ outcome: "unknown" });
 
       await expect(service.refresh("bad-token")).rejects.toThrow(UnauthorizedException);
     });
 
-    it("issues nothing when the token could not be claimed", async () => {
+    tenantedIt("issues nothing when the token could not be claimed", async () => {
       // A rejected refresh must not mint a replacement — the losing side of a
       // rotation race lands here, and handing it a token family would be the
       // exact bug `consume` exists to prevent.
@@ -437,14 +448,14 @@ describe("AuthService", () => {
       expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
     });
 
-    it("throws UnauthorizedException for a token whose family is revoked", async () => {
+    tenantedIt("throws UnauthorizedException for a token whose family is revoked", async () => {
       mockRefreshTokens.consume.mockResolvedValue({ outcome: "revoked" });
 
       await expect(service.refresh("dead-session")).rejects.toThrow(UnauthorizedException);
       expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
     });
 
-    it("says the same thing for an unknown token as for a revoked one", async () => {
+    tenantedIt("says the same thing for an unknown token as for a revoked one", async () => {
       // Telling them apart would confirm to whoever is probing that a token
       // they hold was real. A client can act on neither.
       mockRefreshTokens.consume.mockResolvedValue({ outcome: "unknown" });
@@ -455,7 +466,7 @@ describe("AuthService", () => {
       expect(unknown).toBe(revoked);
     });
 
-    it("throws UnauthorizedException for an expired token", async () => {
+    tenantedIt("throws UnauthorizedException for an expired token", async () => {
       mockRefreshTokens.consume.mockResolvedValue({
         outcome: "claimed",
         token: {
@@ -471,7 +482,7 @@ describe("AuthService", () => {
       expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
     });
 
-    it("claims the presented token and issues a new one (rotation)", async () => {
+    tenantedIt("claims the presented token and issues a new one (rotation)", async () => {
       mockRefreshTokens.consume.mockResolvedValue(live());
 
       const result = await service.refresh("valid-token");
@@ -483,7 +494,7 @@ describe("AuthService", () => {
       );
     });
 
-    it("issues the replacement into the family the spent token came from", async () => {
+    tenantedIt("issues the replacement into the family the spent token came from", async () => {
       // The chain is the unit a replay revokes. A rotation that started a new
       // family each time would leave every previous token unreachable from the
       // one that was replayed, and the detection would revoke nothing.
@@ -496,7 +507,7 @@ describe("AuthService", () => {
       );
     });
 
-    it("issues a token that is not the one just spent", async () => {
+    tenantedIt("issues a token that is not the one just spent", async () => {
       mockRefreshTokens.consume.mockResolvedValue(live());
 
       const result = await service.refresh("valid-token");
@@ -510,14 +521,14 @@ describe("AuthService", () => {
         reuse: { familyId: "family-1", userId: "user-1", revokedTokens: 1 },
       };
 
-      it("refuses the request and issues nothing", async () => {
+      tenantedIt("refuses the request and issues nothing", async () => {
         mockRefreshTokens.consume.mockResolvedValue(reused);
 
         await expect(service.refresh("replayed")).rejects.toThrow(UnauthorizedException);
         expect(mockRefreshTokens.issue).not.toHaveBeenCalled();
       });
 
-      it("records the detection in the audit log", async () => {
+      tenantedIt("records the detection in the audit log", async () => {
         mockRefreshTokens.consume.mockResolvedValue(reused);
 
         await expect(service.refresh("replayed")).rejects.toThrow(UnauthorizedException);
@@ -535,7 +546,7 @@ describe("AuthService", () => {
         ]);
       });
 
-      it("still refuses the request when the audit append fails", async () => {
+      tenantedIt("still refuses the request when the audit append fails", async () => {
         // The family was revoked inside the store's transaction, before this
         // service saw anything. Losing the record must not turn the rejection
         // into a 500, which reads as "try again".
@@ -545,7 +556,7 @@ describe("AuthService", () => {
         await expect(service.refresh("replayed")).rejects.toThrow(UnauthorizedException);
       });
 
-      it("announces nothing on the event bus", async () => {
+      tenantedIt("announces nothing on the event bus", async () => {
         // A replay is evidence, not an announcement: the outbox is delivered
         // at-least-once and swept, and this has to be readable years later.
         mockRefreshTokens.consume.mockResolvedValue(reused);
@@ -558,7 +569,7 @@ describe("AuthService", () => {
   });
 
   describe("logout", () => {
-    it("revokes the refresh token", async () => {
+    tenantedIt("revokes the refresh token", async () => {
       mockRefreshTokens.revoke.mockResolvedValue(undefined);
 
       await service.logout("my-token");
@@ -570,7 +581,7 @@ describe("AuthService", () => {
   describe("loginWithGoogle", () => {
     const googleProfile = { googleId: "g-123", email: "google@example.com", name: "Google User" };
 
-    it("creates a new user when no account exists for the Google ID or email", async () => {
+    tenantedIt("creates a new user when no account exists for the Google ID or email", async () => {
       usersModule.findByProviderAccount.mockResolvedValue(null);
       usersModule.findByEmail.mockResolvedValue(null);
       usersModule.create.mockResolvedValue({
@@ -608,20 +619,23 @@ describe("AuthService", () => {
       ]);
     });
 
-    it("records nothing when Google is linked to an account that already exists", async () => {
-      usersModule.findByProviderAccount.mockResolvedValue(null);
-      usersModule.findByEmail.mockResolvedValue(mockUser);
-      usersModule.update.mockResolvedValue({ ...mockUser, provider: "google" });
-      mockRefreshTokens.issue.mockResolvedValue(undefined);
+    tenantedIt(
+      "records nothing when Google is linked to an account that already exists",
+      async () => {
+        usersModule.findByProviderAccount.mockResolvedValue(null);
+        usersModule.findByEmail.mockResolvedValue(mockUser);
+        usersModule.update.mockResolvedValue({ ...mockUser, provider: "google" });
+        mockRefreshTokens.issue.mockResolvedValue(undefined);
 
-      await service.loginWithGoogle(googleProfile);
+        await service.loginWithGoogle(googleProfile);
 
-      // Linking is not a registration: the account already exists and was
-      // already recorded when it was created.
-      expect(recorded()).toEqual([]);
-    });
+        // Linking is not a registration: the account already exists and was
+        // already recorded when it was created.
+        expect(recorded()).toEqual([]);
+      },
+    );
 
-    it("links Google account to an existing user found by email", async () => {
+    tenantedIt("links Google account to an existing user found by email", async () => {
       usersModule.findByProviderAccount.mockResolvedValue(null);
       usersModule.findByEmail.mockResolvedValue(mockUser);
       usersModule.update.mockResolvedValue({
@@ -645,17 +659,20 @@ describe("AuthService", () => {
       expect(staged()).toEqual([]);
     });
 
-    it("returns tokens for an existing user matched by Google provider account ID", async () => {
-      const googleUser = { ...mockUser, provider: "google", providerAccountId: "g-123" };
-      usersModule.findByProviderAccount.mockResolvedValue(googleUser);
-      mockRefreshTokens.issue.mockResolvedValue(undefined);
+    tenantedIt(
+      "returns tokens for an existing user matched by Google provider account ID",
+      async () => {
+        const googleUser = { ...mockUser, provider: "google", providerAccountId: "g-123" };
+        usersModule.findByProviderAccount.mockResolvedValue(googleUser);
+        mockRefreshTokens.issue.mockResolvedValue(undefined);
 
-      const result = await service.loginWithGoogle(googleProfile);
+        const result = await service.loginWithGoogle(googleProfile);
 
-      expect(usersModule.findByEmail).not.toHaveBeenCalled();
-      expect(usersModule.create).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
-      expect(staged()).toEqual([]);
-    });
+        expect(usersModule.findByEmail).not.toHaveBeenCalled();
+        expect(usersModule.create).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ accessToken: "mock-access-token", expiresIn: 900 });
+        expect(staged()).toEqual([]);
+      },
+    );
   });
 });

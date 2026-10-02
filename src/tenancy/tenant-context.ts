@@ -141,7 +141,10 @@ export function outsideAnyTenant<T>(work: () => T): T {
  * processor that has just taken a job, a one-shot script, a test's `beforeEach`.
  *
  * Prefer {@link runInTenant} wherever the work has a boundary. This exists for
- * where it does not.
+ * where it does not — and a test hook is **not** one of those places: a hook's
+ * execution context is not reliably an ancestor of the test's, so a tenant entered in
+ * `beforeEach` can be gone by the time the body runs. Wrap the body instead; the
+ * specs that need one do.
  */
 export function enterTenant(tenantId: string): void {
   if (!isTenantId(tenantId)) {

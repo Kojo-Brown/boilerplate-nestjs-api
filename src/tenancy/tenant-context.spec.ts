@@ -103,6 +103,11 @@ describe("requireTenantId", () => {
 });
 
 describe("enterTenant", () => {
+  // Called inside each test body, which is the only place it can be trusted: an
+  // `AsyncLocalStorage` scope belongs to the execution context that opens it, and a
+  // jest hook's context is not reliably an ancestor of the test's. `beforeEach` with
+  // an `enterTenant` in it passed locally and failed thirteen tests on CI, which is
+  // why `auth.service.spec.ts` wraps its bodies instead.
   it("sets the tenant for the rest of this context, with no scope to leave", () => {
     enterTenant("acme");
 

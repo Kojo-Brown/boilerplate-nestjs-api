@@ -16,6 +16,7 @@ import { IdempotencyInterceptor } from "@/common/idempotency";
 import { EntityTagInterceptor } from "@/common/concurrency";
 import { DeepFreezePipe, freezingEnabledFor } from "@/common/immutable";
 import { applySecurity, securityEnvFrom } from "@/common/security";
+import { applyTenantContext, tenancyEnvFrom } from "@/tenancy";
 import { REFRESH_TOKEN_STORE } from "@/auth/ports";
 import { OUTBOX_STORE, OutboxRelayService } from "@/outbox";
 import { AUDIT_LOG_STORE } from "@/audit";
@@ -231,6 +232,16 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
   // a missing response header breaks nothing in this process — the e2e suite is
   // the only place its absence is observable at all.
   if (security === "applied") applySecurity(app, securityEnvFrom(app.get(ConfigService)));
+
+  // Same as main.ts, and unconditional unlike the security headers above: a
+  // request with no tenant in scope is not a request with one header missing.
+  // `AuthService` refuses to mint a token without a tenant, and every
+  // tenant-scoped read refuses to run — so without this, every e2e suite in the
+  // repository would be asserting on the absence of a tenant rather than on what
+  // it set out to test. Every suite therefore runs as the default tenant, which
+  // is what a single-tenant deployment is; cross-tenant behaviour is a property
+  // of Postgres and is asserted in `test/tenant-isolation.db-spec.ts`.
+  applyTenantContext(app, tenancyEnvFrom(app.get(ConfigService)));
 
   // Same as main.ts, and for the same reason: `SocketModule` reads the adapter
   // during `init()` below and falls back to `require`-ing

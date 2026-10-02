@@ -30,7 +30,12 @@ function jwtStub(roles: Record<string, Role> = {}): JwtService {
     verify(token: string): unknown {
       if (token.startsWith("bad-")) throw new Error("invalid signature");
       if (token === "not-an-access-token") return { iss: "someone" };
-      return { sub: token, email: `${token}@example.test`, role: roles[token] ?? Role.USER };
+      return {
+        sub: token,
+        email: `${token}@example.test`,
+        role: roles[token] ?? Role.USER,
+        tid: "default",
+      };
     },
   } as unknown as JwtService;
 }

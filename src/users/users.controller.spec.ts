@@ -19,6 +19,7 @@ import type { User } from "@prisma/client";
 
 const mockUser: User = {
   id: "user-1",
+  tenantId: "default",
   email: "test@example.com",
   password: "hashed",
   name: "Test User",
@@ -32,13 +33,19 @@ const mockUser: User = {
   version: 0,
 };
 
-const requester: AuthenticatedUser = { id: "user-1", email: "test@example.com", role: "USER" };
+const requester: AuthenticatedUser = {
+  id: "user-1",
+  email: "test@example.com",
+  role: "USER",
+  tenantId: "default",
+};
 
 /** The admin `remove()` records as the actor. `RolesGuard` is what guarantees there is one. */
 const adminRequester: AuthenticatedUser = {
   id: "admin-1",
   email: "admin@example.com",
   role: "ADMIN",
+  tenantId: "default",
 };
 
 const mockCommandBus = { execute: jest.fn() };

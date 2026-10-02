@@ -1,3 +1,4 @@
+import { isTenantId } from "@/tenancy/tenant-context";
 import type { AuthenticatedUser, JwtPayload } from "@/auth/strategies/jwt.strategy";
 import type { HandshakeRequest, HandshakeTokenVerifier } from "./ports";
 
@@ -156,19 +157,38 @@ export function authenticateHandshake(
 
   return {
     ok: true,
-    // The same three fields, read in the same order, as `JwtStrategy.validate`.
+    // The same four fields, read in the same order, as `JwtStrategy.validate`.
     // A WebSocket principal that differed from the HTTP one would make every
     // authorisation rule in the codebase mean two things.
-    user: { id: claims.sub, email: claims.email, role: claims.role },
+    user: {
+      id: claims.sub,
+      email: claims.email,
+      role: claims.role,
+      tenantId: claims.tid,
+    },
     source: lookup.credentials.source,
   };
 }
 
-function isAccessTokenPayload(claims: unknown): claims is JwtPayload {
+/**
+ * Whether these claims are an access token this service minted.
+ *
+ * `tid` is required here exactly as it is in `JwtStrategy.validate`, and a token
+ * without one is `unexpected-claims` rather than a socket in some default tenant:
+ * a connection fans out domain events, and "which tenant's events" is not a
+ * question to answer by guessing. The predicate also narrows `tid` to `string`,
+ * which is what lets the principal above be built without a fallback.
+ */
+function isAccessTokenPayload(claims: unknown): claims is JwtPayload & { tid: string } {
   if (typeof claims !== "object" || claims === null) return false;
-  const { sub, email, role } = claims as Record<string, unknown>;
+  const { sub, email, role, tid } = claims as Record<string, unknown>;
   return (
-    typeof sub === "string" && sub !== "" && typeof email === "string" && typeof role === "string"
+    typeof sub === "string" &&
+    sub !== "" &&
+    typeof email === "string" &&
+    typeof role === "string" &&
+    typeof tid === "string" &&
+    isTenantId(tid)
   );
 }
 

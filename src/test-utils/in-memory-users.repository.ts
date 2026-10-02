@@ -39,6 +39,10 @@ export class InMemoryUsersRepository implements UsersStore {
   seed(overrides: Partial<User> & Pick<User, "id">): User {
     const now = new Date();
     const user: User = {
+      // The default tenant, like every other fixture in `src/test-utils`: a row
+      // in a single-tenant deployment. A spec that cares which tenant a row
+      // belongs to overrides it.
+      tenantId: "default",
       email: `${overrides.id}@example.test`,
       password: null,
       name: null,
@@ -107,6 +111,7 @@ export class InMemoryUsersRepository implements UsersStore {
     const now = new Date();
     const user: User = {
       id: nextId(),
+      tenantId: "default",
       email: data.email,
       password: data.password ?? null,
       name: data.name ?? null,

@@ -18,6 +18,8 @@ import { AuditLog } from "@/audit";
 import { UNCONDITIONAL } from "@/common/concurrency";
 import { REFRESH_TOKEN_STORE } from "./ports";
 import type { RefreshTokenReuse, RefreshTokenStore } from "./ports";
+import { requireTenantId } from "@/tenancy/tenant-context";
+import type { JwtPayload } from "./strategies/jwt.strategy";
 import type { Role, User } from "@prisma/client";
 import type { RegisterDto } from "./dto/register.dto";
 import type { LoginDto } from "./dto/login.dto";
@@ -273,7 +275,22 @@ export class AuthService {
    * with nothing for a replay to revoke but the one token that was replayed.
    */
   private async issueTokens(userId: string, email: string, role: Role, familyId?: string) {
-    const payload = { sub: userId, email, role };
+    // `tid` is the tenant the token may be used in, and it is the tenant the
+    // request that minted it was addressing — not a property of the user row,
+    // which is only visible at all because the policies allowed this tenant to
+    // see it. `TenantGuard` refuses the token anywhere else, which is what stops
+    // a token obtained from one tenant being replayed against another.
+    //
+    // `requireTenantId` rather than a fallback: minting a credential is the last
+    // place to guess. Every HTTP request has a tenant by the time it reaches a
+    // controller; anything else that wants a token has to say which tenant it is
+    // acting for.
+    const payload: JwtPayload = {
+      sub: userId,
+      email,
+      role,
+      tid: requireTenantId("AuthService.issueTokens"),
+    };
     const accessToken = this.jwt.sign(payload);
     const refreshExpiry = this.config.get("JWT_REFRESH_EXPIRY", "7d");
     const expiresAt = new Date(Date.now() + ms(refreshExpiry));

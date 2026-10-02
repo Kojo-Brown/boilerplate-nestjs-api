@@ -1,6 +1,6 @@
-import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
-import type { PrismaService } from "@/common/prisma/prisma.service";
+import type { PrismaClient } from "@prisma/client";
+import type { ConfigService } from "@nestjs/config";
+import { PrismaService } from "@/common/prisma/prisma.service";
 
 /**
  * Connection string for the `*.db-spec.ts` suites.
@@ -29,6 +29,39 @@ export function databaseUrl(): string {
 }
 
 /**
+ * The tenant every `*.db-spec.ts` row belongs to unless the suite says otherwise.
+ *
+ * It is the row `20261002000000_add_multi_tenancy` inserts, and the tenant
+ * `TENANCY_DEFAULT_TENANT_ID` resolves to — so a suite that says nothing about
+ * tenancy is writing the rows a single-tenant deployment writes.
+ */
+export const TEST_TENANT_ID = "default";
+
+/**
+ * {@link databaseUrl} with a session-level tenant attached.
+ *
+ * `users` and `orders` take their `tenantId` from `require_tenant_id()`, which
+ * reads `app.current_tenant_id` and refuses to be absent — so an insert with no
+ * tenant anywhere in scope fails, which is the whole point of the default. The
+ * suites in this directory are about row locks, outbox claims and hash chains
+ * rather than about tenancy, and threading a tenant through every one of their
+ * fixtures would be noise in seventeen places.
+ *
+ * Postgres's `options` connection parameter sets the GUC for the whole session, so
+ * every connection in the pool has it from the moment it is opened. That is not a
+ * trick for tests: it is how a *single-tenant* deployment is configured, and how a
+ * deployment with a connection pool per tenant is (docs/multi-tenancy.md). What it
+ * is not is safe for a pool shared between tenants, which is why the application
+ * sets the tenant per transaction instead and `test/tenant-isolation.db-spec.ts`
+ * asserts on the difference.
+ */
+export function databaseUrlForTenant(tenantId: string = TEST_TENANT_ID): string {
+  const url = new URL(databaseUrl());
+  url.searchParams.set("options", `-c app.current_tenant_id=${tenantId}`);
+  return url.toString();
+}
+
+/**
  * A Prisma client on its own connection.
  *
  * Row locks are held by a *transaction*, and a transaction lives on a
@@ -36,22 +69,32 @@ export function databaseUrl(): string {
  * row genuinely needs two clients. Two `$transaction` calls on one client can
  * be served by one pooled connection and would then serialise for the wrong
  * reason, quietly turning a lock test into a no-op.
+ *
+ * It is a real `PrismaService` rather than a `PrismaClient` because the adapters
+ * these suites exercise now build a tenant-scoped client with `withExtensions()`,
+ * which a plain client does not have. The `ConfigService` it wants is one method.
  */
-export function createClient(): PrismaClient {
-  return new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl() }) });
+export function createClient(connectionString: string = databaseUrlForTenant()): PrismaService {
+  return new PrismaService({
+    getOrThrow: () => connectionString,
+  } as unknown as ConfigService);
 }
 
 /**
- * A client typed as `PrismaService` for adapters that inject one.
+ * Almost the identity now that {@link createClient} returns the service itself.
  *
- * The adapters under test touch the `PrismaClient` surface only — model
- * delegates, `$transaction`, `$queryRaw` — never the two lifecycle hooks or
- * `withExtensions`, so a plain client stands in for the service exactly. It is
- * a cast rather than a real `PrismaService` because constructing one requires a
- * `ConfigService`, which would drag Nest's DI into a suite that is about SQL.
+ * It stays for the two things that still are not one: `probePrismaQueries` hands
+ * back an *extended* client, whose type `PrismaService` is not assignable from, and
+ * the name still says the thing worth saying at every call site in this directory —
+ * the adapter wants the service.
+ *
+ * The cast is safe for the adapters that take a probed client because all of them
+ * reach only the delegate surface. An adapter that builds a tenant-scoped client
+ * with `withExtensions()` — `PrismaUsersRepository`, `PrismaOrderStore` — needs a
+ * real service, which is what `createClient()` is.
  */
-export function asPrismaService(client: PrismaClient): PrismaService {
-  return client as unknown as PrismaService;
+export function asPrismaService(client: PrismaClient | PrismaService): PrismaService {
+  return client as PrismaService;
 }
 
 /** Deletes every row, respecting the cascade from users to refresh tokens. */

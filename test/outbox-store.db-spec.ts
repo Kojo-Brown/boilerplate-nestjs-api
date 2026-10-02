@@ -5,6 +5,7 @@ import type { OutboxStore } from "@/outbox";
 import { describeOutboxStoreContract } from "@/outbox/outbox-store.contract";
 import { PrismaTransactionRunner } from "@/common/prisma/prisma-transaction.runner";
 import { asPrismaService, createClient, truncateAll, uniqueEmail } from "./helpers/db";
+import type { PrismaService } from "@/common/prisma/prisma.service";
 
 /**
  * `PrismaOutboxStore` against a real Postgres.
@@ -19,8 +20,8 @@ import { asPrismaService, createClient, truncateAll, uniqueEmail } from "./helpe
  * Postgres behaves correctly while never having asked it.
  */
 describe("PrismaOutboxStore (Postgres)", () => {
-  let client: PrismaClient;
-  let other: PrismaClient;
+  let client: PrismaService;
+  let other: PrismaService;
 
   beforeAll(() => {
     client = createClient();

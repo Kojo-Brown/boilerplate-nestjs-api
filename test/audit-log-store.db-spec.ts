@@ -11,6 +11,7 @@ import {
 import type { NewAuditEntry } from "@/audit";
 import { describeAuditLogStoreContract } from "@/audit/audit-log-store.contract";
 import { PrismaTransactionRunner } from "@/common/prisma/prisma-transaction.runner";
+import type { PrismaService } from "@/common/prisma/prisma.service";
 import { asPrismaService, createClient, truncateAll, uniqueEmail } from "./helpers/db";
 
 /**
@@ -33,8 +34,8 @@ import { asPrismaService, createClient, truncateAll, uniqueEmail } from "./helpe
  * correctly while never having asked it.
  */
 describe("PrismaAuditLogStore (Postgres)", () => {
-  let client: PrismaClient;
-  let other: PrismaClient;
+  let client: PrismaService;
+  let other: PrismaService;
 
   beforeAll(() => {
     client = createClient();

@@ -7,7 +7,12 @@ import { GetOrderQuery, ListOrdersQuery } from "./read";
 import type { OrderView } from "./read";
 import { PlaceOrderCommand } from "./write";
 
-const user: AuthenticatedUser = { id: "user-1", email: "buyer@example.test", role: "USER" };
+const user: AuthenticatedUser = {
+  id: "user-1",
+  email: "buyer@example.test",
+  role: "USER",
+  tenantId: "default",
+};
 
 const view: OrderView = {
   order: {

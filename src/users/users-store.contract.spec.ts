@@ -99,6 +99,11 @@ class FakePrismaClient {
       const now = new Date();
       const row: User = {
         id: `c${this.sequence.toString().padStart(24, "0")}`,
+        // What the column default does in Postgres. The contract itself says
+        // nothing about tenancy: both implementations of `UserWriter` are handed
+        // a tenant by the layer underneath them, so a store that invented one
+        // would be the thing under test rather than the store.
+        tenantId: "default",
         email: data.email,
         password: data.password ?? null,
         name: data.name ?? null,
@@ -163,9 +168,33 @@ class FakePrismaClient {
     },
   };
 
+  /**
+   * The tenant-scoped, preference-extended client — which for this fake is itself
+   * plus the two extension methods.
+   *
+   * `PrismaUsersRepository` reads everything through this client, because a read on
+   * the pooled client carries no transaction and therefore no tenant setting. The
+   * fake does no tenant filtering: whether a policy hides another tenant's row is a
+   * property of Postgres, and the suite that asks Postgres is
+   * `test/tenant-isolation.db-spec.ts`.
+   */
+  /**
+   * Runs the callback against this same fake, the way
+   * `test/helpers/in-memory-prisma.ts` does: the repository opens a transaction for
+   * a write that has no caller transaction, and the writes have to land in the same
+   * map as everything else. Atomicity is not claimed — that is Postgres's, and
+   * `test/outbox-store.db-spec.ts` is where it is asserted.
+   */
+  $transaction = <T>(work: (client: FakePrismaClient) => Promise<T>): Promise<T> => work(this);
+
+  /** The tenant `set_config`, which this fake records by ignoring. */
+  $executeRaw = (): Promise<number> => Promise.resolve(0);
+
   withExtensions() {
     return {
+      ...this,
       user: {
+        ...this.user,
         getPreferences: (id: string): Promise<UserPreferences> => {
           const stored = this.rows.get(id)?.preferences as Partial<UserPreferences> | null;
           return Promise.resolve(mergePreferences(DEFAULT_USER_PREFERENCES, stored ?? {}));

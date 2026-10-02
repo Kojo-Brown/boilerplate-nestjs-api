@@ -18,6 +18,11 @@ export function buildUser(overrides: Partial<User> = {}): User {
   const now = new Date();
   return {
     id: randomCuid(),
+    // The tenant every fixture belongs to unless a test says otherwise. It is the
+    // row `20261002000000_add_multi_tenancy` inserts and the tenant
+    // `TENANCY_DEFAULT_TENANT_ID` resolves to, so a fixture built here is a
+    // plausible row of a real single-tenant deployment.
+    tenantId: "default",
     email: faker.internet.email(),
     name: faker.person.fullName(),
     password: "$argon2id$v=19$m=65536$fakehash",

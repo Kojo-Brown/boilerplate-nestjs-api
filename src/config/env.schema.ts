@@ -11,6 +11,7 @@ import { refineSecurityEnv, securityEnvShape } from "@/common/security/security.
 import { cryptoEnvShape, refineCryptoEnv } from "@/crypto/crypto.env";
 import { refineTelemetryEnv, telemetryEnvShape } from "@/telemetry/telemetry.env";
 import { loggingEnvShape, refineLoggingEnv } from "@/logging";
+import { refineTenancyEnv, tenancyEnvShape } from "@/tenancy/tenancy.env";
 import { WORKER_POOL_NAMES } from "@/workers/ports";
 
 export const envSchema = z
@@ -720,6 +721,16 @@ export const envSchema = z
      * decodes one. See `docs/field-encryption.md`.
      */
     ...cryptoEnvShape,
+
+    /**
+     * Multi-tenancy, spread in on the same argument once more, with its own twist:
+     * these three values decide *which customer's rows a request may reach*, and
+     * two of them are compared against a string taken from a header. A malformed
+     * default tenant id fails nowhere near the mistake — it fails inside a policy
+     * evaluation, as a foreign-key violation on a table nobody was looking at. See
+     * `docs/multi-tenancy.md`.
+     */
+    ...tenancyEnvShape,
   })
   /**
    * Selecting a gateway without its credentials is a deployment that boots
@@ -756,6 +767,14 @@ export const envSchema = z
     // more than it should to a log store that keeps it — so the only moment it
     // can be caught is this one.
     refineLoggingEnv(env, env.NODE_ENV, ctx);
+
+    // The tenancy rules. The format checks have to happen here because the
+    // values are compared against a `Host` header and a column with a CHECK
+    // constraint, and a value that matches neither resolves no tenant at all.
+    // The one rule that cannot be checked from the environment — that the
+    // connection does not bypass row-level security — is `RlsEnforcementService`'s
+    // at boot, because the answer is in `pg_roles`.
+    refineTenancyEnv(env, env.NODE_ENV, ctx);
 
     /**
      * Selecting S3 without its credentials is a deployment that boots happily

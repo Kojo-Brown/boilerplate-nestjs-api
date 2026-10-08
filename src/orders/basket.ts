@@ -45,9 +45,14 @@ export class LineQuantityExceededError extends BadRequestException {
  * existing order's lines for no reason anybody asked for.
  */
 export function mergeLines(lines: readonly ReservedLine[]): readonly ReservedLine[] {
-  // RED STEP — not implemented. This is today's behaviour, written down: the
-  // lines travel through untouched. See docs/tdd-kata.md.
-  return lines;
+  const quantities = new Map<string, number>();
+  for (const line of lines) {
+    quantities.set(line.sku, (quantities.get(line.sku) ?? 0) + line.quantity);
+  }
+  // A `Map` iterates in insertion order, which is where first appearance comes
+  // from — not from anything this loop does deliberately, so it is pinned by a
+  // spec rather than left as a property of the collection somebody might swap.
+  return [...quantities].map(([sku, quantity]) => ({ sku, quantity }));
 }
 
 /**
@@ -60,6 +65,11 @@ export function mergeLines(lines: readonly ReservedLine[]): readonly ReservedLin
  * {@link MAX_QUANTITY_PER_SKU}.
  */
 export function canonicaliseBasket(lines: readonly ReservedLine[]): readonly ReservedLine[] {
-  // RED STEP — not implemented. See docs/tdd-kata.md.
-  return lines;
+  const basket = mergeLines(lines);
+  for (const line of basket) {
+    if (line.quantity > MAX_QUANTITY_PER_SKU) {
+      throw new LineQuantityExceededError(line.sku, line.quantity);
+    }
+  }
+  return basket;
 }

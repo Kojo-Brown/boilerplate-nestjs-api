@@ -1,5 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import type { Money } from "@/payments/money";
+import { canonicaliseBasket } from "./basket";
 import type { OrderItem } from "./order";
 import type { ReservedLine } from "./ports";
 
@@ -44,9 +45,23 @@ export interface PricedOrder {
   readonly total: Money;
 }
 
+/**
+ * Prices a basket, after reducing it to one line per product.
+ *
+ * Existence is checked first, over the lines as the caller sent them, so a SKU
+ * nobody sells is reported as such even when the same line is also over the
+ * per-SKU bound — and the SKU named is the first one the caller got wrong
+ * rather than the first one left after a merge reordered them.
+ */
 export function priceOrder(lines: readonly ReservedLine[]): PricedOrder {
-  const items = lines.map((line) => {
+  for (const line of lines) {
+    if (!PRODUCT_CATALOGUE[line.sku]) throw new UnknownSkuError(line.sku);
+  }
+
+  const items = canonicaliseBasket(lines).map((line) => {
     const entry = PRODUCT_CATALOGUE[line.sku];
+    // Unreachable: every SKU was checked against this same record above. The
+    // guard is here because `noUncheckedIndexedAccess` cannot know that.
     if (!entry) throw new UnknownSkuError(line.sku);
     return { sku: line.sku, quantity: line.quantity, unitPriceMinor: entry.unitPriceMinor };
   });

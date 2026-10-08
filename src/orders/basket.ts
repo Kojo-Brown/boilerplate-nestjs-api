@@ -43,16 +43,26 @@ export class LineQuantityExceededError extends BadRequestException {
  * Order is first appearance, so the basket a customer sees back is in the order
  * they built it. Sorting would be just as canonical and would reorder every
  * existing order's lines for no reason anybody asked for.
+ *
+ * Generic over anything that *is* a line, so the same merge serves a
+ * `ReservedLine` on its way to the warehouse and a priced `OrderItem` on its
+ * way to the order row. Whatever else the line carries is taken from its first
+ * appearance: for an `OrderItem` that is `unitPriceMinor`, which is the same on
+ * every line of one SKU because it was looked up from the catalogue rather than
+ * sent by the caller — see `priceOrder`.
  */
-export function mergeLines(lines: readonly ReservedLine[]): readonly ReservedLine[] {
-  const quantities = new Map<string, number>();
+export function mergeLines<T extends ReservedLine>(lines: readonly T[]): readonly T[] {
+  const merged = new Map<string, T>();
   for (const line of lines) {
-    quantities.set(line.sku, (quantities.get(line.sku) ?? 0) + line.quantity);
+    const seen = merged.get(line.sku);
+    // A `Map` iterates in insertion order, which is where first appearance
+    // comes from — not from anything this loop does deliberately, so it is
+    // pinned by a spec rather than left as a property of the collection
+    // somebody might swap. Copied rather than mutated: these lines came from a
+    // caller who is entitled to still own them afterwards.
+    merged.set(line.sku, seen ? { ...seen, quantity: seen.quantity + line.quantity } : { ...line });
   }
-  // A `Map` iterates in insertion order, which is where first appearance comes
-  // from — not from anything this loop does deliberately, so it is pinned by a
-  // spec rather than left as a property of the collection somebody might swap.
-  return [...quantities].map(([sku, quantity]) => ({ sku, quantity }));
+  return [...merged.values()];
 }
 
 /**
@@ -64,7 +74,7 @@ export function mergeLines(lines: readonly ReservedLine[]): readonly ReservedLin
  * @throws LineQuantityExceededError when any one SKU totals more than
  * {@link MAX_QUANTITY_PER_SKU}.
  */
-export function canonicaliseBasket(lines: readonly ReservedLine[]): readonly ReservedLine[] {
+export function canonicaliseBasket<T extends ReservedLine>(lines: readonly T[]): readonly T[] {
   const basket = mergeLines(lines);
   for (const line of basket) {
     if (line.quantity > MAX_QUANTITY_PER_SKU) {

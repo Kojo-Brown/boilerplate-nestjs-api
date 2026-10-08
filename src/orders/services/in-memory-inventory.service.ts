@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
+import { mergeLines } from "../basket";
 import { OutOfStockError } from "../orders.errors";
-import type { InventoryService, ReserveStockInput, ReservedLine, StockReservation } from "../ports";
+import type { InventoryService, ReserveStockInput, StockReservation } from "../ports";
 
 /**
  * What is on the shelves when the process starts.
@@ -48,6 +49,14 @@ export class InMemoryInventoryService implements InventoryService {
     // them separately would compare each against the *whole* shelf and pass a
     // request for twice what is there, which is the shape of an oversell that
     // no individual line looks wrong in.
+    //
+    // `priceOrder` already canonicalises a basket before the saga ever starts,
+    // so in this application the merge is a no-op by the time a checkout
+    // arrives. It stays because the *port* promises nothing about its input —
+    // in a deployment this class is somebody else's warehouse behind HTTP, and
+    // a warehouse that trusts its callers to deduplicate is a warehouse that
+    // oversells for a reason nobody can see in a diff. `mergeLines` is
+    // idempotent, so applying it twice costs one pass over twenty lines.
     const lines = mergeLines(input.lines);
 
     // Checked in full before anything is decremented. A partial reservation —
@@ -121,13 +130,4 @@ export class InMemoryInventoryService implements InventoryService {
   get held(): readonly StockReservation[] {
     return [...this.reservations.values()];
   }
-}
-
-/** Sums duplicate SKUs, so two lines of the same item are one hold. */
-export function mergeLines(lines: readonly ReservedLine[]): readonly ReservedLine[] {
-  const merged = new Map<string, number>();
-  for (const line of lines) {
-    merged.set(line.sku, (merged.get(line.sku) ?? 0) + line.quantity);
-  }
-  return [...merged].map(([sku, quantity]) => ({ sku, quantity }));
 }

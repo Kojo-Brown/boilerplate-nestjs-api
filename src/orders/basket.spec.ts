@@ -85,6 +85,20 @@ describe("mergeLines", () => {
     expect(skus).toEqual([...new Set(skus)]);
   });
 
+  it("keeps whatever else a line carries, from its first appearance", () => {
+    // The generic signature is what lets `priceOrder` merge *priced* lines, so
+    // the catalogue is read once per line instead of once to validate and
+    // again to recover a price the merge dropped. It relies on the surviving
+    // line keeping its `unitPriceMinor` — safe because that came from the
+    // catalogue and is identical on every line of one SKU.
+    expect(
+      mergeLines([
+        { sku: "SKU-LAMP-03", quantity: 1, unitPriceMinor: 4_250 },
+        { sku: "SKU-LAMP-03", quantity: 2, unitPriceMinor: 4_250 },
+      ]),
+    ).toEqual([{ sku: "SKU-LAMP-03", quantity: 3, unitPriceMinor: 4_250 }]);
+  });
+
   it("merges an empty basket to an empty basket", () => {
     expect(mergeLines([])).toEqual([]);
   });

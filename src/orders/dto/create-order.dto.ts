@@ -11,6 +11,7 @@ import {
   Min,
   ValidateNested,
 } from "class-validator";
+import { MAX_QUANTITY_PER_SKU } from "../basket";
 
 /**
  * One line of a checkout request.
@@ -30,12 +31,20 @@ export class CreateOrderItemDto {
   })
   readonly sku!: string;
 
-  @ApiProperty({ example: 2, minimum: 1, maximum: 100 })
+  @ApiProperty({ example: 2, minimum: 1, maximum: MAX_QUANTITY_PER_SKU })
   @IsInt()
   @Min(1)
-  // An upper bound per line as well as per order: without one, a single line of
-  // 10^9 units is a reservation request no warehouse should be asked to price.
-  @Max(100)
+  // An upper bound per line: without one, a single line of 10^9 units is a
+  // reservation request no warehouse should be asked to price.
+  //
+  // It is the *same* number as the domain's per-SKU bound, which is why it is
+  // that constant rather than a literal, but it is not the same check and
+  // cannot be: `@Max` is handed one array element at a time and has no way to
+  // notice that the element beside it names the same SKU. Two lines of
+  // `MAX_QUANTITY_PER_SKU` are two valid lines. What refuses the pair is
+  // `canonicaliseBasket`, once they have been merged — see
+  // docs/tdd-kata.md.
+  @Max(MAX_QUANTITY_PER_SKU)
   readonly quantity!: number;
 }
 

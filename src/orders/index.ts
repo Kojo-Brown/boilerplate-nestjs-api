@@ -1,6 +1,12 @@
 export { OrdersModule } from "./orders.module";
 export { CheckoutSaga, CHECKOUT_SAGA } from "./checkout.saga";
 export type { CheckoutSagaState } from "./checkout.saga";
+export {
+  LineQuantityExceededError,
+  MAX_QUANTITY_PER_SKU,
+  canonicaliseBasket,
+  mergeLines,
+} from "./basket";
 export { CATALOGUE_CURRENCY, PRODUCT_CATALOGUE, UnknownSkuError, priceOrder } from "./catalogue";
 export type { CatalogueEntry, PricedOrder } from "./catalogue";
 export { ORDER_ITEMS_FIELD, PrismaOrderStore } from "./prisma-order.store";

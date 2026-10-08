@@ -78,7 +78,13 @@ export class PlaceOrderHandler implements ICommandHandler<PlaceOrderCommand> {
         currency: priced.total.currency,
         totalMinor: priced.total.amountMinor,
         shippingCountry: input.shippingCountry.toUpperCase(),
-        lines: input.lines.map((line) => ({ ...line })),
+        // Taken from the priced basket rather than from `input.lines`, so the
+        // state, the order row and the hold the warehouse takes are the same
+        // basket by construction. Projected back down to sku and quantity:
+        // the state is `jsonb` and a second copy of the prices in it is a
+        // second copy to keep in step with the row that is the record of what
+        // was charged.
+        lines: priced.items.map((item) => ({ sku: item.sku, quantity: item.quantity })),
         reservationId: null,
         paymentId: null,
         shipmentId: null,

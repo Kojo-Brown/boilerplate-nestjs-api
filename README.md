@@ -291,6 +291,15 @@ docker-compose up        # postgres + redis + api
   a superuser** and what `prisma/rls/app-role.sql` is for, which tables are
   deliberately _not_ covered and what reads them, and why `users.email` stays
   globally unique.
+- [docs/tdd-kata.md](./docs/tdd-kata.md) — a worked red→green→refactor cycle, one
+  commit per step, on a real defect: a checkout request's lines reached three
+  separate records of the same basket by three different routes, and the per-SKU
+  bound in `CreateOrderItemDto` could be defeated by splitting a quantity across
+  two lines. Why the red commit contains today's behaviour written down rather
+  than nothing or a `not implemented`, which specs pinned invariants rather than
+  examples and which one pushed back on the obvious green implementation, why
+  the green step was committed with two smells named in its message, and why the
+  refactor left the warehouse's now-redundant merge in place.
 
 ## Testing
 

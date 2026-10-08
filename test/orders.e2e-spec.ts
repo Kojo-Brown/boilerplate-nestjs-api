@@ -248,6 +248,54 @@ describe("Orders (e2e)", () => {
       expect((await place(body)).status).toBe(400);
     });
 
+    it("refuses a per-SKU quantity split across two valid lines", async () => {
+      // Both lines pass `CreateOrderItemDto` — `@Max(MAX_QUANTITY_PER_SKU)` is
+      // handed one array element at a time and cannot see that the element
+      // beside it names the same SKU — so the refusal has to come from the
+      // domain, after the basket is merged. This asserts it arrives as a 400
+      // through `AllExceptionsFilter` rather than as a 500 or as an accepted
+      // order for twice what an order may be for. See docs/tdd-kata.md.
+      const response = await place({
+        items: [
+          { sku: "SKU-LAMP-03", quantity: 100 },
+          { sku: "SKU-LAMP-03", quantity: 100 },
+        ],
+        shippingCountry: "GB",
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch(
+        /Order is for 200 of "SKU-LAMP-03", more than the 100 allowed per SKU/,
+      );
+      expect(fixture.orders.all()).toHaveLength(0);
+      expect(fixture.sagas.all()).toHaveLength(0);
+      // Nothing was held either: the request never reached the saga.
+      expect(fixture.inventory.stockOf("SKU-LAMP-03")).toBe(SEED_STOCK["SKU-LAMP-03"]);
+    });
+
+    it("places one order for a basket that named the same SKU twice", async () => {
+      // The other side of the same change: a repeat under the bound is a
+      // perfectly good order, for one product, and every record of it says so.
+      const response = await place({
+        items: [
+          { sku: "SKU-LAMP-03", quantity: 1 },
+          { sku: "SKU-DESK-01", quantity: 1 },
+          { sku: "SKU-LAMP-03", quantity: 2 },
+        ],
+        shippingCountry: "GB",
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.items).toEqual([
+        { sku: "SKU-LAMP-03", quantity: 3, unitPriceMinor: 4_250 },
+        { sku: "SKU-DESK-01", quantity: 1, unitPriceMinor: 34_900 },
+      ]);
+      expect(response.body.data.totalMinor).toBe(3 * 4_250 + 34_900);
+      // And the hold the warehouse took is of that same basket, which before
+      // this was the only one of the three records that was merged.
+      expect(fixture.inventory.stockOf("SKU-LAMP-03")).toBe(SEED_STOCK["SKU-LAMP-03"]! - 3);
+    });
+
     it("refuses an unauthenticated checkout", async () => {
       const response = await request(app.getHttpServer()).post("/v1/orders").send(basket());
       expect(response.status).toBe(401);

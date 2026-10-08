@@ -1,5 +1,5 @@
 import { OutOfStockError } from "../orders.errors";
-import { InMemoryInventoryService, SEED_STOCK, mergeLines } from "./in-memory-inventory.service";
+import { InMemoryInventoryService, SEED_STOCK } from "./in-memory-inventory.service";
 
 describe("InMemoryInventoryService", () => {
   let inventory: InMemoryInventoryService;
@@ -108,20 +108,5 @@ describe("InMemoryInventoryService", () => {
 
   it("resolves null, never undefined, for a hold nobody took", async () => {
     expect(await inventory.find("saga-9:reserve-stock")).toBeNull();
-  });
-});
-
-describe("mergeLines", () => {
-  it("sums duplicate SKUs so two lines of one item are a single hold", () => {
-    expect(
-      mergeLines([
-        { sku: "SKU-DESK-01", quantity: 1 },
-        { sku: "SKU-LAMP-03", quantity: 3 },
-        { sku: "SKU-DESK-01", quantity: 2 },
-      ]),
-    ).toEqual([
-      { sku: "SKU-DESK-01", quantity: 3 },
-      { sku: "SKU-LAMP-03", quantity: 3 },
-    ]);
   });
 });

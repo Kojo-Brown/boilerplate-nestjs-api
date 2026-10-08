@@ -8,6 +8,7 @@ import { InMemoryTransactionRunner } from "@/test-utils/in-memory-transaction.ru
 import { realEventContract } from "@/test-utils/event-contract";
 import { stubConfig } from "@/test-utils/stub-config";
 import { CHECKOUT_SAGA } from "../checkout.saga";
+import { LineQuantityExceededError, MAX_QUANTITY_PER_SKU } from "../basket";
 import { UnknownSkuError } from "../catalogue";
 import { PlaceOrderCommand, PlaceOrderHandler } from "./place-order.command";
 
@@ -134,6 +135,84 @@ describe("PlaceOrderHandler", () => {
         }),
       ),
     ).rejects.toThrow(UnknownSkuError);
+
+    expect(h.orders.all()).toHaveLength(0);
+    expect(h.sagaStore.all()).toHaveLength(0);
+    expect(h.transactions.started).toBe(0);
+  });
+
+  it("writes one basket, not three descriptions of one", async () => {
+    // The order row, the saga state and the hold the warehouse takes are three
+    // separate records of the same basket, and they used to be able to
+    // disagree: `priceOrder` passed repeated SKUs through while
+    // `InMemoryInventoryService.reserve` merged them, so an order for
+    // `LAMP x1 + LAMP x2` was stored as two lines, shipped as two lines, and
+    // held as one of three. Canonicalising before any of them is written is
+    // what makes them the same basket by construction.
+    const h = harness();
+
+    const order = await h.handler.execute(
+      new PlaceOrderCommand(USER, {
+        lines: [
+          { sku: "SKU-LAMP-03", quantity: 1 },
+          { sku: "SKU-DESK-01", quantity: 1 },
+          { sku: "SKU-LAMP-03", quantity: 2 },
+        ],
+        shippingCountry: "GB",
+      }),
+    );
+
+    expect(order.items).toEqual([
+      { sku: "SKU-LAMP-03", quantity: 3, unitPriceMinor: 4_250 },
+      { sku: "SKU-DESK-01", quantity: 1, unitPriceMinor: 34_900 },
+    ]);
+
+    const instance = await h.sagaStore.find(order.sagaId);
+    const state = instance?.state as { lines?: readonly { sku: string; quantity: number }[] };
+    expect(state.lines).toEqual([
+      { sku: "SKU-LAMP-03", quantity: 3 },
+      { sku: "SKU-DESK-01", quantity: 1 },
+    ]);
+    // The saga state carries the basket, not the prices: the order row is
+    // where what was charged lives, and a second copy in `jsonb` is a second
+    // copy to keep in step.
+    expect(state.lines?.every((line) => !("unitPriceMinor" in line))).toBe(true);
+  });
+
+  it("reports the number of products in order.placed, not the number of lines sent", async () => {
+    const h = harness();
+
+    await h.handler.execute(
+      new PlaceOrderCommand(USER, {
+        lines: [
+          { sku: "SKU-LAMP-03", quantity: 1 },
+          { sku: "SKU-LAMP-03", quantity: 2 },
+        ],
+        shippingCountry: "GB",
+      }),
+    );
+
+    const placed = h.outboxStore.all()[0]?.payload as { lineCount?: number };
+    expect(placed.lineCount).toBe(1);
+  });
+
+  it("refuses a basket over the per-SKU bound before anything is written", async () => {
+    // Both lines pass `CreateOrderItemDto`, so this is the first place the
+    // request can be refused — and it has to be refused before the transaction,
+    // like an unknown SKU, rather than compensated after it.
+    const h = harness();
+
+    await expect(
+      h.handler.execute(
+        new PlaceOrderCommand(USER, {
+          lines: [
+            { sku: "SKU-LAMP-03", quantity: MAX_QUANTITY_PER_SKU },
+            { sku: "SKU-LAMP-03", quantity: 1 },
+          ],
+          shippingCountry: "GB",
+        }),
+      ),
+    ).rejects.toThrow(LineQuantityExceededError);
 
     expect(h.orders.all()).toHaveLength(0);
     expect(h.sagaStore.all()).toHaveLength(0);

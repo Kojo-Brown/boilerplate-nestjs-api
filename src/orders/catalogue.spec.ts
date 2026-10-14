@@ -87,6 +87,22 @@ describe("priceOrder", () => {
   });
 });
 
+describe("the catalogue itself", () => {
+  it("names everything it sells", () => {
+    // `name` is the one field `priceOrder` does not read, which is exactly why
+    // it needs its own assertion: mutation testing blanked all four of them and
+    // the suite stayed green. An invariant rather than a copy of the four
+    // literals — "every product has a name" is what a reviewer would object to
+    // the absence of, and it keeps holding when a fifth SKU is added, which a
+    // golden-value assertion would not.
+    const unnamed = Object.entries(PRODUCT_CATALOGUE)
+      .filter(([, entry]) => entry.name.trim() === "")
+      .map(([sku]) => sku);
+
+    expect(unnamed).toEqual([]);
+  });
+});
+
 describe("the catalogue and the warehouse", () => {
   it("prices everything the warehouse stocks", () => {
     // A SKU on a shelf with no price is an order that cannot be placed for

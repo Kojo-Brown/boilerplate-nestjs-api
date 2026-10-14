@@ -207,6 +207,49 @@ jobs:
           path: coverage/
           retention-days: 7
 
+  # Mutation testing. Coverage says a line ran; this says the suite would have
+  # noticed it being wrong. Scoped to the pure domain logic listed in
+  # `stryker.config.mjs` — see docs/mutation-testing.md for why it is a list and
+  # how to widen it.
+  #
+  # One Node version, not the matrix: a mutation score is a property of the
+  # suite, not of the runtime, and the two legs would report the same number for
+  # twice the runner time. Node 22 because it is what the Dockerfile ships.
+  #
+  # `needs: [test]` so a red suite is reported as a red suite. Stryker's dry run
+  # refuses to start when a test fails, and "mutation testing failed" is a much
+  # worse description of a broken test than "test failed" is.
+  mutation:
+    name: Mutation Score
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The scoped files do not touch Prisma, but `enableFindRelatedTests` runs
+      # whole spec files and ts-jest type-checks each one it loads, so the
+      # generated client has to exist.
+      - run: pnpm db:generate
+      # Fails on `thresholds.break` in stryker.config.mjs. No services and no
+      # secrets: every spec this reaches runs on in-memory doubles, which is a
+      # property of the scope rather than a coincidence — a file whose tests
+      # need Postgres does not belong in `mutate`.
+      - run: pnpm test:mutation
+        env:
+          NODE_OPTIONS: --throw-deprecation
+      - name: Upload mutation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 7
+
   build:
     # Builds on every pull request and pushes only from main. The build used to
     # be main-only, which meant a broken Dockerfile could not fail a PR and only

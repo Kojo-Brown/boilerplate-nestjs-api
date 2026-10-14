@@ -300,6 +300,12 @@ docker-compose up        # postgres + redis + api
   examples and which one pushed back on the obvious green implementation, why
   the green step was committed with two smells named in its message, and why the
   refactor left the warehouse's now-redundant merge in place.
+- [docs/mutation-testing.md](./docs/mutation-testing.md) — Stryker over the pure
+  domain logic, with a score threshold in CI: how to read a survivor and which
+  of the three things it is, the eight unasserted behaviours the first run found
+  in files already at 100% line coverage, why `mutate` is a list of files rather
+  than `src/**` and how to widen it, why the break threshold sits below the
+  actual score, and why the TypeScript checker is not installed.
 
 ## Testing
 
@@ -307,6 +313,7 @@ docker-compose up        # postgres + redis + api
 pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
 pnpm test:db       # row-locking, outbox, saga-, audit-store, tenant-isolation and query-count suites — needs Postgres and DATABASE_URL
+pnpm test:mutation # mutation score over the pure domain logic — see docs/mutation-testing.md
 
 # The Redlock legs of `pnpm test` need independent Redis nodes. Without
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as

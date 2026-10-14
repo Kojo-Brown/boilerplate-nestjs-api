@@ -5,6 +5,11 @@ coverage
 .env.local
 *.tsbuildinfo
 
+# Stryker's sandbox (a copy of the repository per worker) and its HTML report.
+# `pnpm test:mutation` writes both; the report is a CI artifact, never a commit.
+.stryker-tmp
+/reports/
+
 # macOS
 .DS_Store
 

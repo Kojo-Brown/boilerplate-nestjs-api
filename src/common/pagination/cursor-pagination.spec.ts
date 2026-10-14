@@ -43,6 +43,20 @@ describe("buildCursorPage", () => {
     expect(page.nextCursor).not.toBeNull();
   });
 
+  it("has no cursor when the page it would point past is empty", () => {
+    // `limit: 0` is the one input where there is a next page and no last item
+    // to encode, and `noUncheckedIndexedAccess` is why the guard on `lastItem`
+    // exists at all. Without this case the guard was unasserted — mutation
+    // testing replaced it with `true` and nothing failed, though on this input
+    // the default `getId` would have read `.id` off `undefined` and thrown a
+    // TypeError out of a pure function.
+    const page = buildCursorPage(makeItems(1), 0);
+
+    expect(page.items).toEqual([]);
+    expect(page.hasNextPage).toBe(true);
+    expect(page.nextCursor).toBeNull();
+  });
+
   it("cursor encodes the ID of the last returned item", () => {
     const rows = makeItems(6);
     const page = buildCursorPage(rows, 5);

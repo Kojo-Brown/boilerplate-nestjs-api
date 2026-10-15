@@ -6,7 +6,7 @@
  * nowhere else.
  */
 export interface Money {
-  /** Integer number of minor units. Always >= 0. */
+  /** Integer number of minor units. Always >= 0, and never above `Number.MAX_SAFE_INTEGER`. */
   readonly amountMinor: number;
   /** Upper-case ISO 4217 alphabetic code. */
   readonly currency: string;
@@ -53,6 +53,18 @@ export function normaliseMoney(money: Money): Money {
   }
   if (money.amountMinor < 0) {
     throw new InvalidMoneyError(`Amount must not be negative, received ${money.amountMinor}`);
+  }
+  // `Number.isInteger` is true of 1e21, and `String(1e21)` is "1e+21" — which
+  // `toDecimalString` would slice into "1e+.21" and send to a provider as the
+  // amount to charge. Above 2^53 the arithmetic stops being exact as well, so
+  // the integer check is not enough on its own: the representable range is
+  // part of what "minor units survive arithmetic" means, and it is checked
+  // here rather than at each caller.
+  if (!Number.isSafeInteger(money.amountMinor)) {
+    throw new InvalidMoneyError(
+      `Amount ${money.amountMinor} is larger than the largest minor-unit amount that can be ` +
+        `represented exactly (${Number.MAX_SAFE_INTEGER})`,
+    );
   }
 
   return { amountMinor: money.amountMinor, currency };
@@ -107,7 +119,19 @@ export function fromDecimalString(value: string, currency: string): Money {
   }
 
   const minor = `${whole}${fraction.padEnd(exponent, "0")}`;
-  return { amountMinor: Number(minor), currency: normalisedCurrency };
+  const amountMinor = Number(minor);
+  // The same representable-range limit as `normaliseMoney`, from the other
+  // direction: `Number("99999999999999999999.99" -> "9999999999999999999999")`
+  // is 1e22, which is neither the value the provider sent nor anything that
+  // renders back to it. A provider returning an amount that large is a bug
+  // somewhere, and the one thing not to do with it is round it silently.
+  if (!Number.isSafeInteger(amountMinor)) {
+    throw new InvalidMoneyError(
+      `Amount "${value}" is larger than the largest minor-unit amount that can be ` +
+        `represented exactly (${Number.MAX_SAFE_INTEGER} minor units)`,
+    );
+  }
+  return { amountMinor, currency: normalisedCurrency };
 }
 
 export function sameCurrency(a: Money, b: Money): boolean {

@@ -306,6 +306,13 @@ docker-compose up        # postgres + redis + api
   in files already at 100% line coverage, why `mutate` is a list of files rather
   than `src/**` and how to widen it, why the break threshold sits below the
   actual score, and why the TypeScript checker is not installed.
+- [docs/property-based-testing.md](./docs/property-based-testing.md) —
+  fast-check over the money and cursor-pagination helpers: the two defects the
+  first run found in files already at 100% line coverage and a clean mutation
+  score, the four shapes of property worth writing, why the generator has to
+  cover what the code _accepts_ rather than what it should accept, how each
+  property was watched failing against deliberately broken code, and why the
+  seed is fixed and how to soak with another one.
 
 ## Testing
 

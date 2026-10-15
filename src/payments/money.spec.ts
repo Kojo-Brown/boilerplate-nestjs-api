@@ -35,6 +35,30 @@ describe("money", () => {
       expect(() => normaliseMoney({ amountMinor: -1, currency: "EUR" })).toThrow(InvalidMoneyError);
     });
 
+    // `Number.isInteger(1e21)` is true, so this amount used to pass every
+    // check and come out of `toDecimalString` as "1e+.21" — `String(1e21)` is
+    // "1e+21" and the padding/slicing treats it as digits. Found by the
+    // round-trip property in `money.property.spec.ts`, which shrank to exactly
+    // this value.
+    it("rejects an amount too large to be represented exactly", () => {
+      expect(() => normaliseMoney({ amountMinor: 1e21, currency: "EUR" })).toThrow(
+        InvalidMoneyError,
+      );
+      expect(() =>
+        normaliseMoney({ amountMinor: Number.MAX_SAFE_INTEGER + 2, currency: "EUR" }),
+      ).toThrow(InvalidMoneyError);
+    });
+
+    it("accepts the largest exactly representable amount", () => {
+      // The boundary is inclusive: 2^53 - 1 minor units is a real amount and
+      // renders without loss. Asserted so that a mutant tightening the guard
+      // to `<` has something to fail.
+      expect(normaliseMoney({ amountMinor: Number.MAX_SAFE_INTEGER, currency: "EUR" })).toEqual({
+        amountMinor: Number.MAX_SAFE_INTEGER,
+        currency: "EUR",
+      });
+    });
+
     // The reason this function exists is to fail *locally*, with a message, so
     // that a malformed amount is not an opaque 400 from Stripe three hops
     // later — which makes the message part of the contract rather than
@@ -51,6 +75,9 @@ describe("money", () => {
       );
       expect(() => normaliseMoney({ amountMinor: -1, currency: "EUR" })).toThrow(
         /must not be negative, received -1/,
+      );
+      expect(() => normaliseMoney({ amountMinor: 1e21, currency: "EUR" })).toThrow(
+        /Amount 1e\+21 is larger than the largest minor-unit amount that can be represented exactly \(9007199254740991\)/,
       );
     });
   });
@@ -129,6 +156,24 @@ describe("money", () => {
     it("rejects more precision than the currency allows", () => {
       expect(() => fromDecimalString("1.005", "EUR")).toThrow(InvalidMoneyError);
       expect(() => fromDecimalString("1.5", "JPY")).toThrow(InvalidMoneyError);
+    });
+
+    it("rejects an amount too large to be represented exactly", () => {
+      // `Number("9999999999999999999999")` is 1e22 — not the value the
+      // provider sent, and not anything that renders back to it. Rounding a
+      // payment amount silently is the one outcome this module exists to
+      // prevent, so it is refused rather than parsed.
+      expect(() => fromDecimalString("99999999999999999999.99", "EUR")).toThrow(InvalidMoneyError);
+      expect(() => fromDecimalString("99999999999999999999.99", "EUR")).toThrow(
+        /Amount "99999999999999999999\.99" is larger than the largest minor-unit amount that can be represented exactly \(9007199254740991 minor units\)/,
+      );
+    });
+
+    it("accepts the largest exactly representable amount", () => {
+      expect(fromDecimalString("90071992547409.91", "EUR")).toEqual({
+        amountMinor: Number.MAX_SAFE_INTEGER,
+        currency: "EUR",
+      });
     });
 
     it("rejects anything that is not a decimal number", () => {

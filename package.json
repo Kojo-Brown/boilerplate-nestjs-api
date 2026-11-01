@@ -13,12 +13,13 @@
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:db": "jest --config ./test/jest-db.json --runInBand",
+    "test:integration": "jest --config ./test/jest-integration.json --runInBand",
     "test:mutation": "stryker run",
     "bench:scopes": "ts-node -r tsconfig-paths/register src/di-scopes/scope-cost.bench.ts",
     "db:generate": "prisma generate",
@@ -98,6 +99,8 @@
     "@nestjs/testing": "^11.1.27",
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/jest-runner": "10.0.0",
+    "@testcontainers/postgresql": "12.2.1",
+    "@testcontainers/redis": "12.2.1",
     "@types/express": "^5.0.6",
     "@types/jest": "^29.5.14",
     "@types/multer": "^1.4.12",
@@ -128,7 +131,10 @@
       "msgpackr-extract"
     ],
     "ignoredBuiltDependencies": [
-      "@scarf/scarf"
+      "@scarf/scarf",
+      "cpu-features",
+      "protobufjs",
+      "ssh2"
     ]
   }
 }

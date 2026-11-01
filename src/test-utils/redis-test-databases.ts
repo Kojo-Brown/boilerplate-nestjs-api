@@ -34,4 +34,8 @@ export const REDIS_TEST_DATABASES = {
   distributedLockContract: 14,
   /** `src/common/idempotency/stores/redis-idempotency.store.spec.ts` */
   redisIdempotencyStore: 13,
+  /** `test/integration/idempotency-store.integration-spec.ts` */
+  idempotencyStoreIntegration: 12,
+  /** `test/integration/distributed-lock.integration-spec.ts` */
+  distributedLockIntegration: 11,
 } as const;

@@ -207,6 +207,50 @@ jobs:
           path: coverage/
           retention-days: 7
 
+  # The Testcontainers-backed integration tier. Deliberately has no `services:`
+  # block, and that absence is the point of the job: `globalSetup` starts its own
+  # `postgres:17-alpine` and three `redis:8-alpine` containers, migrates the
+  # database from nothing, and exports `DATABASE_URL`, `REDIS_URL` and
+  # `REDLOCK_NODES` itself. All it needs from the runner is the Docker socket
+  # ubuntu-latest already has, so the suite runs identically here and on a
+  # laptop — see docs/integration-testing.md.
+  #
+  # That is what the `test` job above cannot give. Its servers are declared in
+  # this file, so nothing in the repository states that those suites need one:
+  # a clean clone reports the Redis legs of the idempotency and locking
+  # contracts as `todo` and passes green. And a service container cannot be
+  # stopped, so the property Redlock exists for — a quorum surviving a node that
+  # has genuinely gone away — was asserted against a fake. This tier stops a
+  # real one.
+  #
+  # One Node version, not the matrix. What these suites measure is the behaviour
+  # of Postgres and Redis and of the code in front of them; neither is a
+  # property of the runtime, and the two legs would report the same result for
+  # twice the runner time plus twice the containers. Node 22 because it is what
+  # the Dockerfile ships.
+  #
+  # `needs: [test]` for the reason the mutation job has it: when the ordinary
+  # suite is broken, "integration failed" is a much worse description of the
+  # problem than "test failed" is.
+  integration:
+    name: Integration (Testcontainers)
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `migrate deploy` in `globalSetup` and the suites themselves both need
+      # the generated client.
+      - run: pnpm db:generate
+      - run: pnpm test:integration
+        env:
+          NODE_OPTIONS: --throw-deprecation
+
   # Mutation testing. Coverage says a line ran; this says the suite would have
   # noticed it being wrong. Scoped to the pure domain logic listed in
   # `stryker.config.mjs` — see docs/mutation-testing.md for why it is a list and

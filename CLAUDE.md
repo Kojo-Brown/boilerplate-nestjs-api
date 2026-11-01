@@ -16,8 +16,19 @@ Production-grade NestJS 11 REST API boilerplate. Spec-driven: features added one
    pnpm typecheck
    pnpm lint
    pnpm test
+   pnpm test:integration
    pnpm build
    ```
+   `pnpm test:integration` is the `integration` CI job and blocks a merge like
+   the rest, so it belongs in this list. It is seconds of work: `globalSetup`
+   starts one `postgres:17-alpine` and three `redis:8-alpine` through
+   Testcontainers, migrates the database from nothing, and the suites run
+   serially against it. All it needs is a Docker socket — no service to start,
+   no `DATABASE_URL` to set. See `docs/integration-testing.md` before adding a
+   suite; the three rules that bite are that a new suite needs its own entry in
+   `REDIS_TEST_DATABASES`, that a client pointed at a stopped node needs
+   `retryStrategy: () => null`, and that a suite wanting to take a server away
+   starts its own rather than stopping the shared fixture's.
 6. Commit, `git push -u origin <branch>`, then `gh pr create`.
 7. `gh pr checks --watch` → **merge only if every check is green**:
    `gh pr merge --squash --delete-branch`

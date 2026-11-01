@@ -35,6 +35,14 @@ const majorsFromEngines = (range: string): number[] =>
  * supports, and the job must not also declare a matrix.
  */
 const SINGLE_VERSION_JOBS: Readonly<Record<string, string>> = {
+  integration:
+    "What this tier measures is the behaviour of Postgres and Redis and of the " +
+    "code immediately in front of them — a `SET NX` settling a twenty-way " +
+    "race, a Redlock quorum surviving a stopped container, a migration " +
+    "history applying to an empty database. None of that is a property of the " +
+    "Node runtime, and the second leg would start seven more containers to " +
+    "report the same result. A divergence across Node versions would be the " +
+    "`test` matrix's finding to make, not this job's.",
   mutation:
     "A mutation score is a property of the test suite, not of the runtime. " +
     "The second leg would spend four and a half minutes of runner time to " +

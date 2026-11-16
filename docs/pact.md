@@ -114,7 +114,7 @@ ones the access policy allows. The 404-for-somebody-else's-order interaction is
 in the pact precisely because that behaviour is a contract _and_ a disclosure
 control: a 403 appearing there would confirm the order exists.
 
-## Three things that will cost you an afternoon
+## Four things that will cost you an afternoon
 
 **`requestFilter` is registered globally, ahead of Pact's own routes.** pact-js
 mounts it with `app.use` on the verification proxy, so it also sees the
@@ -139,6 +139,21 @@ The symptom is a body mismatch quoting the proxy's error page.
 length of the spec and restores them after; it is sound because the only host the
 spec talks to is the provider on loopback, and it is not a TLS or policy bypass
 because nothing in the spec makes an outbound request.
+
+**`pnpm test:pact:provider` cannot run under `--throw-deprecation`.** Every other
+script step in `ci.yml` sets it, because warnings are failures here. This one does
+not, and the reason is a dependency rather than this repository: Pact verifies a
+provider by standing an Express proxy in front of it, that proxy is
+`http-proxy@1.18.1` — a direct dependency of `@pact-foundation/pact` — and it
+calls the deprecated `util._extend` on every forwarded request. Under the flag the
+warning is thrown and the job fails _after_ printing all four interactions as OK,
+with a stack ending in `node_modules`, which reads like a contract failure and is
+not one. 1.18.1 is the last published version of that package, so there is no
+override that lifts it, and the only way to avoid the proxy is to give up
+`requestFilter` and with it the minted bearer token. The exception is narrow:
+`pnpm test:pact:consumer` keeps the flag, and the application code the provider
+step exercises is the same code `pnpm test:e2e` drives under the flag on both Node
+versions.
 
 ## Writing an interaction
 

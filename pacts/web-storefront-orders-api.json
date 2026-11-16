@@ -1,0 +1,614 @@
+{
+  "consumer": {
+    "name": "web-storefront"
+  },
+  "interactions": [
+    {
+      "description": "a checkout for two standing desks",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "the catalogue stocks SKU-DESK-01"
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "items": [
+              {
+                "quantity": 2,
+                "sku": "SKU-DESK-01"
+              }
+            ],
+            "shippingCountry": "GB"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Accept": [
+            "application/json"
+          ],
+          "Authorization": [
+            "Bearer mock-access-token"
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "POST",
+        "path": "/v1/orders"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "data": {
+              "createdAt": "2026-09-07T09:30:00.000Z",
+              "currency": "GBP",
+              "failureReason": null,
+              "fulfilment": {
+                "sagaId": "265aa242-8246-4665-8e26-57cc6acd6390",
+                "status": "COMPLETED",
+                "step": null
+              },
+              "id": "5a4f0c60-1f1a-4a3f-9f1e-8f2a0c9d1e2b",
+              "items": [
+                {
+                  "quantity": 2,
+                  "sku": "SKU-DESK-01",
+                  "unitPriceMinor": 34900
+                }
+              ],
+              "shippingCountry": "GB",
+              "status": "CONFIRMED",
+              "totalMinor": 69800,
+              "updatedAt": "2026-09-07T09:30:02.000Z"
+            },
+            "meta": {
+              "timestamp": "2026-09-07T09:30:02.000Z",
+              "version": "v1"
+            },
+            "success": true
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.data.createdAt": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            },
+            "$.data.currency": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[A-Z]{3}$"
+                }
+              ]
+            },
+            "$.data.fulfilment.sagaId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.data.fulfilment.status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^(RUNNING|COMPENSATING|COMPLETED|COMPENSATED|STUCK)$"
+                }
+              ]
+            },
+            "$.data.id": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.data.items": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.data.items[*].quantity": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data.items[*].sku": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^SKU-[A-Z0-9-]+$"
+                }
+              ]
+            },
+            "$.data.items[*].unitPriceMinor": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data.shippingCountry": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[A-Z]{2}$"
+                }
+              ]
+            },
+            "$.data.status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^(PENDING|PROCESSING|CONFIRMED|CANCELLED)$"
+                }
+              ]
+            },
+            "$.data.totalMinor": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data.updatedAt": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            },
+            "$.meta.timestamp": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application\\/json(;\\s*charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        },
+        "status": 201
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "a request for an order that does not exist",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "the customer has no orders"
+        }
+      ],
+      "request": {
+        "headers": {
+          "Accept": [
+            "application/json"
+          ],
+          "Authorization": [
+            "Bearer mock-access-token"
+          ]
+        },
+        "method": "GET",
+        "path": "/v1/orders/00000000-0000-4000-8000-000000000000"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "error": "Not Found",
+            "message": "Order 00000000-0000-4000-8000-000000000000 not found",
+            "path": "/v1/orders/00000000-0000-4000-8000-000000000000",
+            "statusCode": 404,
+            "timestamp": "2026-09-07T09:30:02.000Z"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.message": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Order .+ not found$"
+                }
+              ]
+            },
+            "$.path": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\/v1\\/orders\\/.+$"
+                }
+              ]
+            },
+            "$.timestamp": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application\\/json(;\\s*charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        },
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "a request for that order",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "the customer has one confirmed order"
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "expression": "/v1/orders/${orderId}",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Accept": [
+            "application/json"
+          ],
+          "Authorization": [
+            "Bearer mock-access-token"
+          ]
+        },
+        "matchingRules": {
+          "path": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          }
+        },
+        "method": "GET",
+        "path": "/v1/orders/5a4f0c60-1f1a-4a3f-9f1e-8f2a0c9d1e2b"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "data": {
+              "createdAt": "2026-09-07T09:30:00.000Z",
+              "currency": "GBP",
+              "failureReason": null,
+              "fulfilment": {
+                "sagaId": "265aa242-8246-4665-8e26-57cc6acd6390",
+                "status": "COMPLETED",
+                "step": null
+              },
+              "id": "5a4f0c60-1f1a-4a3f-9f1e-8f2a0c9d1e2b",
+              "items": [
+                {
+                  "quantity": 2,
+                  "sku": "SKU-DESK-01",
+                  "unitPriceMinor": 34900
+                }
+              ],
+              "shippingCountry": "GB",
+              "status": "CONFIRMED",
+              "totalMinor": 69800,
+              "updatedAt": "2026-09-07T09:30:02.000Z"
+            },
+            "meta": {
+              "timestamp": "2026-09-07T09:30:02.000Z",
+              "version": "v1"
+            },
+            "success": true
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.data.createdAt": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            },
+            "$.data.currency": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[A-Z]{3}$"
+                }
+              ]
+            },
+            "$.data.fulfilment.sagaId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.data.fulfilment.status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^(RUNNING|COMPENSATING|COMPLETED|COMPENSATED|STUCK)$"
+                }
+              ]
+            },
+            "$.data.id": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.data.items": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.data.items[*].quantity": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data.items[*].sku": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^SKU-[A-Z0-9-]+$"
+                }
+              ]
+            },
+            "$.data.items[*].unitPriceMinor": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data.shippingCountry": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[A-Z]{2}$"
+                }
+              ]
+            },
+            "$.data.status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^(PENDING|PROCESSING|CONFIRMED|CANCELLED)$"
+                }
+              ]
+            },
+            "$.data.totalMinor": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data.updatedAt": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            },
+            "$.meta.timestamp": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application\\/json(;\\s*charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "a request for the first page of orders",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "the customer has no orders"
+        }
+      ],
+      "request": {
+        "headers": {
+          "Accept": [
+            "application/json"
+          ],
+          "Authorization": [
+            "Bearer mock-access-token"
+          ]
+        },
+        "method": "GET",
+        "path": "/v1/orders",
+        "query": {
+          "limit": [
+            "20"
+          ]
+        }
+      },
+      "response": {
+        "body": {
+          "content": {
+            "data": {
+              "hasNextPage": false,
+              "items": [],
+              "nextCursor": null
+            },
+            "meta": {
+              "timestamp": "2026-09-07T09:30:02.000Z",
+              "version": "v1"
+            },
+            "success": true
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.meta.timestamp": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application\\/json(;\\s*charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "17.1.4"
+    },
+    "pactRust": {
+      "ffi": "0.5.8",
+      "models": "1.3.16"
+    },
+    "pactSpecification": {
+      "version": "4.0"
+    }
+  },
+  "provider": {
+    "name": "orders-api"
+  }
+}

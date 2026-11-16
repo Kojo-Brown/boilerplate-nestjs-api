@@ -313,6 +313,16 @@ docker-compose up        # postgres + redis + api
   cover what the code _accepts_ rather than what it should accept, how each
   property was watched failing against deliberately broken code, and why the
   seed is fixed and how to soak with another one.
+- [docs/pact.md](./docs/pact.md) — consumer-driven contract verification against
+  the `web-storefront` pact: why this is not a better e2e suite and the one-character
+  change that proves it (`meta.version` from `"v1"` to `"1"` breaks every consumer,
+  leaves all 21 orders e2e specs green and turns this gate red), why both halves of
+  the contract live here and what moves out when a broker arrives, why provider
+  states run real checkouts and hand the verifier the id they got, why the bearer
+  token is minted per run rather than recorded in the pact, and the three
+  afternoon-costing gotchas — `requestFilter` mounted ahead of Pact's own
+  `/_pactSetup` route, header regexes matched against the whole value, and a
+  verifier that ignores `NO_PROXY`.
 
 ## Testing
 
@@ -321,6 +331,7 @@ pnpm test          # unit suites, no external services
 pnpm test:e2e      # the whole application over HTTP, on in-memory doubles
 pnpm test:db       # row-locking, outbox, saga-, audit-store, tenant-isolation and query-count suites — needs Postgres and DATABASE_URL
 pnpm test:mutation # mutation score over the pure domain logic — see docs/mutation-testing.md
+pnpm test:pact     # the web-storefront contract, verified against this API — see docs/pact.md
 
 # The Redlock legs of `pnpm test` need independent Redis nodes. Without
 # REDLOCK_NODES (or REDIS_URL, for the single-node leg) they are reported as

@@ -11,14 +11,17 @@ Production-grade NestJS 11 REST API boilerplate. Spec-driven: features added one
 3. `git checkout -b <type>/<kebab-slug>` (`feat`/`fix`/`chore`/`ci`/`docs`)
 4. Implement it completely — module, service, controller, DTOs, tests, docs.
 5. Run every gate locally; **all must pass** before pushing:
+
    ```
    pnpm install
    pnpm typecheck
    pnpm lint
    pnpm test
    pnpm test:integration
+   pnpm test:pact
    pnpm build
    ```
+
    `pnpm test:integration` is the `integration` CI job and blocks a merge like
    the rest, so it belongs in this list. It is seconds of work: `globalSetup`
    starts one `postgres:17-alpine` and three `redis:8-alpine` through
@@ -29,6 +32,20 @@ Production-grade NestJS 11 REST API boilerplate. Spec-driven: features added one
    `REDIS_TEST_DATABASES`, that a client pointed at a stopped node needs
    `retryStrategy: () => null`, and that a suite wanting to take a server away
    starts its own rather than stopping the shared fixture's.
+
+   `pnpm test:pact` is the `pact` CI job and blocks a merge like the rest, so it
+   belongs in this list. It is seconds of work and needs no services: the consumer
+   half writes `pacts/web-storefront-orders-api.json` and the provider half
+   replays it against `createTestApp()` on an ephemeral port. Run the two halves
+   in that order — `pnpm test:pact` does — because the provider verifies the file
+   the consumer just wrote. See `docs/pact.md` before adding an interaction; the
+   three rules that bite are that `requestFilter` is mounted ahead of Pact's own
+   `/_pactSetup` route and has to let it through, that a header regex is matched
+   against the whole value and so needs anchoring at both ends, and that a field
+   the consumer does not read does not belong in the pact. Never pin a value the
+   provider generates, and never widen a matcher to turn a red build green: a
+   mismatch here means a consumer is broken.
+
 6. Commit, `git push -u origin <branch>`, then `gh pr create`.
 7. `gh pr checks --watch` → **merge only if every check is green**:
    `gh pr merge --squash --delete-branch`

@@ -43,6 +43,14 @@ const SINGLE_VERSION_JOBS: Readonly<Record<string, string>> = {
     "Node runtime, and the second leg would start seven more containers to " +
     "report the same result. A divergence across Node versions would be the " +
     "`test` matrix's finding to make, not this job's.",
+  pact:
+    "A contract is a property of the wire format — a field name, a status " +
+    "code, the shape of the error envelope — and none of those are chosen by " +
+    "the Node runtime. The second leg would boot the same application and " +
+    "replay the same four interactions against the same pact to reach the " +
+    "same verdict. If it ever disagreed, the finding would be that this " +
+    "application serialises differently across Node versions, which is the " +
+    "`test` matrix's to make and not this job's.",
   mutation:
     "A mutation score is a property of the test suite, not of the runtime. " +
     "The second leg would spend four and a half minutes of runner time to " +

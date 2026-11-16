@@ -251,6 +251,80 @@ jobs:
         env:
           NODE_OPTIONS: --throw-deprecation
 
+  # Consumer-driven contract verification. The `test` and `test:e2e` suites above
+  # assert what this team decided a response should look like; this job asserts
+  # what the `web-storefront` consumer actually needs, and the two are not the
+  # same check. The gap is easy to demonstrate: changing `meta.version` from
+  # "v1" to "1" in `ResponseEnvelopeInterceptor` breaks every consumer that reads
+  # the envelope, and leaves all 21 specs in `test/orders.e2e-spec.ts` green. This
+  # job goes red. See docs/pact.md.
+  #
+  # Two steps rather than one script so a failure names the side that broke. The
+  # consumer step regenerates `pacts/web-storefront-orders-api.json` from
+  # `test/pact/storefront-orders.consumer-pact-spec.ts`: it is committed because
+  # without a broker that file is the only thing carrying the contract from one
+  # build to the other, and it is generated rather than hand-written because a
+  # hand-written pact proves nothing about what the consumer sends.
+  #
+  # No services and no secrets. The provider runs on the same in-memory fixture
+  # every e2e suite uses (`test/helpers/create-test-app.ts`), on an ephemeral
+  # port, with its whole guard, pipe, interceptor and filter chain bound exactly
+  # as `main.ts` binds it — a contract is about the wire format, and nothing about
+  # the wire format is substituted here.
+  #
+  # One Node version, not the matrix, and `needs: [test]`, both for the reasons
+  # the integration and mutation jobs have them.
+  pact:
+    name: Contract (Pact)
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The provider boots the whole application, which needs the generated client.
+      - run: pnpm db:generate
+      - run: pnpm test:pact:consumer
+        env:
+          NODE_OPTIONS: --throw-deprecation
+      # `providerVersion` / `providerVersionBranch` are read from GITHUB_SHA and
+      # GITHUB_REF_NAME, which the runner already sets. They are inert without a
+      # broker and are what `can-i-deploy` reads once there is one.
+      #
+      # The one step in this workflow deliberately without
+      # `NODE_OPTIONS: --throw-deprecation`, and the reason is not this
+      # repository's code. Pact verifies a provider by standing an Express proxy
+      # in front of it, and that proxy is `http-proxy@1.18.1` — a direct
+      # dependency of `@pact-foundation/pact` which calls the deprecated
+      # `util._extend` on every forwarded request. Under the flag that warning is
+      # thrown, so the job fails *after* reporting all four interactions as OK,
+      # with a stack ending in somebody else's `node_modules`. 1.18.1 is the last
+      # published version of that package, so there is no override to lift this
+      # to; the alternative would be giving up `requestFilter`, and with it the
+      # minted bearer token, to avoid a warning in a dependency.
+      #
+      # Little is given up. The flag is here to catch the application emitting a
+      # runtime deprecation, and the application code this step exercises is the
+      # same code `pnpm test:e2e` drives over HTTP two jobs up — under the flag,
+      # on both Node versions. What is lost is a deprecation reachable only
+      # through the four interactions in the pact and through nothing in the e2e
+      # suite, which is a narrow gap and a visible one.
+      - run: pnpm test:pact:provider
+      # The pact as this run generated it. With a broker this step is `pact-broker
+      # publish`; until then the artifact is how a consumer team reads what this
+      # provider was verified against.
+      - name: Upload pact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pacts
+          path: pacts/
+          retention-days: 7
+
   # Mutation testing. Coverage says a line ran; this says the suite would have
   # noticed it being wrong. Scoped to the pure domain logic listed in
   # `stryker.config.mjs` — see docs/mutation-testing.md for why it is a list and
